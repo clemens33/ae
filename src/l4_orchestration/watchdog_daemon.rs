@@ -343,6 +343,10 @@ pub struct PaneState {
     /// running a task ([`task_lease`], #283). Memory only: a restart grants
     /// at most one more cap.
     pub task_since: Option<i64>,
+    /// The desk-stale change this cycle's observation booked for the
+    /// orchestrator main's delivery, taken by the turn that carries it and
+    /// cleared after the pane's effects. Never carried into a next cycle.
+    pub desk: Option<crate::desktick::Booking>,
 }
 
 /// What the cycle knows BESIDE its [`Observation`] (#225, #283): carried as a
@@ -946,7 +950,9 @@ pub enum Effect {
     /// Deliver the ONE continuation turn a limited seat is owed once its
     /// known `reset` has passed, through the guarded send like a nudge.
     LimitWake { reset: i64 },
-    /// Deliver one SWEEP prompt to the orchestrator.
+    /// Deliver one SWEEP prompt to the orchestrator: the changed overview,
+    /// with a desk-stale line when one is due, or the standalone desk-stale
+    /// tick when only that is due.
     SweepNudge,
     /// Reconcile or attempt this launch's continuation, with a due overview if booked.
     ReseatContinuation {
@@ -1013,10 +1019,6 @@ const AUTO_PLACEHOLDER: &str = "auto-reseat";
 
 /// The summary an attempt past its bound is closed with.
 const OVERDUE_SUMMARY: &str = "failed: no outcome recorded";
-
-/// The orchestrator watchdog's checkpoint and heartbeat, at the FIXED name
-/// `<meta-dir>/meta-agent-state.json`.
-pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
 /// The normal verdict interval and smallest useful positive overview spacing.
 /// Zero remains the explicit off switch.
@@ -2298,7 +2300,7 @@ struct Cycle<'a> {
 struct OverviewReading {
     rendered: String,
     hash: String,
-    checkpoint: crate::monitor::OverviewCheckpoint,
+    checkpoint: crate::watchdog_state::OverviewCheckpoint,
 }
 
 impl OverviewReading {
@@ -2319,7 +2321,31 @@ impl OverviewReading {
     }
 
     fn body(&self) -> String {
-        crate::overview::nudge_body(&self.rendered)
+        self.compose(None)
+    }
+
+    /// The overview turn with `line` after the fleet text, before the
+    /// trailer. Unlike [`Self::with_remedy`] the hash stays the overview's
+    /// own: the line is about the desk, not the fleet.
+    fn body_with(&self, line: &str) -> String {
+        self.compose(Some(line))
+    }
+
+    /// The one builder of both turns: the fleet text, an optional line after
+    /// it, then the trailer. Without a line the bytes are the overview's own.
+    fn compose(&self, line: Option<&str>) -> String {
+        let rendered = match line {
+            None => std::borrow::Cow::Borrowed(self.rendered.as_str()),
+            Some(line) => {
+                let mut rendered = self.rendered.clone();
+                if !rendered.is_empty() && !rendered.ends_with('\n') {
+                    rendered.push('\n');
+                }
+                rendered.push_str(line);
+                std::borrow::Cow::Owned(rendered)
+            }
+        };
+        crate::overview::nudge_body(&rendered)
     }
 
     /// This reading with `line` after the fleet text, before the trailer.
@@ -2485,19 +2511,25 @@ impl Cycle<'_> {
         } else {
             self.charter_update(&observed, settling, err)?
         };
-        let overview = if self.meta_agent
+        let (overview, desk) = if self.meta_agent
             && self.knobs.sweep.enabled()
             && charter != charter::Charter::Attempted
         {
-            self.overview(now, err).map(|reading| {
-                if charter == charter::Charter::Unresolved {
-                    reading.with_remedy(&charter_remedy(self.meta_dir, self.session))
-                } else {
-                    reading
-                }
-            })
+            let ack = observed
+                .iter()
+                .find(|pane| pane.slot.as_deref() == Some(crate::watchdog::MAIN_SLOT))
+                .and_then(|pane| pane.agent.as_deref());
+            self.overview(now, ack, err)
+                .map_or((None, None), |(reading, desk)| {
+                    let reading = if charter == charter::Charter::Unresolved {
+                        reading.with_remedy(&charter_remedy(self.meta_dir, self.session))
+                    } else {
+                        reading
+                    };
+                    (Some(reading), Some(desk))
+                })
         } else {
-            None
+            (None, None)
         };
         // ONE cadence, one counter: `quota_every_secs` paces the periodic
         // quota pass, and zero disables it.
@@ -2790,7 +2822,13 @@ impl Cycle<'_> {
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
-                sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
+                sweep: self.sweep_observation(
+                    &slot,
+                    agent,
+                    &events,
+                    (overview.as_ref(), desk.as_ref()),
+                    now,
+                ),
                 own_work: outstanding.of(Seat::new(self.session, &slot, agent)),
                 auto_in_flight: if crate::autoreseat::in_flight(
                     &self.auto,
@@ -2870,7 +2908,13 @@ impl Cycle<'_> {
                 command: pane.current_command.as_str(),
             };
             *carried = booked.next;
+            carried.desk = seen
+                .sweep
+                .as_ref()
+                .and(desk.as_ref())
+                .and_then(|sight| sight.booking.clone());
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
+            carried.desk = None;
             let standing = entry_mut(&mut carry.notices, &slot);
             self.notice_step(&acting, &reading, (settling, standing), err)?;
             if crate::effort::leg::eligible(&slot) && !self.meta_agent {

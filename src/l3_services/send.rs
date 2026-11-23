@@ -525,8 +525,9 @@ fn retryable_delivery(delivery: &Result<deliver::Delivered, deliver::Failure>) -
 /// Watchdog-owned notices carry it: the quota advisory, the checkpoint
 /// ask a seat gets when its scope enters the Low band, and the `dead-notice`
 /// that tells a spawner its worker died (#211), plus the automatic reseat
-/// continuation. Each caller owns its retry rule. The marker proves the
-/// helper refused before the paste, so a caller can safely reopen a claim.
+/// continuation and the orchestrator's overview and desk-stale turns, which
+/// hold a desk-stale claim. Each caller owns its retry rule. The marker proves
+/// the helper refused before the paste, so a caller can safely reopen a claim.
 fn write_retryable_marker(
     action: &str,
     delivery: &Result<deliver::Delivered, deliver::Failure>,
@@ -534,7 +535,9 @@ fn write_retryable_marker(
 ) -> io::Result<()> {
     let retryable = match action {
         "quota-advisory" | "quota-checkpoint" | "dead-notice" => retryable_delivery(delivery),
-        crate::watchdog::AUTO_RESEAT_NOTICE_ACTION => delivery.as_ref().is_err_and(|failure| {
+        crate::watchdog::AUTO_RESEAT_NOTICE_ACTION
+        | crate::watchdog::SWEEP_NUDGE_ACTION
+        | crate::watchdog::DESK_TICK_ACTION => delivery.as_ref().is_err_and(|failure| {
             matches!(failure, deliver::Failure::Abandoned { .. })
                 || pre_paste_reason(failure).is_some()
         }),
@@ -996,6 +999,49 @@ mod tests {
         write_retryable_marker("dead-cleared", &refused, &mut out)
             .expect("an unrelated action stays silent");
         assert!(out.is_empty(), "an unrelated action carries no marker");
+    }
+
+    #[test]
+    fn desk_claim_turns_carry_the_marker_only_for_a_proven_refusal_before_paste() {
+        use crate::deliver::{Failure, Stage};
+        let body = || "/m/body".to_owned();
+        for action in [
+            crate::watchdog::SWEEP_NUDGE_ACTION,
+            crate::watchdog::DESK_TICK_ACTION,
+        ] {
+            for (failure, expected) in [
+                (
+                    Failure::Abandoned {
+                        held: DeferHeld::ComposerOccupied,
+                    },
+                    true,
+                ),
+                (
+                    Failure::Refused {
+                        body_file: body(),
+                        stage: Stage::BeforeInput,
+                    },
+                    true,
+                ),
+                (Failure::Paste { body_file: body() }, false),
+                (
+                    Failure::Refused {
+                        body_file: body(),
+                        stage: Stage::Pasted,
+                    },
+                    false,
+                ),
+            ] {
+                let mut out = Vec::new();
+                write_retryable_marker(action, &Err(failure), &mut out).expect("marker output");
+                let expected = if expected {
+                    format!("{RETRYABLE_MARKER}\n")
+                } else {
+                    String::new()
+                };
+                assert_eq!(out, expected.as_bytes(), "{action}");
+            }
+        }
     }
 
     #[test]

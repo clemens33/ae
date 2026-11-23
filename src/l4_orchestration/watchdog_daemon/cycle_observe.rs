@@ -347,10 +347,20 @@ impl Cycle<'_> {
         }
     }
 
-    /// Read the fleet through [`crate::fleet_read::current_world`], enrich it through the
-    /// same card collector as `ae brief --all`, then touch the watchdog-owned
-    /// checkpoint without advancing the last-delivered hash.
-    pub(super) fn overview(&self, now: i64, err: &mut impl Write) -> Option<OverviewReading> {
+    /// Read the fleet through [`crate::fleet_read::world_read`] with a positioned
+    /// journal reader, enrich it through the same card collector as
+    /// `ae brief --all`, then touch the watchdog-owned checkpoint without
+    /// advancing the last-delivered hash.
+    ///
+    /// The same read decides the desk-stale tick: each journal it holds is
+    /// read once with its records' source positions. `ack` is the
+    /// orchestrator main's agent, whose `done` acknowledges an overview.
+    pub(super) fn overview(
+        &self,
+        now: i64,
+        ack: Option<&str>,
+        err: &mut impl Write,
+    ) -> Option<(OverviewReading, DeskSight)> {
         let Some(root) = crate::doors::state_root(crate::shape::current()) else {
             let _ = writeln!(
                 err,
@@ -358,7 +368,8 @@ impl Cycle<'_> {
             );
             return None;
         };
-        let (_, world) = crate::fleet_read::current_world(&root);
+        let (read, positions) = positioned_world(&root);
+        let world = &read.world;
         let sessions = crate::inventory::Roots::under(&root);
         let cards: Vec<crate::brief::Card> = world
             .sessions
@@ -377,7 +388,7 @@ impl Cycle<'_> {
             .collect();
         let rendered = crate::overview::render(&cards, self.session);
         let hash = crate::overview::semantic_hash(&cards, self.session);
-        let checkpoint = match crate::monitor::overview_heartbeat(self.meta_dir, now) {
+        let checkpoint = match crate::watchdog_state::overview_heartbeat(self.meta_dir, now) {
             Ok(checkpoint) => checkpoint,
             Err(why) => {
                 let _ = writeln!(
@@ -387,11 +398,21 @@ impl Cycle<'_> {
                 return None;
             }
         };
-        Some(OverviewReading {
+        let prior = crate::watchdog_state::desk_tick(self.meta_dir);
+        let last_at = prior.last_at;
+        let booking = crate::desktick::read(&read, &positions, (self.meta_dir, ack), &prior, now)
+            .map(|stale| crate::desktick::Booking {
+                stale,
+                prior,
+                overview_last: checkpoint.last_delivered_at,
+            });
+        let sight = DeskSight { booking, last_at };
+        let reading = OverviewReading {
             rendered,
             hash,
             checkpoint,
-        })
+        };
+        Some((reading, sight))
     }
 
     /// The orchestrator-main-only observation, including the durable hash and
@@ -401,7 +422,7 @@ impl Cycle<'_> {
         slot: &str,
         agent: &str,
         events: &[Event],
-        overview: Option<&OverviewReading>,
+        (overview, desk): (Option<&OverviewReading>, Option<&DeskSight>),
         now: i64,
     ) -> Option<SweepObservation> {
         is_sweep_target(self.meta_agent, slot).then(|| {
@@ -414,6 +435,11 @@ impl Cycle<'_> {
                 overview.is_some_and(OverviewReading::changed),
                 overview.and_then(OverviewReading::persisted_outstanding_since),
                 overview.and_then(OverviewReading::persisted_last_delivery),
+            )
+            .with_desk(
+                desk.is_some_and(|sight| sight.booking.is_some()),
+                desk.and_then(|sight| sight.last_at)
+                    .and_then(system_time_from_epoch),
             )
         })
     }
@@ -860,4 +886,26 @@ impl Cycle<'_> {
             max.map_or_else(|| "none".to_owned(), |value| format!("{value}"))
         )
     }
+}
+
+/// What the cycle read of the desk-stale tick: the change booked for the
+/// delivery, if one is due, and the stored claim's spacing stamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DeskSight {
+    pub(super) booking: Option<crate::desktick::Booking>,
+    last_at: Option<i64>,
+}
+
+/// One classified fleet read whose reader records each journal's source
+/// positions from the very bytes it parses.
+fn positioned_world(root: &Path) -> (crate::fleet_read::WorldRead, crate::desktick::Positions) {
+    let mut positions = crate::desktick::Positions::new();
+    let read = crate::fleet_read::world_read(root, &mut |dir| {
+        crate::session::RecordSnapshot::read_with(dir, || {
+            let (read, ends) = crate::session::SessionRead::open_positioned(dir)?;
+            positions.insert(dir.to_owned(), ends);
+            Ok(read)
+        })
+    });
+    (read, positions)
 }

@@ -1156,6 +1156,12 @@ impl EventLog {
     #[doc(hidden)]
     #[must_use]
     pub fn parse_bytes(bytes: &[u8], cursor: Cursor) -> Drain {
+        Self::parse_records(bytes, cursor, None)
+    }
+
+    /// [`EventLog::parse_bytes`], pushing the cursor just past each event's
+    /// record onto `ends` when the caller asked for positions.
+    fn parse_records(bytes: &[u8], cursor: Cursor, mut ends: Option<&mut Vec<Cursor>>) -> Drain {
         count_parsed(bytes.len());
 
         let mut events = Vec::new();
@@ -1182,7 +1188,15 @@ impl EventLog {
                 continue;
             }
             match Event::parse_line(line) {
-                Ok(event) => events.push(event),
+                Ok(event) => {
+                    events.push(event);
+                    if let Some(ends) = ends.as_deref_mut() {
+                        ends.push(Cursor {
+                            generation: cursor.generation,
+                            offset: cursor.offset.saturating_add(consumed),
+                        });
+                    }
+                }
                 Err(reason) => skipped.push(SkippedLine {
                     generation: cursor.generation,
                     offset,
@@ -1255,6 +1269,42 @@ impl EventLog {
             skipped,
             drained,
         })
+    }
+
+    /// [`EventLog::drain_all`] from the start, with each event's real source
+    /// position: the cursor just past its record, in the same order as the
+    /// events. One read of each generation, so an append cannot shift a
+    /// position against the record it names.
+    ///
+    /// # Errors
+    ///
+    /// As [`EventLog::drain_all`].
+    pub fn drain_all_positioned(&self) -> io::Result<(Drain, Vec<Cursor>)> {
+        let first = self.sources.first().map_or(0, |source| source.generation);
+        let mut ends = Vec::new();
+        let mut events = Vec::new();
+        let mut skipped = Vec::new();
+        let mut last = Cursor::start_of(first);
+        let mut drained = true;
+        for generation in self.traversal_from(first)? {
+            let start = Cursor::start_of(generation);
+            let (bytes, _) = self.read_bytes(start)?;
+            let mut drain = Self::parse_records(&bytes, start, Some(&mut ends));
+            events.append(&mut drain.events);
+            skipped.append(&mut drain.skipped);
+            last = drain.cursor;
+            drained = drain.drained;
+            if !drained {
+                break;
+            }
+        }
+        let drain = Drain {
+            events,
+            cursor: last,
+            skipped,
+            drained,
+        };
+        Ok((drain, ends))
     }
 
     /// The generations [`EventLog::drain_all`] will visit, in order, starting at
@@ -2004,6 +2054,27 @@ mod tests {
         let second = log.drain(first.cursor).expect("second read");
         assert_eq!(second.events.len(), 1, "only the new record");
         assert_eq!(second.cursor.offset, (DONE.len() as u64 + 1) * 2);
+    }
+
+    #[test]
+    fn a_positioned_drain_names_the_end_of_each_events_own_record() {
+        let scratch = Scratch::new("positioned");
+        let record = DONE.len() as u64 + 1;
+        scratch.write(
+            "events.jsonl",
+            &format!("{DONE}\nnot json\n\n{DONE}\n{{\"ts\":"),
+        );
+        let log = EventLog::discover(&scratch.0);
+
+        let (drain, ends) = log.drain_all_positioned().expect("positioned read");
+        let plain = log.drain_all(Cursor::default()).expect("plain read");
+        assert_eq!(drain, plain, "the same drain as the plain reader");
+        let offsets: Vec<u64> = ends.iter().map(|end| end.offset).collect();
+        assert_eq!(
+            offsets,
+            [record, record * 2 + "not json\n".len() as u64 + 1]
+        );
+        assert_eq!(drain.cursor, *ends.last().expect("two events"));
     }
 
     #[test]

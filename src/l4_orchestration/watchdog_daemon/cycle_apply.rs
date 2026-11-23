@@ -408,7 +408,7 @@ impl Cycle<'_> {
         state: &mut PaneState,
         err: &mut impl Write,
     ) -> crate::error::Result<()> {
-        let Some(_observed) = on.seen.sweep.as_ref() else {
+        let Some(observed) = on.seen.sweep.as_ref() else {
             // Unreachable by construction: only the sweep branch emits this
             // effect, and it runs only where the observation exists.
             writeln!(
@@ -429,20 +429,166 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
+        // A stale desk is told only under a stored claim: the observation's
+        // booking, claimed over exactly what that observation read. A tick or
+        // overview delivered since then holds this turn whole.
+        let desk = match state.desk.take() {
+            Some(booking) if observed.desk_stale => {
+                match self.claim_desk(booking, on.slot, err)? {
+                    DeskClaim::Held => return Ok(()),
+                    DeskClaim::Skipped => None,
+                    DeskClaim::Claimed(previous, claim) => Some((previous, claim)),
+                }
+            }
+            _ => None,
+        };
+        if !observed.overview_changed {
+            // The standalone tick: no overview is booked, so no hash, no
+            // acknowledgement deadline and no overview delivery time moves.
+            // Its claim is its only record and its stamp the shared spacing.
+            if let Some((previous, claim)) = desk {
+                let delivery = self.deliver(
+                    on.agent,
+                    crate::desktick::LINE,
+                    crate::desktick::ACTION,
+                    crate::desktick::SUMMARY,
+                    None,
+                    Some(on.slot),
+                );
+                self.settle_desk(&previous, &claim, &delivery, err)?;
+            }
+            return Ok(());
+        }
+        if desk.is_none() && !self.spacing_unmoved(on, err)? {
+            return Ok(());
+        }
         // Delivery is CHECKED.
-        let body = overview.body();
-        let delivered = self
-            .deliver(
-                on.agent,
-                &body,
-                crate::watchdog::SWEEP_NUDGE_ACTION,
-                "fleet overview changed",
-                None,
-                Some(on.slot),
-            )
-            .code
-            == Some(0);
-        self.record_overview(on, state, overview, delivered, err)
+        let body = if desk.is_some() {
+            overview.body_with(crate::desktick::LINE)
+        } else {
+            overview.body()
+        };
+        let delivery = self.deliver(
+            on.agent,
+            &body,
+            crate::watchdog::SWEEP_NUDGE_ACTION,
+            "fleet overview changed",
+            None,
+            Some(on.slot),
+        );
+        if let Some((previous, claim)) = desk {
+            self.settle_desk(&previous, &claim, &delivery, err)?;
+        }
+        self.record_overview(on, state, overview, delivery.code == Some(0), err)
+    }
+
+    /// Whether an overview turn that carries no desk claim may still paste:
+    /// the spacing stamps its observation read are still the stored ones. A
+    /// desk tick claimed or an overview delivered since then, by any writer,
+    /// holds it under the same shared spacing; a claimed desk line proves the
+    /// same under the checkpoint lock instead.
+    pub(super) fn spacing_unmoved(
+        &self,
+        on: &Acting<'_>,
+        err: &mut impl Write,
+    ) -> crate::error::Result<bool> {
+        let seen = crate::watchdog_state::Stamps {
+            overview_last: on
+                .overview
+                .and_then(|overview| overview.checkpoint.last_delivered_at),
+            desk_last: on
+                .seen
+                .sweep
+                .as_ref()
+                .and_then(|sweep| sweep.persisted_desk_tick)
+                .map(epoch_second),
+        };
+        if crate::watchdog_state::stamps(self.meta_dir) == seen {
+            return Ok(true);
+        }
+        writeln!(
+            err,
+            "ae: watchdog: overview for {} held — a delivery landed since this cycle's observation",
+            on.agent
+        )?;
+        Ok(false)
+    }
+
+    /// Store the booked desk-stale claim before the submit. It claims
+    /// nothing and is [`DeskClaim::Skipped`] when the seat's incarnation is
+    /// unproven (the send refuses before running anything), when the desk
+    /// record changed or grew young since the observation, or when the
+    /// checkpoint cannot be written: an overview due beside it still goes. It
+    /// is [`DeskClaim::Held`] when the stored claim or the latest overview
+    /// delivery moved since the observation read them, compared under the
+    /// checkpoint lock: that delivery's spacing holds the whole turn.
+    pub(super) fn claim_desk(
+        &self,
+        booking: crate::desktick::Booking,
+        slot: &str,
+        err: &mut impl Write,
+    ) -> crate::error::Result<DeskClaim> {
+        if tracked::expected_members(slot, self.launch_row(slot)).is_err() {
+            return Ok(DeskClaim::Skipped);
+        }
+        let now = Timestamp::now().epoch();
+        let desk = crate::deskstore::read(self.meta_dir).ok().flatten();
+        if !booking.stale.desk_unchanged(desk.as_ref(), now) {
+            writeln!(
+                err,
+                "ae: watchdog: desk record changed since this cycle's reading — no desk-stale line"
+            )?;
+            return Ok(DeskClaim::Skipped);
+        }
+        let claim = booking.stale.claim(now);
+        match crate::watchdog_state::claim_desk_tick(
+            self.meta_dir,
+            &booking.prior,
+            booking.overview_last,
+            &claim,
+        ) {
+            Ok(true) => Ok(DeskClaim::Claimed(booking.prior, claim)),
+            Ok(false) => {
+                writeln!(
+                    err,
+                    "ae: watchdog: a tick or overview landed since this cycle's reading — turn held"
+                )?;
+                Ok(DeskClaim::Held)
+            }
+            Err(why) => {
+                writeln!(
+                    err,
+                    "ae: watchdog: desk-stale claim failed — no desk-stale line: {why}"
+                )?;
+                Ok(DeskClaim::Skipped)
+            }
+        }
+    }
+
+    /// Fold the send helper's answer into the stored claim: only a proven
+    /// pre-paste refusal puts `previous` back, and only over `claim` itself.
+    pub(super) fn settle_desk(
+        &self,
+        previous: &crate::watchdog_state::DeskTick,
+        claim: &crate::watchdog_state::DeskTick,
+        delivery: &transport::Delivery,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
+        if crate::desktick::settle(delivery.code, &delivery.stdout) == crate::desktick::Settle::Keep
+        {
+            return Ok(());
+        }
+        match crate::watchdog_state::restore_desk_tick(self.meta_dir, claim, previous) {
+            Ok(true) => Ok(()),
+            Ok(false) => Ok(writeln!(
+                err,
+                "ae: watchdog: desk-stale tick refused; a newer claim stays"
+            )?),
+            Err(why) => Ok(writeln!(
+                err,
+                "ae: watchdog: desk-stale tick refused but its claim stayed: {why}"
+            )?),
+        }
     }
 
     /// Book the overview after the helper's checked delivery.
@@ -465,7 +611,7 @@ impl Cycle<'_> {
                 .sweep
                 .outstanding_since
                 .map_or_else(|| epoch_second(settled_now), epoch_second);
-            if let Err(why) = crate::monitor::record_overview_delivery(
+            if let Err(why) = crate::watchdog_state::record_overview_delivery(
                 self.meta_dir,
                 &overview.hash,
                 outstanding_since,
@@ -512,12 +658,7 @@ impl Cycle<'_> {
         ];
         vars.extend(reference.map(|value| ("_AE_EVENT_REF", value)));
         if let Some(slot) = seat {
-            let row = match self.launch_ids.iter().find(|(at, _)| at == slot) {
-                None => tracked::LaunchRow::Legacy,
-                Some((_, SeatLaunch::Id(id))) => tracked::LaunchRow::Token(id),
-                Some((_, SeatLaunch::Unproven(why))) => tracked::LaunchRow::Damaged(why),
-            };
-            match tracked::expected_members(slot, row) {
+            match tracked::expected_members(slot, self.launch_row(slot)) {
                 Ok(members) => vars.extend(members),
                 Err(why) => {
                     let seat = (agent, slot);
@@ -532,6 +673,16 @@ impl Cycle<'_> {
             }
         }
         transport::deliver(self.helper.path(), agent, text, false, &vars)
+    }
+
+    /// The launch row this cycle's snapshot read for `slot`: what the send
+    /// helper is asked to prove before anything runs.
+    fn launch_row(&self, slot: &str) -> tracked::LaunchRow<'_> {
+        match self.launch_ids.iter().find(|(at, _)| at == slot) {
+            None => tracked::LaunchRow::Legacy,
+            Some((_, SeatLaunch::Id(id))) => tracked::LaunchRow::Token(id),
+            Some((_, SeatLaunch::Unproven(why))) => tracked::LaunchRow::Damaged(why),
+        }
     }
 
     /// The auto reseat step: journal each hold and overdue failure the pure
@@ -1211,4 +1362,19 @@ impl Cycle<'_> {
         let message = tmux::format_literal(&format!("[ae watchdog] {agent} {text}"));
         let _ = transport::display_message(self.server, &session_id, &message);
     }
+}
+
+/// What the desk-stale claim decided for the turn that would carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DeskClaim {
+    /// Stored: the replaced and the new claim, settled by the turn's outcome.
+    Claimed(
+        crate::watchdog_state::DeskTick,
+        crate::watchdog_state::DeskTick,
+    ),
+    /// No desk-stale line, and an overview due beside it still goes.
+    Skipped,
+    /// A tick or overview landed since the observation: its spacing holds
+    /// the overview and the line alike.
+    Held,
 }

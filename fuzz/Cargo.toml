@@ -524,3 +524,10 @@ path = "fuzz_targets/desk_pin.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "watchdog_checkpoint"
+path = "fuzz_targets/watchdog_checkpoint.rs"
+test = false
+doc = false
+bench = false

@@ -294,14 +294,23 @@ impl SessionRead {
     pub fn open(dir: &Path) -> io::Result<Self> {
         let log = EventLog::discover(dir);
         let drain = log.drain_all(Cursor::default())?;
+        Ok(Self::from_drain_named(dir, &drain))
+    }
+
+    /// [`Self::open`], with each event's real source position: the cursor just
+    /// past its record, in the same order as [`Self::events`]. Opt-in, for the
+    /// one reader that consumes positions.
+    pub(crate) fn open_positioned(dir: &Path) -> io::Result<(Self, Vec<Cursor>)> {
+        let (drain, ends) = EventLog::discover(dir).drain_all_positioned()?;
+        Ok((Self::from_drain_named(dir, &drain), ends))
+    }
+
+    fn from_drain_named(dir: &Path, drain: &Drain) -> Self {
         // A session directory is named for its session, so a reader that opened
         // one knows which session's requests it is about to judge.
         let session = dir.file_name().and_then(|name| name.to_str());
         let id = crate::meta::session_id_in(dir);
-        Ok(Self::from_drain_in(
-            &drain,
-            SessionKey::new(session.unwrap_or_default(), &id),
-        ))
+        Self::from_drain_in(drain, SessionKey::new(session.unwrap_or_default(), &id))
     }
 
     /// Read an already-drained stream.
@@ -1590,17 +1599,50 @@ fn accepted_at(events: &[Event], request: &Event) -> Option<Timestamp> {
 /// to — a retired worker's questions leave its target's inbox. Anything else
 /// leaves the request open, however unanswerable it has become.
 pub(crate) fn open_requests<'a>(events: &'a [Event], session: SessionKey<'_>) -> Vec<&'a Event> {
+    let mut open = request_pass(events, session, |_, _| {});
+    open.sort_by_key(|event| event.ts);
+    open
+}
+
+/// Every closure [`open_requests`] performs, as the index of the closing
+/// record in `events` and the request it closed, in stream order. A
+/// re-opening under the same id replaces its request and closes nothing.
+pub(crate) fn request_closures<'a>(
+    events: &'a [Event],
+    session: SessionKey<'_>,
+) -> Vec<(usize, &'a Event)> {
+    let mut closed = Vec::new();
+    request_pass(events, session, |at, request| closed.push((at, request)));
+    closed
+}
+
+/// The one request fold: still-open requests in stream order, reporting each
+/// closure to `closed`.
+fn request_pass<'a>(
+    events: &'a [Event],
+    session: SessionKey<'_>,
+    mut closed: impl FnMut(usize, &'a Event),
+) -> Vec<&'a Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing. A
     // retire rides the same pass for the same reason, and for one more: the
     // pass only ever REMOVES, so a name or a `spawned.<n>` slot handed to a
     // replacement cannot reopen a request the retire already closed.
     let mut open: Vec<&Event> = Vec::new();
-    for event in events {
+    for (at, event) in events.iter().enumerate() {
+        let mut close = |open: &mut Vec<&'a Event>, ends: &dyn Fn(&Event) -> bool| {
+            open.retain(|request| {
+                let ended = ends(request);
+                if ended {
+                    closed(at, request);
+                }
+                !ended
+            });
+        };
         // Before the `ref` gate: a retire's `ref` is the retired seat's harness
         // session id, which is not a request id, so the gate would skip it.
         if event.action == "retire" {
-            open.retain(|request| !retired(request, event, session));
+            close(&mut open, &|request| retired(request, event, session));
             continue;
         }
         let RefMeaning::RequestId(id) = event.ref_meaning() else {
@@ -1611,12 +1653,11 @@ pub(crate) fn open_requests<'a>(events: &'a [Event], session: SessionKey<'_>) ->
                 open.retain(|existing| existing.reference.as_deref() != Some(id));
                 open.push(event);
             }
-            "reply" => open.retain(|request| !closes(request, event, id)),
-            "cancel" => open.retain(|request| !withdrawn(request, event, id)),
+            "reply" => close(&mut open, &|request| closes(request, event, id)),
+            "cancel" => close(&mut open, &|request| withdrawn(request, event, id)),
             _ => {}
         }
     }
-    open.sort_by_key(|event| event.ts);
     open
 }
 

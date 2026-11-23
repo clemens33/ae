@@ -1625,6 +1625,10 @@ const NUDGE_ACTION: &str = "nudge";
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
 
+/// The action the orchestrator's standalone desk-stale tick is journaled
+/// under. It paints the pane like a sweep nudge and is no overview.
+pub(crate) const DESK_TICK_ACTION: &str = "desk-tick";
+
 /// The journal action of an automatic reseat notice or continuation.
 pub const AUTO_RESEAT_NOTICE_ACTION: &str = "auto-reseat-notice";
 /// The action of the one turn that hands a running orchestrator seat the
@@ -2111,7 +2115,7 @@ pub fn declaration_current(relevant: &Relevant<'_>) -> bool {
 }
 
 /// The watchdog's newest delivery to the seat that may have reached its pane —
-/// an idle or sweep nudge, an automatic reseat continuation, a challenge, a
+/// an idle or sweep nudge, a desk-stale tick, an automatic reseat continuation, a challenge, a
 /// quota advisory or checkpoint ask,
 /// unconfirmed ones included because they may have landed. A challenge
 /// refused before its paste painted nothing, so it is not one.
@@ -2125,6 +2129,7 @@ pub fn last_watchdog_delivery(
     let painting = [
         NUDGE_ACTION,
         SWEEP_NUDGE_ACTION,
+        DESK_TICK_ACTION,
         DONE_CHALLENGE_ACTION,
         WAIT_CHALLENGE_ACTION,
         TARGET_MOVED_ACTION,
@@ -3427,8 +3432,12 @@ impl SweepAlert {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepEffect {
     /// Deliver one sweep prompt through the session's own `send` helper, then
-    /// report the outcome to [`record_sweep`].
+    /// report the outcome to [`record_sweep`]. A desk-stale line due in the
+    /// same cycle rides in this turn.
     FireSweepNudge,
+    /// Deliver one standalone desk-stale tick: no overview, no
+    /// acknowledgement and no hash, only the spacing both share.
+    FireDeskTick,
     /// Raise or clear one alert.
     Alert(SweepAlert),
     /// ONCE per daemon lifetime, on the first acknowledged overview with no
@@ -3477,6 +3486,12 @@ pub struct SweepObservation {
     pub persisted_outstanding_since: Option<SystemTime>,
     /// Latest delivered overview recovered for durable minimum spacing.
     pub persisted_last_delivery: Option<SystemTime>,
+    /// Whether a relevant fleet change is newer than an old, valid desk and
+    /// past the positions the last claimed desk tick consumed.
+    pub desk_stale: bool,
+    /// The latest claimed desk-stale tick: spacing only, never the
+    /// acknowledgement boundary.
+    pub persisted_desk_tick: Option<SystemTime>,
 }
 
 impl SweepObservation {
@@ -3490,7 +3505,17 @@ impl SweepObservation {
             overview_changed: true,
             persisted_outstanding_since: None,
             persisted_last_delivery: None,
+            desk_stale: false,
+            persisted_desk_tick: None,
         }
+    }
+
+    /// Add the desk-stale reading and the latest claimed tick.
+    #[must_use]
+    pub const fn with_desk(mut self, stale: bool, last_tick: Option<SystemTime>) -> Self {
+        self.desk_stale = stale;
+        self.persisted_desk_tick = last_tick;
+        self
     }
 
     /// Add the change gate and durable cadence checkpoint used by the fleet
@@ -3613,18 +3638,28 @@ pub fn sweep_step(
     }
 
     // 3.
-    let last_sweep = match (prior.last_sweep, seen.persisted_last_delivery) {
-        (Some(memory), Some(persisted)) => Some(memory.max(persisted)),
-        (memory, persisted) => memory.or(persisted),
-    };
+    // The overview and the desk tick share one spacing: either delivery holds
+    // the other, and a tick moves only its own stamp.
+    let last_sweep = [
+        prior.last_sweep,
+        seen.persisted_last_delivery,
+        seen.persisted_desk_tick,
+    ]
+    .into_iter()
+    .flatten()
+    .max();
     let due = last_sweep.is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
     let holding_for_work = seen
         .working_since
         .is_some_and(|at| secs_between(seen.now, at) < OVERVIEW_HOLD_WHILE_WORKING_SECS);
-    if due && seen.overview_changed && !holding_for_work {
+    if due && !holding_for_work {
         // A held overview is not an attempted delivery: no booking, hash or
         // spacing clock advances, so the next cycle sees the same change.
-        effects.push(SweepEffect::FireSweepNudge);
+        if seen.overview_changed {
+            effects.push(SweepEffect::FireSweepNudge);
+        } else if seen.desk_stale {
+            effects.push(SweepEffect::FireDeskTick);
+        }
     }
 
     Some(SweepAccounting {
@@ -6374,6 +6409,7 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         for action in [
             "nudge",
             super::SWEEP_NUDGE_ACTION,
+            super::DESK_TICK_ACTION,
             "done-challenge",
             "wait-challenge",
             crate::quota::action::ADVISORY,
@@ -7221,6 +7257,72 @@ tail line
         assert!(
             !booked.effects.contains(&SweepEffect::FireSweepNudge),
             "elapsed cadence alone is not a reason to wake the seat"
+        );
+    }
+
+    #[test]
+    fn the_desk_tick_and_the_overview_share_one_spacing_and_one_hold() {
+        let k = knobs();
+        let turns = |seen: &SweepObservation| -> Vec<SweepEffect> {
+            sweep_step(&SweepState::default(), seen, &k)
+                .expect("enabled")
+                .effects
+                .into_iter()
+                .filter(|effect| {
+                    matches!(
+                        effect,
+                        SweepEffect::FireSweepNudge | SweepEffect::FireDeskTick
+                    )
+                })
+                .collect()
+        };
+        let quiet = |now| seen(now, Some(now), &k).with_overview(false, Some(at(0)), Some(at(0)));
+        let changed = |now| seen(now, Some(now), &k).with_overview(true, Some(at(0)), Some(at(0)));
+
+        assert_eq!(
+            turns(&quiet(300).with_desk(true, None)),
+            [SweepEffect::FireDeskTick]
+        );
+        assert!(
+            turns(&quiet(299).with_desk(true, None)).is_empty(),
+            "a recent overview holds the tick"
+        );
+        assert!(turns(&quiet(900).with_desk(false, None)).is_empty());
+        assert_eq!(
+            turns(&changed(300).with_desk(true, None)),
+            [SweepEffect::FireSweepNudge],
+            "one overview turn carries a due desk line"
+        );
+
+        let after_tick = changed(400).with_desk(false, Some(at(200)));
+        let booked = sweep_step(&SweepState::default(), &after_tick, &k).expect("enabled");
+        assert!(
+            turns(&after_tick).is_empty(),
+            "a recent tick holds the overview"
+        );
+        assert_eq!(
+            booked.next.last_delivered,
+            Some(at(0)),
+            "a tick is no acknowledgement boundary"
+        );
+        assert_eq!(
+            turns(&changed(500).with_desk(false, Some(at(200)))),
+            [SweepEffect::FireSweepNudge]
+        );
+
+        let working = |now| {
+            quiet(now)
+                .with_desk(true, None)
+                .with_working_since(Some(at(250)))
+        };
+        assert!(
+            turns(&working(849)).is_empty(),
+            "declared work holds the tick"
+        );
+        assert_eq!(
+            turns(&working(850)),
+            [SweepEffect::FireDeskTick],
+            "the tick stays due once the hold expires"
         );
     }
 

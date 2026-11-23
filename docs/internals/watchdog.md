@@ -311,6 +311,33 @@ acknowledgement. If a human instruction is already in progress, the seat
 finishes it before acknowledging; an overview is a notification, never a
 replacement task. The seat never runs `ae brief --all` on a timer.
 
+**Desk-stale tick.** The same fleet read also judges the orchestrator's manual
+desk record (`desktick`), which the watchdog never writes. The desk is stale
+when it is valid, strictly older than 300 seconds, and a running session's
+journal holds a relevant change strictly newer than its `updated` line and
+past the position the last tick consumed. A relevant change is a seat's
+declaration into `waiting-user`, `blocked` or `done` that differs from that
+seat incarnation's previous one, or a request to a human sink that opens or
+closes; the orchestrator main's own `done`, its overview acknowledgement, is
+none. The tick shares the overview's spacing and working hold in both
+directions. With a changed overview due, one `Desk stale:` line rides before
+the overview trailer and the overview hash stays its own; otherwise the tick is
+a standalone `desk-tick` turn that moves no overview hash, acknowledgement
+deadline or overview delivery time. An owed reseat continuation carries a
+changed overview and its `Desk stale:` line together in its one turn, and
+defers a desk-only tick to the next free cycle. An overview turn that carries
+no desk claim rechecks the two spacing stamps its observation read before it
+pastes, and a tick or overview delivered since holds it. The checkpoint and
+its locked operations live in `watchdog_state` (layer 3); `monitor` re-exports
+the document. Before its submit the watchdog stores the claim in
+`meta-agent-state.json`
+(`desk_tick_last_at` and, per session uuid or a legacy record's durable
+directory, the journal position just past the newest change the tick
+represents) by a locked compare-and-swap over the claim
+its fresh reading saw. Only a typed pre-paste refusal of the send helper puts
+the earlier claim back, and only over this claim; any other outcome keeps it,
+so a restart or an unrelated append never repeats the same change.
+
 ## Per-cycle state machine
 
 Before walking panes, a due quota pass refreshes the session-local advisory state — unless the

@@ -1,5 +1,6 @@
 //! The launch-bound continuation of a carried or kept automatic reseat.
 
+use super::cycle_apply::DeskClaim;
 use super::{ACTOR, Accounting, Acting, Cycle, Effect, Event, Journal, Observation, PaneState};
 use crate::autoreseat::{Fate, NOTICE_ACTION, leg};
 use crate::meta::{
@@ -18,7 +19,13 @@ pub(super) fn book(
 ) {
     let mut overview = false;
     if owed.phase == ContinuationPhase::Owed {
-        overview = booked.effects.contains(&Effect::SweepNudge);
+        // Only a changed overview rides in the continuation. A desk-stale
+        // tick waits for a later free cycle, its change still unconsumed.
+        overview = booked.effects.contains(&Effect::SweepNudge)
+            && seen
+                .sweep
+                .as_ref()
+                .is_some_and(|sweep| sweep.overview_changed);
         booked
             .effects
             .retain(|effect| *effect != Effect::SweepNudge);
@@ -74,13 +81,37 @@ impl Cycle<'_> {
             }
             return Ok(());
         }
-        let overview = on.overview.filter(|_| overview);
-        if let Some(overview) = overview {
-            body.push_str("\n\n");
-            body.push_str(&overview.body());
-        }
+        let mut overview = on.overview.filter(|_| overview);
         if !self.advance_continuation(owed, ContinuationStep::Claim, err)? {
             return Ok(());
+        }
+        // A due desk-stale line rides only with a changed overview, claimed
+        // after the continuation's own claim and settled by the same outcome.
+        // A tick or overview landed since the observation holds the joined
+        // overview; the continuation still goes with its own text.
+        let desk = match (overview, state.desk.take()) {
+            (Some(_), Some(booking)) => match self.claim_desk(booking, on.slot, err)? {
+                DeskClaim::Claimed(previous, claim) => Some((previous, claim)),
+                DeskClaim::Skipped => None,
+                DeskClaim::Held => {
+                    overview = None;
+                    None
+                }
+            },
+            _ => None,
+        };
+        // A joined overview without a desk claim rechecks the shared spacing
+        // it was booked under; the continuation goes either way.
+        if overview.is_some() && desk.is_none() && !self.spacing_unmoved(on, err)? {
+            overview = None;
+        }
+        if let Some(overview) = overview {
+            body.push_str("\n\n");
+            body.push_str(&if desk.is_some() {
+                overview.body_with(crate::desktick::LINE)
+            } else {
+                overview.body()
+            });
         }
         let mut claimed = owed.clone();
         claimed.phase = ContinuationPhase::Claimed;
@@ -92,6 +123,9 @@ impl Cycle<'_> {
             Some(&claimed.launch),
             Some(on.slot),
         );
+        if let Some((previous, claim)) = &desk {
+            self.settle_desk(previous, claim, &delivery, err)?;
+        }
         let events = super::read_events(self.meta_dir);
         let new_events = events.get(on.events.len()..).unwrap_or_default();
         let delivered =

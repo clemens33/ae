@@ -10788,6 +10788,122 @@ fn the_sweep_prompt_books_its_own_action_not_the_idle_nudge() {
     assert_eq!(actions, [crate::watchdog::SWEEP_NUDGE_ACTION]);
 }
 
+/// An overview booked without a desk claim rechecks the shared spacing it was
+/// booked under: a desk tick or an overview another writer delivered after
+/// the observation holds it, and nothing is pasted.
+#[test]
+fn an_overview_without_a_desk_claim_holds_when_a_delivery_landed_since_its_observation() {
+    let scratch = Scratch::new("sweep-spacing-moved");
+    let helper = journaling_helper(&scratch.0);
+    let server = ServerId::Ambient;
+    let reading = OverviewReading {
+        rendered: "WORKING\n  alpha lead ship".to_owned(),
+        hash: "0123456789abcdef".to_owned(),
+        checkpoint: crate::watchdog_state::OverviewCheckpoint {
+            hash: None,
+            outstanding_since: None,
+            last_delivered_at: None,
+        },
+    };
+    let mut observed = seen();
+    observed.sweep = Some(SweepObservation::new(at(0), None));
+    let on = super::Acting {
+        agent: "lead",
+        slot: "main",
+        pane: "%0",
+        seen: &observed,
+        events: &[],
+        overview: Some(&reading),
+    };
+    let cycle = demo_cycle(&scratch.0, &helper, &server);
+    crate::watchdog_state::record_overview_delivery(cycle.meta_dir, "fedcba9876543210", 5, 5)
+        .expect("another writer delivered an overview after the observation");
+    let mut err = Vec::new();
+    cycle
+        .sweep_nudge(&on, &mut PaneState::default(), &mut err)
+        .expect("the held turn is not an error");
+    assert!(booked(&scratch.0).is_empty(), "{:?}", booked(&scratch.0));
+    assert!(
+        String::from_utf8_lossy(&err).contains("held"),
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+}
+
+/// The same recheck guards an overview joined to an owed reseat
+/// continuation: a delivery landed since the observation drops the overview,
+/// and the continuation still goes with its own text alone.
+#[test]
+fn a_continuation_drops_its_joined_overview_when_a_delivery_landed_since_its_observation() {
+    use std::os::unix::fs::PermissionsExt;
+    const LAUNCH: &str = "11111111-1111-4111-8111-111111111111";
+    const FLEET: &str = "WORKING\n  alpha lead ship";
+    let scratch = Scratch::new("continuation-spacing-moved");
+    let dir = &scratch.0;
+    std::fs::write(
+        dir.join("meta"),
+        format!(
+            "session=demo\nseat.main=orchestrator\nagent_bin.main=claude\n\
+             launch_id.main={LAUNCH}\nharness_session.main={LAUNCH}\nmeta_agent=true\n\
+             reseat_continuation.main=owed:kept:{LAUNCH}\n"
+        ),
+    )
+    .expect("an owed continuation");
+    let send = dir.join(super::HELPER_NAME);
+    std::fs::write(
+        &send,
+        "#!/bin/sh\ncd \"$(dirname \"$0\")\"\nprintf '%s' \"$2\" > body\n\
+         printf '{\"ts\":\"2026-11-23T06:00:00Z\",\"actor\":\"watchdog\",\"action\":\"%s\",\"target\":\"%s\",\"summary\":\"%s\"}\\n' \
+         \"$_AE_EVENT_ACTION\" \"$1\" \"$_AE_EVENT_SUMMARY\" >> events.jsonl\n",
+    )
+    .expect("the body-keeping helper");
+    std::fs::set_permissions(&send, std::fs::Permissions::from_mode(0o755)).expect("exec");
+    let helper = SendHelper::for_session(dir);
+    let server = ServerId::Ambient;
+    let mut cycle = demo_cycle(dir, &helper, &server);
+    cycle.launch_ids = vec![("main".to_owned(), super::SeatLaunch::Id(LAUNCH.to_owned()))];
+    let owed = cycle
+        .read_reseat_continuation()
+        .expect("the continuation is owed to this launch");
+    let reading = OverviewReading {
+        rendered: FLEET.to_owned(),
+        hash: "0123456789abcdef".to_owned(),
+        checkpoint: crate::watchdog_state::OverviewCheckpoint {
+            hash: None,
+            outstanding_since: None,
+            last_delivered_at: None,
+        },
+    };
+    let mut observed = seen();
+    observed.sweep = Some(SweepObservation::new(at(0), None));
+    let on = super::Acting {
+        agent: "orchestrator",
+        slot: "main",
+        pane: "%0",
+        seen: &observed,
+        events: &[],
+        overview: Some(&reading),
+    };
+    crate::watchdog_state::record_overview_delivery(dir, "fedcba9876543210", 5, 5)
+        .expect("another writer delivered an overview after the observation");
+    let mut err = Vec::new();
+    cycle
+        .reseat_continuation(&owed, true, &on, &mut PaneState::default(), &mut err)
+        .expect("the continuation turn");
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test code reads the body its own fake helper wrote"
+    )]
+    let body = std::fs::read_to_string(dir.join("body")).expect("the continuation was sent");
+    assert!(body.contains("Restore your state first"), "{body}");
+    assert!(!body.contains(FLEET), "{body}");
+    assert!(
+        String::from_utf8_lossy(&err).contains("held"),
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+}
+
 /// The daemon's challenge formatter, read back by the ONE grammar: what
 /// `apply` hands the helper for each kind is what the folds classify.
 #[test]
