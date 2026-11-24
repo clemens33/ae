@@ -321,13 +321,13 @@ struct Warned {
 /// not: a permission list outside the measured grammar, a source row that
 /// loads more than `.claude/settings.json`, or rows never captured together.
 fn refusal(warned: Warned, home: bool, warnings: TrustWarnings, settings: &str) -> Option<String> {
-    if !warned.plain {
-        Some("the permission list is not the measured list".to_owned())
-    } else if !warnings.answers.iter().any(|known| known.loads == settings) {
+    if !warnings.answers.iter().any(|known| known.loads == settings) {
         Some(format!(
             "\"{}\" loads more than .claude/settings.json",
             crate::event_text::clip_head(settings, 100)
         ))
+    } else if !warned.plain {
+        Some("the permission list is not the measured list".to_owned())
     } else if !warnings.answers.iter().any(|known| {
         known.home == home
             && known.permissions == warned.permissions
@@ -345,14 +345,18 @@ fn refusal(warned: Warned, home: bool, warnings: TrustWarnings, settings: &str) 
 /// (`TrustWarnings::wraps`), both printable-ASCII fragments (lead ruling
 /// 2026-11-24). The result must still equal the seat's folder canonically
 /// before any key; any other join is named.
-fn drawn_folder(rows: &[&str], width: usize, wraps: &[(usize, usize)]) -> Option<String> {
+fn drawn_folder<'a>(rows: &[&'a str], width: usize, wraps: &[(usize, usize)]) -> Option<String> {
     match rows {
         [row] => Some(row.trim().to_owned()),
         [head, tail] => {
-            // Printable ASCII only: terminal-safe, and one byte is one cell,
-            // so the measured column is the drawn column. The second row
-            // fits within the same column, or claude would wrap it again.
-            let (head, tail) = (head.trim(), tail.trim());
+            // The captured one-space indent, then printable ASCII only:
+            // terminal-safe, and one byte is one cell, so the measured column
+            // is the drawn column. The second row fits within the same column,
+            // or claude would wrap it again.
+            let indented = |row: &'a str| row.trim_end().strip_prefix(' ');
+            let (Some(head), Some(tail)) = (indented(head), indented(tail)) else {
+                return None;
+            };
             let fragment =
                 |row: &str| !row.is_empty() && row.bytes().all(|byte| byte.is_ascii_graphic());
             (fragment(head)
