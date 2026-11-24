@@ -958,8 +958,9 @@ seat's persisted observed model or effort choice stands), `pair-provider` (no
 usable candidate keeps the seat's review pair on two proven providers),
 `pair-changed` (under the lifecycle lock the chosen destination no longer does),
 `floor-changed` (under the lifecycle lock the lead floor no longer lets the chosen
-destination pass), `orchestrator-changed` (under the lifecycle lock `auto_reseat_orchestrator`,
-read again, no longer lets the chosen destination pass the orchestrator) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
+destination pass), `orchestrator-changed` (under the lifecycle lock `auto_reseat` or
+`auto_reseat_orchestrator`, read again, no longer lets the chosen destination
+pass the orchestrator) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
 `lock`, `observed-choice`, `pair-changed`, `floor-changed` and `orchestrator-changed` are transient classes: their record
 is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
 
@@ -1025,17 +1026,20 @@ the orchestrator. It only narrows `auto_reseat = all`.
   passes only when its profile pins the byte-equal model id of the seat's
   origin, on the same tool, and the id names a version. The origin
   (`autoreseat::orchestrator_origin`, `leg::orchestrator_stance`) is the seat's
-  launch record (`launched.<slot>`, bound to the current launch id when the seat records one) checked
-  against the live pane: a tool whose footer draws exact ids (`PinMatch::Exact`)
-  shows its own id, a claude label that contradicts the record, an alias-only
-  pin or a seat nothing proves is unproven, and an unproven origin refuses every
-  candidate. The family rule (`model_drift::satisfies`) only tells a label from a
+  launch record (`launched.<slot>`, bound to the CURRENT launch id: a seat that
+  records none has no origin) checked against the live pane: a tool whose footer
+  draws exact ids (`PinMatch::Exact`) shows its own id, a claude label that
+  contradicts the record, a pin that names no version, a profile pin read from
+  the config file (it may have been edited since the launch) and a seat nothing
+  proves are unproven, and an unproven origin refuses every candidate. The family rule (`model_drift::satisfies`) only tells a label from a
   contradiction, never qualifies a model. A refusal names the candidate's model
   and, for a declared row, the `[auto_reseat]` row. The return home follows the
   same rule.
-- `off` stamps every candidate refused; `on` stamps nothing.
+- `off` stamps every candidate refused; `on` stamps nothing and still gets the
+  one owner notice when its due move yields none.
 - One owner notice per episode, whatever refused the move
-  (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`). When a
+  (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`; the leg's own
+  model-guard refusals and the late hold use the same keyed receipt). When a
   move is due (a usage limit past its grace, or the account at the threshold)
   and the policy produces none (`off`, nothing configured, an unproven model,
   only other models, a same-model candidate with no room, a request in flight,

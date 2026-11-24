@@ -328,14 +328,14 @@ pub(crate) fn live_capture(dir: &Path, session: &str, agent: &str) -> Option<Str
 
 // ORCHESTRATOR MODEL GUARD (orchpin): the stance `auto_reseat_orchestrator`
 // gives the orchestrator's main seat, judged from the facts that prove its
-// model: its launch record (bound to its CURRENT launch), the recorded profile
-// pin, the model its live pane draws, and a standing observed model change.
+// model: its launch record, bound to its CURRENT launch id (a seat that records
+// none has no origin evidence), and the model its live pane draws.
 // `None` under `on`: the seat is judged like every main seat.
 pub(crate) fn orchestrator_stance(
     settings: &Settings,
     bytes: &[u8],
     seat: &crate::meta::RosterEntry,
-    (dir, capture): (&Path, Option<&str>),
+    capture: Option<&str>,
 ) -> Option<super::Stance> {
     match settings.orchestrator.mode {
         super::OrchestratorMove::On => None,
@@ -347,11 +347,8 @@ pub(crate) fn orchestrator_stance(
             let launch = meta.launch_id(&seat.slot);
             let launched = match crate::meta::launched(bytes, &seat.slot) {
                 crate::meta::Rows::Valid(base)
-                    // A seat with no current launch id has nothing to bind to:
-                    // the reseat's own guard refuses every automatic move of an
-                    // orchestrator that records no launch, with its own words.
-                    if launch.is_none()
-                        || base
+                    if launch.is_some()
+                        && base
                             .start
                             .strip_prefix(seat.slot.as_str())
                             .and_then(|rest| rest.strip_prefix(':'))
@@ -363,28 +360,26 @@ pub(crate) fn orchestrator_stance(
                 }
                 _ => None,
             };
-            let profile_pin = seat
-                .profile
-                .as_deref()
-                .and_then(|profile| crate::reseat::resolved(dir, profile))
-                .and_then(|found| found.pin);
             let drawn =
                 capture.and_then(|text| crate::harness_state::observed_identity(text, tool).model);
-            let drift = matches!(
-                crate::meta::observed_pair(bytes, &seat.slot),
-                crate::meta::Rows::Valid(_)
-            );
             Some(super::Stance::Keep(super::orchestrator_origin(
                 &super::OriginFacts {
                     tool,
                     launched: launched.as_deref(),
-                    profile_pin: profile_pin.as_deref(),
                     drawn: drawn.as_deref(),
-                    drift,
                 },
             )))
         }
     }
+}
+
+// ORCHESTRATOR MODEL GUARD (orchpin): whether the seat records a current launch
+// id. A seat that records none is refused by the reseat's own guard, with its
+// own words, before any model matters, so the leg does not stage a stance on it.
+pub(crate) fn records_launch(bytes: &[u8], slot: &str) -> bool {
+    crate::meta::Meta::parse(&String::from_utf8_lossy(bytes))
+        .launch_id(slot)
+        .is_some()
 }
 
 /// The candidates an orchestrator's seat may take, or the hold that keeps it
@@ -841,15 +836,16 @@ pub(crate) fn floor_changed(
 // under the session's lifecycle lock and before any stop, over `settings` (the
 // GLOBAL config, read again under that lock), `locked` (the meta read under it)
 // and `capture`, a fresh read of the seat's pane: why a move of the
-// orchestrator's main seat to `destination` no longer passes its policy, or
-// `None` when it does, the policy is `on`, or the seat is no orchestrator. A
-// policy flipped to `off`, a model proved again against the locked launch
-// record, or a profile re-pinned since the choice cannot carry the seat past
-// it. A return follows the same rule, and a manual reseat never asks.
+// orchestrator's main seat to `destination` no longer passes its rules, or
+// `None` when it does or the seat is no orchestrator. A switch flipped off or
+// to `on`, a policy flipped to `off`, a model proved again against the locked
+// launch record, or a profile re-pinned since the choice cannot carry the seat
+// past it. A seat that records no launch is the stage guard's to refuse, with
+// its own words. A return follows the same rule, and a manual reseat never asks.
 pub(crate) fn orchestrator_changed(
     settings: &Settings,
-    (dir, locked): (&Path, &[u8]),
-    slot: &str,
+    locked: &[u8],
+    (session, slot, agent): (&str, &str, &str),
     destination: &super::Model,
     capture: Option<&str>,
 ) -> Option<String> {
@@ -858,22 +854,41 @@ pub(crate) fn orchestrator_changed(
     }
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(locked));
     let row = meta.roster().iter().find(|row| row.slot == slot)?;
-    let why = match orchestrator_stance(settings, locked, row, (dir, capture))? {
-        super::Stance::Off => format!("{} is off now", super::ORCHESTRATOR_KEY),
+    let seat = Seat {
+        session,
+        slot,
+        agent,
+        profile: row.profile.as_deref().unwrap_or_default(),
+        orchestrator: true,
+    };
+    let told = |why: &str| {
+        Some(format!(
+            "auto reseat: the orchestrator rules changed before the stop: {why} — nothing was \
+             stopped"
+        ))
+    };
+    match super::eligible(settings, &seat) {
+        Ok(_) | Err(Ineligible::Unmapped) => {}
+        Err(why) => return told(ineligible_summary(why).trim_start_matches("held: ")),
+    }
+    if !records_launch(locked, slot) {
+        return None;
+    }
+    match orchestrator_stance(settings, locked, row, capture)? {
+        super::Stance::Off => told(&format!("{} is off now", super::ORCHESTRATOR_KEY)),
         super::Stance::Keep(super::Origin::Unproven(why)) => {
-            format!("its running model is no longer proven ({why})")
+            told(&format!("its running model is no longer proven ({why})"))
         }
         super::Stance::Keep(super::Origin::Proven { id, tool }) => {
             if destination.pin.as_deref() == Some(id.as_str()) && destination.tool == Some(tool) {
                 return None;
             }
             let model = destination.pin.as_deref().unwrap_or(UNKNOWN);
-            format!("the destination model {model} is not its running model {id}")
+            told(&format!(
+                "the destination model {model} is not its running model {id}"
+            ))
         }
-    };
-    Some(format!(
-        "auto reseat: the orchestrator policy changed before the stop: {why} — nothing was stopped"
-    ))
+    }
 }
 
 /// The model a resolved command pins and the tool that reads it; no pin when
@@ -1773,11 +1788,12 @@ pub(crate) fn run(
     let orchestrator = crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role;
     // ORCHESTRATOR MODEL GUARD: the orchestrator main seat is judged by the stance
     // of auto_reseat_orchestrator, proved from its launch record and live pane.
-    let live = orchestrator
+    let staged = orchestrator && records_launch(&bytes, &argv.slot);
+    let live = staged
         .then(|| live_capture(dir, &argv.session, &agent))
         .flatten();
-    let stance = orchestrator
-        .then(|| orchestrator_stance(&settings, &bytes, seat, (dir, live.as_deref())))
+    let stance = staged
+        .then(|| orchestrator_stance(&settings, &bytes, seat, live.as_deref()))
         .flatten();
     let settings = settings.staged(stance);
     let asked = Seat {
@@ -1942,12 +1958,17 @@ pub(crate) fn run(
         let retell = !pair_told(&events, seat_of, class, &key, &why);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
         if retell {
-            tell(
-                &argv,
-                now,
-                told,
-                &notice(super::Ending::Refused(class, &why)),
-            );
+            if orchestrator && guard_refused(&choice) {
+                // The model guard's refusal is the one keyed notice of the episode.
+                tell_stays(dir, seat_of, argv.key, now, &why);
+            } else {
+                tell(
+                    &argv,
+                    now,
+                    told,
+                    &notice(super::Ending::Refused(class, &why)),
+                );
+            }
         }
         return Ok(code);
     };
@@ -2066,7 +2087,19 @@ pub(crate) fn run(
         Ended::Failed => notice(super::Ending::Failed(CauseClass::Other, &summary)),
     };
     if !text.is_empty() {
-        tell(&argv, now, told, &text);
+        // A hold of the orchestrator's own model guard is told through the one
+        // keyed receipt, so the daemon's notice of the same episode repeats nothing.
+        if matches!(ended, Ended::Refused(CauseClass::OrchestratorChanged)) {
+            tell_stays(
+                dir,
+                (&argv.session, &argv.slot, &agent),
+                argv.key,
+                now,
+                &summary,
+            );
+        } else {
+            tell(&argv, now, told, &text);
+        }
     }
     if let Some(pair) = collapsed {
         let ending = super::Ending::PairCollapse(pair);
@@ -2450,6 +2483,15 @@ pub(crate) fn root_refusal_told(
 /// How much of a root refusal's head [`root_refusal_told`] compares: below
 /// the room [`refused_return`] always leaves it, so the cut never decides.
 const ROOT_REFUSAL_MATCH: usize = 300;
+
+/// ORCHESTRATOR MODEL GUARD: whether the model guard refused a candidate of
+/// this choice, so its refusal is the episode's one keyed owner notice.
+pub(crate) fn guard_refused(choice: &super::Choice) -> bool {
+    choice
+        .skipped
+        .iter()
+        .any(|(_, skip)| matches!(skip, Skip::OrchestratorModel | Skip::OrchestratorOff))
+}
 
 /// ORCHESTRATOR MODEL GUARD: what a choice with no pick passed over, and why.
 pub(crate) fn passed_over_words(choice: &super::Choice) -> String {
@@ -2918,9 +2960,8 @@ pub(crate) fn trigger(
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
     // ORCHESTRATOR MODEL GUARD: the same stance the leg will judge it by.
-    let stance = seat
-        .orchestrator
-        .then(|| orchestrator_stance(&settings, &bytes, row, (dir, Some(text))))
+    let stance = (seat.orchestrator && records_launch(&bytes, slot))
+        .then(|| orchestrator_stance(&settings, &bytes, row, Some(text)))
         .flatten();
     let settings = settings.staged(stance);
     let pin = crate::reseat::resolved(dir, &profile).and_then(|found| found.pin);

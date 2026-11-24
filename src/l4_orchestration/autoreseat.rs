@@ -497,19 +497,17 @@ pub struct OriginFacts<'a> {
     pub tool: ToolKind,
     /// The model of the launch baseline bound to the seat's CURRENT launch.
     pub launched: Option<&'a str>,
-    /// The recorded profile's model flag value.
-    pub profile_pin: Option<&'a str>,
     /// The model the live pane draws, where it draws one.
     pub drawn: Option<&'a str>,
-    /// An observed model change stands for the seat.
-    pub drift: bool,
 }
 
 /// The model the orchestrator runs, proved: the model a tool whose footer draws
-/// exact ids shows; otherwise the launch record, or the profile's pin when the
-/// pane draws it. A claude label that contradicts the record, a pin that names
-/// no version and a seat nothing proves are [`Origin::Unproven`]. The family
-/// rule only tells a label from a contradiction; it never qualifies a model.
+/// exact ids shows; otherwise the launch record bound to the seat's current
+/// launch. A profile's pin never proves it: the file may have been edited since
+/// the launch, and a drawn family label cannot tell two pins of one family
+/// apart. A claude label that contradicts the record, a pin that names no
+/// version and a seat nothing proves are [`Origin::Unproven`]. The family rule
+/// only tells a label from a contradiction; it never qualifies a model.
 #[must_use]
 pub fn orchestrator_origin(facts: &OriginFacts<'_>) -> Origin {
     let unproven = |why: String| Origin::Unproven(why);
@@ -520,12 +518,9 @@ pub fn orchestrator_origin(facts: &OriginFacts<'_>) -> Origin {
     let satisfied = |id: &str, drawn: &str| crate::model_drift::satisfies(id, drawn, rule);
     let id = match (rule, facts.drawn) {
         (crate::tool::PinMatch::Exact, Some(drawn)) => drawn.to_owned(),
-        _ => match (facts.launched, facts.profile_pin, facts.drawn) {
-            (Some(launched), ..) => launched.to_owned(),
-            (None, Some(pin), Some(drawn)) if !facts.drift && satisfied(pin, drawn) => {
-                pin.to_owned()
-            }
-            _ => return unproven("no launch record or live pane proves its model".to_owned()),
+        _ => match facts.launched {
+            Some(launched) => launched.to_owned(),
+            None => return unproven("no launch record or live pane proves its model".to_owned()),
         },
     };
     if rule == crate::tool::PinMatch::FamilyVersion {
@@ -3816,6 +3811,10 @@ mod start_policy_spec;
 #[cfg(test)]
 #[path = "autoreseat/leadat_tests.rs"]
 mod leadat_tests;
+
+#[cfg(test)]
+#[path = "autoreseat/orchguard_tests.rs"]
+mod orchguard_tests;
 
 #[cfg(test)]
 mod tests {

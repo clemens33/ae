@@ -2195,14 +2195,18 @@ fn prepare(
             writeln!(err, "Error: {why}")?;
             return Err(Halt::End(Ended::Refused(CauseClass::FloorChanged)));
         }
-        // THE ORCHESTRATOR'S POLICY, read again under the same lock: a policy
-        // flipped to `off`, or a model that is no longer the running one, since
-        // the choice cannot carry the orchestrator past `auto_reseat_orchestrator`.
-        let fresh = crate::transport::capture_pane(&target.server, &target.pane);
+        // THE ORCHESTRATOR'S RULES, read again under the same lock: a switch
+        // flipped away from `all`, a policy flipped to `off`, or a model that is
+        // no longer the running one, since the choice cannot carry the
+        // orchestrator past `auto_reseat_orchestrator`. Only its pane is read.
+        let fresh = (target.slot == crate::watchdog::MAIN_SLOT
+            && crate::meta::meta_agent_role(locked) == crate::meta::MetaAgentRole::Role)
+            .then(|| crate::transport::capture_pane(&target.server, &target.pane))
+            .flatten();
         if let Some(why) = crate::autoreseat::leg::orchestrator_changed(
             &global,
-            (&seat.dir, locked),
-            &target.slot,
+            locked,
+            (&ask.parsed.session, &target.slot, &target.agent),
             &destination,
             fresh.as_deref(),
         ) {
@@ -2922,9 +2926,12 @@ fn publish_move(
     }
     // A pair starts on EXACTLY the command its gate judged — the global
     // definitions, never a project overlay's redefinition of either name —
-    // as a spawn does. A bare move reads the seat as it always did.
+    // as a spawn does, and so does a guarded automatic move of the orchestrator:
+    // the model its policy gate judged is the model that starts, whatever a
+    // config edit since the stop says. A bare move reads the seat as it always did.
     ask.parsed.ended.borrow_mut().orchestrator_continuation = orchestrator_continuation;
-    let snapshot = moving.pair.is_some().then_some(moving.command.as_str());
+    let snapshot =
+        (moving.pair.is_some() || orchestrator_continuation).then_some(moving.command.as_str());
     match crate::run::read_seat(&seat.dir, &target.slot, snapshot) {
         Ok(read) => Ok(Proven {
             seat: read,
