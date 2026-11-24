@@ -206,12 +206,18 @@ impl Outside {
             .arg("-c")
             .arg(script);
         #[cfg(not(target_os = "macos"))]
-        command
-            .arg("-q")
-            .arg("-e")
-            .arg("-c")
-            .arg(script)
-            .arg("/dev/null");
+        {
+            // script(1) runs -c through $SHELL. On the hp that is fish, and
+            // fish rejects `$$`. The file is sh, so fish only sees `sh <file>`.
+            let path = server.path().join("outside.sh");
+            fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("outside script");
+            command
+                .arg("-q")
+                .arg("-e")
+                .arg("-c")
+                .arg(format!("sh {}", quote(&path)))
+                .arg("/dev/null");
+        }
         let child = command.spawn().expect("script can allocate a tty");
         Self { child, pidfile }
     }
