@@ -2,7 +2,7 @@
 //!
 //! Lead rulings (2026-11-24): attention stays `limit` at rank 3. The kind is
 //! the list cell and the journal summary. The block clears only on
-//! `ae quota clear <client>`. A latch release does not clear it.
+//! `ae quota clear client-<label>` or `ae quota clear provider-<provider>`. A latch release does not clear it.
 //!
 //! RED on `b93155785`: the new rows are unclassified and no scope prints
 //! `blocked (`. GREEN guards name a behaviour that already holds.
@@ -332,7 +332,7 @@ fn the_first_sight_journals_the_kind_once_and_a_dead_pane_still_wins() {
     for (frame, bin, prefix, reason) in [
         (
             MUSE_402,
-            "muse",
+            "client-muse",
             "vendor billing blocked",
             "Billing verification failed",
         ),
@@ -433,6 +433,7 @@ codex = codex
 emberm = muse --model muse-ember-1.0
 cpsol61h = opencode --model github-copilot/gpt-6.1-sol
 flashgo = opencode --model opencode-go/deepseek-v4-flash
+zen = opencode --model opencode/big-pickle
 bare = opencode --model glm-5
 solx = codex --model sol
 ";
@@ -479,11 +480,9 @@ impl Root {
         Self { scratch, ae_home }
     }
 
-    fn write(&self, client: &str, body: &str) {
+    fn write(&self, stem: &str, body: &str) {
         std::fs::write(
-            self.ae_home
-                .join("vendorblock")
-                .join(format!("{client}.rec")),
+            self.ae_home.join("vendorblock").join(format!("{stem}.rec")),
             body,
         )
         .expect("record");
@@ -516,7 +515,7 @@ fn quota_table(root: &Root) -> (u8, String, String) {
 fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
     let root = Root::new("show");
     root.write(
-        "muse",
+        "client-muse",
         &record(
             "muse",
             "muse",
@@ -528,7 +527,7 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         ),
     );
     root.write(
-        "github-copilot",
+        "provider-github-copilot",
         &record(
             "opencode",
             "opencode",
@@ -542,7 +541,7 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
     // A different opencode client, a future stamp, a mismatched tool and a
     // duplicate key do not become a second block.
     root.write(
-        "free",
+        "provider-opencode-go",
         &record(
             "opencode",
             "opencode",
@@ -554,10 +553,10 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         ),
     );
     root.write(
-        "codex",
+        "client-codex",
         "version=1\ntool=codex\nclient=codex\nsince=1\nsince=2\nkind=billing\nseat=x\nreason=x\n",
     );
-    let muse_path = root.ae_home.join("vendorblock/muse.rec");
+    let muse_path = root.ae_home.join("vendorblock/client-muse.rec");
     let before = std::fs::read(&muse_path).expect("record");
     let (code, out, err) = quota_table(&root);
     assert_eq!(code, 0, "{err}\n{out}");
@@ -565,18 +564,21 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         out.contains(&format!("blocked (billing since {SINCE_ISO}")),
         "{out}"
     );
-    assert!(out.contains("ae quota clear muse"), "{out}");
+    assert!(out.contains("ae quota clear client-muse"), "{out}");
     assert!(
         out.contains(&format!("blocked (account since {SINCE_ISO}")),
         "{out}"
     );
-    assert!(out.contains("ae quota clear github-copilot"), "{out}");
     assert!(
-        !out.contains("ae quota clear opencode-go"),
+        out.contains("ae quota clear provider-github-copilot"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("ae quota clear provider-opencode-go"),
         "a future stamp is not a block: {out}"
     );
     assert!(
-        !out.contains("ae quota clear codex"),
+        !out.contains("ae quota clear client-codex"),
         "a damaged record is not a block: {out}"
     );
     assert_eq!(std::fs::read(&muse_path).expect("still there"), before);
@@ -597,7 +599,7 @@ fn ae_quota(root: &Root, args: &[&str]) -> std::process::Output {
 fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
     let root = Root::new("clear");
     root.write(
-        "muse",
+        "client-muse",
         &record(
             "muse",
             "muse",
@@ -609,7 +611,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
         ),
     );
     root.write(
-        "github-copilot",
+        "provider-github-copilot",
         &record(
             "opencode",
             "opencode",
@@ -624,15 +626,32 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
     let err = String::from_utf8_lossy(&cleared.stderr);
     let out = String::from_utf8_lossy(&cleared.stdout);
     assert_eq!(cleared.status.code(), Some(0), "{err}{out}");
-    assert!(!root.ae_home.join("vendorblock/muse.rec").exists());
-    assert!(root.ae_home.join("vendorblock/github-copilot.rec").exists());
+    assert!(!root.ae_home.join("vendorblock/client-muse.rec").exists());
+    assert!(
+        root.ae_home
+            .join("vendorblock/provider-github-copilot.rec")
+            .exists()
+    );
     let again = ae_quota(&root, &["quota", "clear", "muse"]);
     let err = String::from_utf8_lossy(&again.stderr);
     let out = String::from_utf8_lossy(&again.stdout);
     assert_ne!(again.status.code(), Some(0), "{err}{out}");
     assert!(
-        format!("{err}{out}").contains("no block recorded for muse"),
+        format!("{err}{out}").contains("no block recorded for client-muse"),
         "{err}{out}"
+    );
+    let other = ae_quota(&root, &["quota", "clear", "provider-opencode"]);
+    let err = String::from_utf8_lossy(&other.stderr);
+    let out = String::from_utf8_lossy(&other.stdout);
+    assert_ne!(other.status.code(), Some(0), "{err}{out}");
+    assert!(
+        format!("{err}{out}").contains("no block recorded for provider-opencode"),
+        "provider-opencode is not client-muse: {err}{out}"
+    );
+    assert!(
+        root.ae_home
+            .join("vendorblock/provider-github-copilot.rec")
+            .exists()
     );
     let unknown = ae_quota(&root, &["quota", "clear", "nosuch"]);
     let err = String::from_utf8_lossy(&unknown.stderr);

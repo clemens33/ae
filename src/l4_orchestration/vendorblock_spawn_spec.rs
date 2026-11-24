@@ -2,10 +2,11 @@
 //!
 //! A blocked scope refuses `_spawn --using` before the session meta is read,
 //! so a missing meta never reaches tmux. The record is
-//! `<state-root>/vendorblock/<scope>.rec`. An opencode scope is the model
-//! id's provider, the text before the first `/` in `--model` or `-m`. A model
-//! id with no `/` uses the whole client, and the refusal names that client.
-//! No config grammar was added: the model id is the existing flag value.
+//! `<state-root>/vendorblock/client-<label>.rec` or
+//! `provider-<provider>.rec`. Those names never collide: a provider literally
+//! named `opencode` is not the client `opencode`. `--model` and `-m` still
+//! carry `provider/model`. A model id with no `/` uses `client-<label>`.
+//! `ae quota clear` takes that same stem.
 //!
 //! `--lead`, `--colead` and `--seat` must call this same refusal before any
 //! server effect. Launch has no pure seam that fails before tmux, so this
@@ -45,9 +46,9 @@ impl Scratch {
         Self { root }
     }
 
-    fn record(&self, client: &str, body: &str) {
+    fn record(&self, stem: &str, body: &str) {
         std::fs::write(
-            self.root.join("vendorblock").join(format!("{client}.rec")),
+            self.root.join("vendorblock").join(format!("{stem}.rec")),
             body,
         )
         .unwrap();
@@ -119,6 +120,21 @@ reason=You have exceeded your monthly quota
     )
 }
 
+fn zen_record() -> String {
+    format!(
+        "\
+version=1
+tool=opencode
+client=opencode
+provider=opencode
+since={SINCE}
+kind=account
+seat=zen-seat
+reason=You have exceeded your monthly quota
+"
+    )
+}
+
 fn spawn(root: &Path, using: &str) -> (u8, String) {
     let session = root.join("session");
     std::fs::create_dir_all(&session).unwrap();
@@ -149,8 +165,8 @@ fn spawn(root: &Path, using: &str) -> (u8, String) {
 #[test]
 fn a_blocked_client_refuses_spawn_before_the_session_exists() {
     let scratch = Scratch::new("block");
-    scratch.record("muse", &muse_record());
-    scratch.record("github-copilot", &copilot_record());
+    scratch.record("client-muse", &muse_record());
+    scratch.record("provider-github-copilot", &copilot_record());
     let (rc, err) = spawn(&scratch.root, "emberm");
     assert_ne!(rc, 0, "{err}");
     assert!(
@@ -159,7 +175,7 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear muse"), "{err}");
+    assert!(err.contains("ae quota clear client-muse"), "{err}");
     let (rc, err) = spawn(&scratch.root, "cpsol61h");
     assert_ne!(rc, 0, "{err}");
     assert!(
@@ -168,10 +184,16 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear github-copilot"), "{err}");
+    assert!(
+        err.contains("ae quota clear provider-github-copilot"),
+        "{err}"
+    );
     let (rc, err) = spawn(&scratch.root, "short");
     assert_ne!(rc, 0, "{err}");
-    assert!(err.contains("ae quota clear github-copilot"), "{err}");
+    assert!(
+        err.contains("ae quota clear provider-github-copilot"),
+        "{err}"
+    );
 }
 
 /// One opencode client carries every provider. A github-copilot block admits
@@ -180,7 +202,7 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
 #[test]
 fn a_copilot_block_does_not_stop_another_opencode_provider() {
     let scratch = Scratch::new("providers");
-    scratch.record("github-copilot", &copilot_record());
+    scratch.record("provider-github-copilot", &copilot_record());
     for using in ["flashgo", "zen", "bare", "solx"] {
         let (rc, err) = spawn(&scratch.root, using);
         assert_ne!(rc, 0, "{using}: a missing session still refuses");
@@ -194,7 +216,7 @@ fn a_copilot_block_does_not_stop_another_opencode_provider() {
         );
     }
     let fallback = Scratch::new("bare");
-    fallback.record("opencode", &client_record());
+    fallback.record("client-opencode", &client_record());
     let (rc, err) = spawn(&fallback.root, "bare");
     assert_ne!(rc, 0, "{err}");
     assert!(
@@ -203,13 +225,33 @@ fn a_copilot_block_does_not_stop_another_opencode_provider() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear opencode"), "{err}");
-    let (rc, err) = spawn(&fallback.root, "cpsol61h");
+    assert!(err.contains("ae quota clear client-opencode"), "{err}");
+    let (_, err) = spawn(&fallback.root, "cpsol61h");
     assert!(
         !err.contains("blocked ("),
         "a provider profile is not the client fallback: {err}"
     );
-    let _ = rc;
+    let (_, err) = spawn(&fallback.root, "zen");
+    assert!(
+        !err.contains("blocked ("),
+        "a slash-free block does not refuse opencode/big-pickle: {err}"
+    );
+    let zen_only = Scratch::new("zen");
+    zen_only.record("provider-opencode", &zen_record());
+    let (_, err) = spawn(&zen_only.root, "bare");
+    assert!(
+        !err.contains("blocked ("),
+        "an opencode-provider block does not refuse a slash-free model: {err}"
+    );
+    let (rc, err) = spawn(&zen_only.root, "zen");
+    assert_ne!(rc, 0, "{err}");
+    assert!(
+        err.contains(&format!(
+            "blocked (account: You have exceeded your monthly quota) since {SINCE_ISO}"
+        )),
+        "{err}"
+    );
+    assert!(err.contains("ae quota clear provider-opencode"), "{err}");
 }
 
 const MUSE_402: &str = include_str!("../../tests/fixtures/vendorblock/muse-402.reconstructed.txt");
@@ -222,7 +264,7 @@ const MUSE_HEALTHY: &str = include_str!("../../tests/fixtures/vendorblock/muse-h
 fn a_released_latch_does_not_clear_the_block_record() {
     let scratch = Scratch::new("latch");
     let meta_dir = scratch.root.join("sessions/latch");
-    let record = scratch.root.join("vendorblock/muse.rec");
+    let record = scratch.root.join("vendorblock/client-muse.rec");
     let (seen, first) = sight(&crate::watchdog_daemon::PaneState::default(), MUSE_402);
     assert!(
         format!("{:?}", first.effects).contains("BlockScope"),
@@ -232,7 +274,7 @@ fn a_released_latch_does_not_clear_the_block_record() {
     assert_eq!(first.next.limit_since, Some(10_000), "the latch is held");
     let mut state = first.next.clone();
     crate::watchdog_daemon::apply_booked(&meta_dir, &first.effects, &seen, &mut state);
-    let kept = std::fs::read(&record).expect("first sight writes vendorblock/muse.rec");
+    let kept = std::fs::read(&record).expect("first sight writes vendorblock/client-muse.rec");
     let (healthy, released) = sight(&first.next, MUSE_HEALTHY);
     assert_eq!(released.next.limit_since, None, "the latch released");
     let mut state = released.next.clone();
@@ -243,7 +285,7 @@ fn a_released_latch_does_not_clear_the_block_record() {
     );
     let (rc, err) = spawn(&scratch.root, "emberm");
     assert_ne!(rc, 0, "{err}");
-    assert!(err.contains("ae quota clear muse"), "{err}");
+    assert!(err.contains("ae quota clear client-muse"), "{err}");
     assert_eq!(
         std::fs::read(&record).expect("spawn leaves the record"),
         kept
