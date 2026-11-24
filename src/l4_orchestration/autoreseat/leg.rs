@@ -1903,7 +1903,8 @@ pub(crate) fn run(
         Err((class, summary)) => {
             let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
-            if !retold(class) {
+            // The orchestrator's holds are told by the daemon's one keyed notice.
+            if !retold(class) && !orchestrator {
                 tell(
                     &argv,
                     now,
@@ -2087,10 +2088,11 @@ pub(crate) fn run(
         Ended::Refused(class) => notice(super::Ending::Refused(class, &summary)),
         Ended::Failed => notice(super::Ending::Failed(CauseClass::Other, &summary)),
     };
-    // The late hold of the orchestrator's own rules is no notice of the leg: the
-    // daemon's next verdict tells the owner once, with the scope and the manual
-    // move, and the hold gives its attempt back.
-    if !text.is_empty() && !matches!(ended, Ended::Refused(CauseClass::OrchestratorChanged)) {
+    // A transient hold of the orchestrator is no notice of the leg: the daemon's
+    // verdict tells the owner once while it persists, with the scope and the manual
+    // move, and a hold that clears is followed by the move itself.
+    let silent = orchestrator && matches!(ended, Ended::Refused(class) if class.transient());
+    if !text.is_empty() && !silent {
         tell(&argv, now, told, &text);
     }
     if let Some(pair) = collapsed {
@@ -3110,8 +3112,10 @@ pub(crate) fn trigger(
         }
         let why = tagged(&why, found.cause());
         let code = close(&argv(found.key), &row.name, now, (HELD_ACTION, &why), err)?;
-        let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
-        tell_ending(dir, (own_session, slot, &row.name), found.key, now, &ending);
+        if !seat.orchestrator {
+            let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
+            tell_ending(dir, (own_session, slot, &row.name), found.key, now, &ending);
+        }
         return Ok(code);
     }
     match planned {

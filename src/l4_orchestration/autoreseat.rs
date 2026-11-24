@@ -1759,6 +1759,9 @@ impl Episode {
                 self.held = false;
             }
             HELD_ACTION if ours => {
+                // Only a hold that closes an OPEN attempt has an attempt to give
+                // back: the trigger's pre-admission hold opens none.
+                let was_open = self.open.is_some();
                 self.open = None;
                 self.held = true;
                 let lead = CauseClass::ObservedChoice.lead("");
@@ -1772,7 +1775,8 @@ impl Episode {
                     CauseClass::OrchestratorChanged.lead(""),
                     CauseClass::OrchestratorStays.lead(""),
                 ];
-                if self.policy_holds < MAX_POLICY_HOLDS
+                if was_open
+                    && self.policy_holds < MAX_POLICY_HOLDS
                     && event
                         .summary
                         .as_deref()

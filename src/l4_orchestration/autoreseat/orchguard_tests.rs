@@ -334,3 +334,43 @@ mod holds {
         }
     }
 }
+
+mod pre_admission {
+    //! The trigger's hold opens no attempt, so it has none to give back.
+
+    use super::*;
+    use crate::events::Event;
+    use crate::time::Timestamp;
+
+    #[test]
+    fn a_policy_hold_with_no_open_attempt_refunds_nothing() {
+        let stamp = |second: i64| Timestamp::from_epoch(1_700_000_000 + second);
+        let line = |second: i64, action: &str, summary: Option<&str>| {
+            let reference = format!(r#", "ref":"{}""#, stamp(0));
+            let summary = summary
+                .map(|text| format!(r#", "summary":"{text}""#))
+                .unwrap_or_default();
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"orchestrator"{reference}{summary}}}"#,
+                stamp(second)
+            ))
+            .expect("valid synthetic journal record")
+        };
+        let stays = CauseClass::OrchestratorStays.lead("no usable candidate");
+        let journal = [
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"limit","target":"orchestrator"}}"#,
+                stamp(0)
+            ))
+            .expect("the limit record"),
+            line(10, ATTEMPT_ACTION, None),
+            line(15, HELD_ACTION, Some("busy: held: a request is in flight")),
+            line(30, HELD_ACTION, Some(stays.as_str())),
+        ];
+        let state = episode(&journal, "s", "main", "orchestrator").expect("an open episode");
+        assert_eq!(
+            state.attempts, 1,
+            "the busy hold spent its attempt; the later pre-admission hold gave none back"
+        );
+    }
+}
