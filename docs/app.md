@@ -616,6 +616,14 @@ message ([Telegram bridge](reference/telegram.md#the-board-message)). The chat's
 of the fleet below the board: seat states, ages, reasons and open asks to you,
 computed by ae itself ([Chat](chat.md#what-it-shows)).
 
+`desk check [--all]` reads the board and the fleet and lists what ae itself owes the
+owner that no board item names: an open ask of the owner, a relay whose target
+has not answered, a seat waiting on the owner. It writes nothing. A board item
+matches only by the id it carries in its text or link, and that match is a
+hint, so a lost item shows as `unboarded` and a reworded one as `boarded
+(hint)`. A stopped, missing or unreadable target stays `unresolved coverage`,
+never answered ([Helpers](reference/helpers.md#board)).
+
 The board stands to the right of the open panel in side and full-screen modes.
 Its default width is 36 cells including its left border. It fits from 161
 columns with the default sidebar, or 76 columns in full screen. Drag its border

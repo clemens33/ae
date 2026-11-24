@@ -7,6 +7,7 @@ pub mod brief_retry;
 pub mod carry;
 pub(crate) mod compact;
 pub mod deliver;
+pub(crate) mod deskcheck;
 pub mod deskcmd;
 pub mod desklive;
 pub mod deskstore;

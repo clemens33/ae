@@ -1057,7 +1057,19 @@ fn read_back(console: &Console, id: &str) -> Result<&'static str, String> {
 
 /// The target's journal, read strictly and without a lock: bytes and records.
 fn target_journal(console: &Console) -> Result<(Vec<u8>, Vec<Event>), String> {
-    let read = store::read_source(&store::open(console.dir()).events_path());
+    strict_journal(console.dir())
+}
+
+/// The journal of the session at `dir`, read strictly and without a lock:
+/// its bytes and its records. The read `relay --status` takes of a target, and
+/// the one `desk check` takes of every running session.
+///
+/// # Errors
+///
+/// Why the journal is not whole: a node that is not a file, an unreadable or
+/// partial file, or a line that is no record.
+pub(crate) fn strict_journal(dir: &Path) -> Result<(Vec<u8>, Vec<Event>), String> {
+    let read = store::read_source(&store::open(dir).events_path());
     let bytes = match &read {
         SourceRead::Ready(bytes) => bytes.clone(),
         _ => Vec::new(),
@@ -1067,7 +1079,13 @@ fn target_journal(console: &Console) -> Result<(Vec<u8>, Vec<Event>), String> {
 
 /// The state of request `id` in the target journal `bytes` of `console`.
 fn request_in(console: &Console, bytes: &[u8], id: &str) -> &'static str {
-    let states = requests::states_in(bytes, SessionKey::new(console.name(), console.uuid()));
+    request_state(console.name(), console.uuid(), bytes, id)
+}
+
+/// The state of request `id` in the journal `bytes` of the session named
+/// `name` whose `session_id` is `uuid`: the word `relay --status` prints.
+pub(crate) fn request_state(name: &str, uuid: &str, bytes: &[u8], id: &str) -> &'static str {
+    let states = requests::states_in(bytes, SessionKey::new(name, uuid));
     let Some(request) = states.iter().find(|request| request.id == id.as_bytes()) else {
         return "absent";
     };

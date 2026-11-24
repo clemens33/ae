@@ -72,6 +72,7 @@ pub use l3_services::brief_retry;
 pub use l3_services::carry;
 pub(crate) use l3_services::compact;
 pub use l3_services::deliver;
+pub(crate) use l3_services::deskcheck;
 pub use l3_services::deskcmd;
 pub use l3_services::desklive;
 pub use l3_services::deskstore;

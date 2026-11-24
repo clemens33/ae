@@ -127,7 +127,7 @@ pub const HELPERS: [Helper; 28] = [
     },
     Helper {
         name: "desk",
-        usage: "Usage: desk show\n       desk set [<file>|-]\nShow the orchestrator board in the form `desk set` reads, or replace the whole board from a file or standard input (orchestrator seat only). A bare desk shows it.\n",
+        usage: "Usage: desk show\n       desk set [<file>|-]\n       desk check [--all]\nShow the orchestrator board in the form `desk set` reads, replace the whole board from a file or standard input (orchestrator seat only), or check it against what ae owes the owner (read-only). A bare desk shows it.\n",
         entry: crate::cli::DESK,
         prefix: &[],
     },

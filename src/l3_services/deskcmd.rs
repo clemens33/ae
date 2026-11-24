@@ -2,7 +2,9 @@
 //! orchestrator seat replace it.
 //!
 //! `desk` and `desk show` print the board in the input spelling and need no
-//! proof: they read this session's own record. `desk set [<file>|-]` replaces
+//! proof: they read this session's own record. `desk check [--all]` compares
+//! it with what ae owes the owner, read-only and also without proof
+//! ([`crate::deskcheck`]). `desk set [<file>|-]` replaces
 //! the whole board. The caller is proved to be this session's orchestrator
 //! seat BEFORE any input is read, so an ordinary caller never has a file or
 //! its standard input touched, and again under the writer lock by
@@ -14,6 +16,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crate::desk::{self as record, INPUT_CAP};
+use crate::deskcheck;
 use crate::deskstore::{self, ReadError, Rendered, render_set};
 use crate::relay::Observed;
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
@@ -31,6 +34,9 @@ enum Command<'a> {
     Show,
     /// Replace it from this file, or from standard input.
     Set(Option<&'a str>),
+    /// Compare the board with the obligations of the fleet; `all` lifts the cut
+    /// of the known-closed list.
+    Check { all: bool },
 }
 
 /// Why an argv is no command: a bare `-` is standard input, every other word
@@ -41,6 +47,8 @@ fn parse(tail: &[String]) -> Option<Command<'_>> {
         [] | ["show"] => Some(Command::Show),
         ["set"] | ["set", "-"] => Some(Command::Set(None)),
         ["set", path] => Some(Command::Set(Some(path))),
+        ["check"] => Some(Command::Check { all: false }),
+        ["check", "--all"] => Some(Command::Check { all: true }),
         _ => None,
     }
 }
@@ -126,11 +134,12 @@ pub(crate) fn run(
         None => {
             writeln!(
                 err,
-                "Usage: desk show\n       desk set [<file>|-]\nThe board replaces whole: `desk set` reads the complete board from a file or standard input."
+                "Usage: desk show\n       desk set [<file>|-]\n       desk check [--all]\nThe board replaces whole: `desk set` reads the complete board from a file or standard input."
             )?;
             return Ok(EXIT_USAGE);
         }
         Some(Command::Show) => return show(dir, out, err),
+        Some(Command::Check { all }) => return deskcheck::run(dir, all, out, err),
         Some(Command::Set(source)) => set(dir, source, observe, now, stdin),
     };
     out.write_all(rendered.stdout.as_bytes())?;
