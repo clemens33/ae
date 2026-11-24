@@ -60,12 +60,14 @@
 //! not an exemption. A fixture that needs a second TUI uses `--new` or a
 //! pane that carries the stamp. This file does not forbid that move.
 //!
-//! Typed `ae app`, plain `ae` and `ae <name>` landings are governed. A
-//! handed exec restart is governed when the lock is free. When the lock is
-//! already held, that restart keeps the handed view in memory and has the
-//! `--new` effects: no record, no `app-view` write, a TUI, and it does not
-//! focus, take over or refuse. The argv still cannot combine `--new` with
-//! `--app-view`. `tests/it/app_hint_spec.rs` takes the frozen `USAGE` text.
+//! Typed `ae app`, plain `ae` and `ae <name>` landings are governed. An
+//! exec restart keeps the pid and the start identity, so [`restart`] treats
+//! it as the same instance. When the record names that pid and that start
+//! identity, the result is [`Restart::Governed`]: the process takes the lock
+//! again and keeps the record. [`Restart::Fresh`], the `--new` effects,
+//! applies only when [`Hold::Held`] and the record does not name this
+//! process. The argv still cannot combine `--new` with `--app-view`.
+//! `tests/it/app_hint_spec.rs` takes the frozen `USAGE` text.
 //!
 //! The grammar is the space-separated `1` lines below. The request carries
 //! the target pid, the target start identity, the requester pid and the
@@ -94,8 +96,8 @@ use std::time::Duration;
 use super::cli::{ae, ae_hermetic};
 use ae::app::handover;
 use ae::app::instance::{
-    self, Ack, Caller, Doubt, Hold, Instance, Liveness, Phase, Record, Request, Server, Start,
-    Verdict,
+    self, Ack, Caller, Doubt, Hold, Instance, Liveness, Phase, Record, Request, Restart, Server,
+    Start, Verdict,
 };
 
 const IDENT: &str = "TueNov241351002026";
@@ -674,6 +676,49 @@ fn start(words: &[&str]) -> Option<Start> {
 }
 
 #[test]
+#[test]
+fn an_exec_restart_keeps_its_own_record_and_yields_only_to_another_holder() {
+    let own = Record::Parsed(placed());
+    assert_eq!(
+        instance::restart(Hold::Free, &own, PID, IDENT),
+        Restart::Governed,
+        "exec drops the lock and the same pid and start identity take it back"
+    );
+    assert_eq!(
+        instance::restart(Hold::Held, &own, PID, IDENT),
+        Restart::Governed,
+        "a record that names this process is this instance"
+    );
+    let mut other = placed();
+    other.pid = REQUESTER;
+    let other = Record::Parsed(other);
+    assert_eq!(
+        instance::restart(Hold::Held, &other, PID, IDENT),
+        Restart::Fresh,
+        "the lock is held by another pid"
+    );
+    assert_eq!(
+        instance::restart(Hold::Free, &other, PID, IDENT),
+        Restart::Governed,
+        "a free lock is not another holder, so --new does not apply"
+    );
+    let mut reused = placed();
+    reused.identity = "ReusedIdentity".to_owned();
+    assert_eq!(
+        instance::restart(Hold::Held, &Record::Parsed(reused), PID, IDENT),
+        Restart::Fresh,
+        "the same pid with another start identity is another instance"
+    );
+    assert_eq!(
+        instance::restart(Hold::Held, &Record::Damaged, PID, IDENT),
+        Restart::Fresh
+    );
+    assert_eq!(
+        instance::restart(Hold::Held, &Record::Absent, PID, IDENT),
+        Restart::Fresh
+    );
+}
+
 fn the_second_instance_flag_is_optional_and_does_not_combine_with_a_handover() {
     assert_eq!(
         start(&[]),
