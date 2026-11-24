@@ -38,6 +38,7 @@ mod app_wheel_spec;
 mod app_writer_spec;
 mod appfanout_spec;
 mod appsingle_spec;
+mod appsingle_live_spec;
 mod archive;
 mod archive_from;
 mod archive_harness_spec;
