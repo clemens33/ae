@@ -1976,7 +1976,7 @@ pub(crate) fn run(
             let code = close(&argv, &agent, now, (HELD_ACTION, &held), err)?;
             // The orchestrator's observed hold is told by the daemon's one keyed
             // notice, with its scope and the manual move.
-            if !found.choice_held && !orchestrator {
+            if tells_hold(found.choice_held, orchestrator) {
                 let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
                 tell(&argv, now, told, &notice(ending));
             }

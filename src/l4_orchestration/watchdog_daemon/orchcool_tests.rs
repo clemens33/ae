@@ -191,3 +191,23 @@ fn a_hold_the_leg_keeps_finding_is_told_once_by_count_and_never_blocks_the_retry
         }]
     );
 }
+
+#[test]
+fn an_observed_hold_carries_the_proof_that_the_launch_and_the_pane_contradict() {
+    let said = "held: observed choice Opus 5 stands — an automatic move would drop it";
+    assert_eq!(
+        super::cycle_observe::with_unproven(
+            said.to_owned(),
+            Some("the pane draws Opus 5, not claude-sonnet-5")
+        ),
+        format!(
+            "{said}; its running model is not proven (the pane draws Opus 5, not claude-sonnet-5)"
+        ),
+        "both models are named"
+    );
+    assert_eq!(
+        super::cycle_observe::with_unproven(said.to_owned(), None),
+        said,
+        "a proven model adds nothing"
+    );
+}

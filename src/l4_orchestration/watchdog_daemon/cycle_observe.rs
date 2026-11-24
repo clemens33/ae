@@ -680,6 +680,12 @@ impl Cycle<'_> {
         let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
         let auto = self.auto.seat_view(self.lead_pair, slot);
         let stance = crate::autoreseat::leg::orchestrator_stance(&auto, &bytes, row, Some(capture));
+        // A running model the launch record and the pane contradict is part of why the seat
+        // stays: the owner reads both models, not the pane alone.
+        let unproven = match &stance {
+            Some(Stance::Keep(crate::autoreseat::Origin::Unproven(why))) => Some(why.clone()),
+            _ => None,
+        };
         let off = stance == Some(Stance::Off);
         let auto = auto.staged(stance);
         let list = crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, declared);
@@ -697,7 +703,10 @@ impl Cycle<'_> {
         // `None` when a move is permitted: only the tail is then kept, for a hold the
         // leg alone finds.
         let reason: Option<String> = if let Some(hold) = &observed {
-            Some(crate::autoreseat::observed_summary(hold))
+            Some(with_unproven(
+                crate::autoreseat::observed_summary(hold),
+                unproven.as_deref(),
+            ))
         } else if list.is_empty() {
             Some(format!(
                 "nothing is configured to take it ({profile} has no candidate)"
@@ -1076,6 +1085,15 @@ impl Cycle<'_> {
             "observed max={} booked={booked}",
             max.map_or_else(|| "none".to_owned(), |value| format!("{value}"))
         )
+    }
+}
+
+/// An observed choice's hold, with the running model's proof when the launch record
+/// and the live pane contradict it: the owner reads both models.
+pub(super) fn with_unproven(said: String, unproven: Option<&str>) -> String {
+    match unproven {
+        Some(why) => format!("{said}; its running model is not proven ({why})"),
+        None => said,
     }
 }
 
