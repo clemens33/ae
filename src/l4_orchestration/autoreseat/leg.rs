@@ -3160,7 +3160,7 @@ pub(crate) fn trigger(
         }
         let why = tagged(&why, found.cause());
         let code = close(&argv(found.key), &row.name, now, (HELD_ACTION, &why), err)?;
-        if !seat.orchestrator {
+        if tells_hold(false, seat.orchestrator) {
             let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
             tell_ending(dir, (own_session, slot, &row.name), found.key, now, &ending);
         }
