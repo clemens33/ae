@@ -2199,8 +2199,7 @@ fn prepare(
         // flipped away from `all`, a policy flipped to `off`, or a model that is
         // no longer the running one, since the choice cannot carry the
         // orchestrator past `auto_reseat_orchestrator`. Only its pane is read.
-        let fresh = (target.slot == crate::watchdog::MAIN_SLOT
-            && crate::meta::meta_agent_role(locked) == crate::meta::MetaAgentRole::Role)
+        let fresh = crate::autoreseat::leg::is_orchestrator_main(locked, &target.slot)
             .then(|| crate::transport::capture_pane(&target.server, &target.pane))
             .flatten();
         if let Some(why) = crate::autoreseat::leg::orchestrator_changed(
@@ -2930,8 +2929,11 @@ fn publish_move(
     // the model its policy gate judged is the model that starts, whatever a
     // config edit since the stop says. A bare move reads the seat as it always did.
     ask.parsed.ended.borrow_mut().orchestrator_continuation = orchestrator_continuation;
-    let snapshot =
-        (moving.pair.is_some() || orchestrator_continuation).then_some(moving.command.as_str());
+    let snapshot = judged_command(
+        moving.pair.is_some(),
+        orchestrator_continuation,
+        &moving.command,
+    );
     match crate::run::read_seat(&seat.dir, &target.slot, snapshot) {
         Ok(read) => Ok(Proven {
             seat: read,
@@ -2953,6 +2955,13 @@ fn publish_move(
             Err(Halt::End(Ended::Failed))
         }
     }
+}
+
+/// The command a seat read starts on: the one the move's gate judged, for a
+/// pair and for a guarded move of the orchestrator; none for a bare move,
+/// which reads the seat as it always did.
+fn judged_command(pair: bool, orchestrator_continuation: bool, command: &str) -> Option<&str> {
+    (pair || orchestrator_continuation).then_some(command)
 }
 
 /// The pasted tool was not seen: `_run` may have fallen back before its tool
@@ -3371,6 +3380,24 @@ mod leadfloor2_locked_source_spec;
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn a_pair_and_a_guarded_orchestrator_move_each_start_on_the_command_their_gate_judged() {
+        let judged =
+            |pair, orchestrator| super::judged_command(pair, orchestrator, "claude --model m");
+        assert_eq!(judged(true, false), Some("claude --model m"), "a pair");
+        assert_eq!(
+            judged(false, true),
+            Some("claude --model m"),
+            "the orchestrator"
+        );
+        assert_eq!(judged(true, true), Some("claude --model m"), "both");
+        assert_eq!(
+            judged(false, false),
+            None,
+            "a bare move reads the seat as it always did"
+        );
+    }
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()

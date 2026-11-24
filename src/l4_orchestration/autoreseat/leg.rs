@@ -373,6 +373,19 @@ pub(crate) fn orchestrator_stance(
     }
 }
 
+// Whether the leg tells a seat's hold itself: not one it tells already (`retold`)
+// and not the orchestrator's, whose holds the daemon tells in one keyed notice.
+pub(crate) const fn tells_hold(retold: bool, orchestrator: bool) -> bool {
+    !retold && !orchestrator
+}
+
+// ORCHESTRATOR MODEL GUARD (orchpin): whether a seat is the orchestrator's main
+// seat, the only one whose pane the late gate reads and whose rules it applies.
+pub(crate) fn is_orchestrator_main(locked: &[u8], slot: &str) -> bool {
+    slot == crate::watchdog::MAIN_SLOT
+        && crate::meta::meta_agent_role(locked) == crate::meta::MetaAgentRole::Role
+}
+
 // ORCHESTRATOR MODEL GUARD (orchpin): whether the seat records a current launch
 // id. A seat that records none is refused by the reseat's own guard, with its
 // own words, before any model matters, so the leg does not stage a stance on it.
@@ -847,7 +860,7 @@ pub(crate) fn orchestrator_changed(
     destination: &super::Model,
     capture: Option<&str>,
 ) -> Option<String> {
-    if slot != "main" || crate::meta::meta_agent_role(locked) != crate::meta::MetaAgentRole::Role {
+    if !is_orchestrator_main(locked, slot) {
         return None;
     }
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(locked));
@@ -1913,7 +1926,7 @@ pub(crate) fn run(
             let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
             // The orchestrator's holds are told by the daemon's one keyed notice.
-            if !retold(class) && !orchestrator {
+            if tells_hold(retold(class), orchestrator) {
                 tell(
                     &argv,
                     now,

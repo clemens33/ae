@@ -518,3 +518,45 @@ mod persistent {
         assert_eq!(state.cooling_until(last + POLICY_HOLD_WAIT_SECS), None);
     }
 }
+
+/// The late gate's reach: only the orchestrator's MAIN seat is read and judged.
+mod orchestrator_main {
+    use super::*;
+
+    #[test]
+    fn only_the_main_seat_of_an_orchestrator_is_the_one_the_late_gate_reads() {
+        let role = b"session_id=s\nmeta_agent=true\n";
+        let plain = b"session_id=s\n";
+        let damaged = b"session_id=s\nmeta_agent=maybe\n";
+        assert!(
+            leg::is_orchestrator_main(role, "main"),
+            "the orchestrator's main"
+        );
+        assert!(
+            !leg::is_orchestrator_main(role, "w1"),
+            "a worker slot of the orchestrator's session is no orchestrator"
+        );
+        assert!(!leg::is_orchestrator_main(plain, "main"), "no role claim");
+        assert!(
+            !leg::is_orchestrator_main(damaged, "main"),
+            "a damaged claim"
+        );
+    }
+}
+
+/// Who tells a hold the leg closes: the orchestrator's is the daemon's one
+/// keyed notice, and a choice hold told before is never told again.
+mod leg_tells {
+    use super::*;
+
+    #[test]
+    fn the_leg_tells_a_hold_only_for_a_seat_that_is_no_orchestrator_and_was_not_told() {
+        assert!(leg::tells_hold(false, false), "an ordinary seat's new hold");
+        assert!(!leg::tells_hold(true, false), "a hold already told");
+        assert!(
+            !leg::tells_hold(false, true),
+            "the orchestrator's hold is the daemon's to tell"
+        );
+        assert!(!leg::tells_hold(true, true), "both");
+    }
+}
