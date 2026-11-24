@@ -138,7 +138,7 @@ fn waiting(rig: &Rig) {
             &route,
             "state",
             "waiting-user",
-            "The private fixture needs the owner's input before continuing to the next step.",
+            "The private fixture needs the owner's input before continuing with the next verification step.",
         ],
     );
     success(&out, 0);
