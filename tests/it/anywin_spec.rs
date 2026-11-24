@@ -178,7 +178,7 @@ fn controls_real_flight_holds_both_locks_then_releases_on_delivery() {
 fn two_windows_compose_without_a_lease_and_b_sends_while_a_keeps_typing() {
     let rig = Rig::new("awcompose");
     let (a, _) = rig.outside("a");
-    let (b, _) = rig.outside("b");
+    let (b, _) = rig.outside_new("b");
     compose(&rig, &a);
     rig.typed(&a, "aw-A-draft");
     assert!(is_free(&rig, WRITER), "S2 composing takes no writer lease");
@@ -205,7 +205,7 @@ fn two_windows_compose_without_a_lease_and_b_sends_while_a_keeps_typing() {
 fn b_composes_during_a_flight_refuses_at_once_keeps_text_and_enter_retries() {
     let rig = Rig::new("awflight");
     let (a, _) = rig.outside("a");
-    let (b, _) = rig.outside("b");
+    let (b, _) = rig.outside_new("b");
     compose(&rig, &a);
     let held = flight(&rig, &a, "aw-flight-A");
     compose(&rig, &b);
@@ -312,7 +312,7 @@ fn owner_chat_refuses_send_and_close_during_an_app_flight_then_sends() {
 fn close_in_another_window_closes_the_global_newest_ask_and_both_lanes_name_it() {
     let rig = Rig::new("awclose");
     let (a, _) = rig.outside("a");
-    let (b, _) = rig.outside("b");
+    let (b, _) = rig.outside_new("b");
     compose(&rig, &a);
     rig.typed(&a, "aw-older-question");
     rig.key(&a, "Enter");
@@ -352,7 +352,7 @@ fn close_in_another_window_closes_the_global_newest_ask_and_both_lanes_name_it()
 fn five_open_is_session_wide_across_both_composers_and_close_reopens_capacity() {
     let rig = Rig::new("awcap");
     let (a, _) = rig.outside("a");
-    let (b, _) = rig.outside("b");
+    let (b, _) = rig.outside_new("b");
     compose(&rig, &a);
     compose(&rig, &b);
     for at in 1..=5 {
@@ -386,7 +386,7 @@ fn every_window_reproves_its_original_incarnation_pair_and_recorded_server_at_su
     ] {
         let rig = Rig::new(tag);
         let (a, ga) = rig.outside("a");
-        let (b, gb) = rig.outside("b");
+        let (b, gb) = rig.outside_new("b");
         compose(&rig, &a);
         compose(&rig, &b);
         rig.typed(&a, "aw-stale-A");

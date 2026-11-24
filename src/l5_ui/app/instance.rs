@@ -624,7 +624,9 @@ pub fn parse_start(tail: &[String]) -> Option<Start> {
 pub(super) enum Entry {
     /// The app holds the lock and the record: it is the instance.
     Hold(Guard),
-    /// A session's chat window: today's app, with no lock and no record.
+    /// A session's chat window, or an app whose state root does not exist yet
+    /// (no app can have held a record there): today's app, with no lock and
+    /// no record.
     Exempt,
     /// `--new`, or an exec restart that found another app holding the record:
     /// an app that holds nothing and writes no saved view.
@@ -938,7 +940,16 @@ pub(super) fn enter(
     asked: &Asked<'_>,
     err: &mut impl Write,
 ) -> crate::error::Result<Entry> {
-    let here = Here::read();
+    enter_at(root, asked, &Here::read(), err)
+}
+
+/// [`enter`] for a caller whose place is already read.
+fn enter_at(
+    root: &Path,
+    asked: &Asked<'_>,
+    here: &Here,
+    err: &mut impl Write,
+) -> crate::error::Result<Entry> {
     if let Some((server, pane)) = here.tmux() {
         match transport::observe_pane_console(server, pane) {
             Some(stamp) if stamp.is_empty() => {}
@@ -952,6 +963,12 @@ pub(super) fn enter(
     let lock = root.join(LOCK);
     if !asked.terminal && matches!(store::source_presence(&lock), SourcePresence::Absent) {
         return Ok(Entry::NoTerminal);
+    }
+    if matches!(store::source_presence(root), SourcePresence::Absent) {
+        // A first start on a machine that has never made its state root: no
+        // app can have held a record there, and the lock file has no
+        // directory to live in. Nothing to protect, nothing to take over.
+        return Ok(Entry::Exempt);
     }
     let (mut file, mut hold) = try_lock(&lock);
     if asked.handed {
@@ -979,12 +996,12 @@ pub(super) fn enter(
         }
     }
     match (file, hold) {
-        (Some(file), _) => entered_free(file, root, asked, &here, err),
+        (Some(file), _) => entered_free(file, root, asked, here, err),
         (None, Hold::Unreadable) => {
             say(err, &doubt_line(Doubt::Unreadable, 0))?;
             Ok(Entry::Exit(asked.refused))
         }
-        (None, _) => entered_held(root, asked, &here, err),
+        (None, _) => entered_held(root, asked, here, err),
     }
 }
 
@@ -1348,6 +1365,46 @@ mod tests {
         guard.born -= SWEEP + TICK;
         assert!(!guard.poll(guard.polled + TICK * 2));
         assert!(!present(&root, ACK), "swept once the grace has passed");
+    }
+
+    #[test]
+    fn a_start_with_no_state_root_yet_is_todays_app_and_a_root_that_is_no_directory_is_doubt() {
+        let scratch = Scratch::new();
+        let asked = Asked {
+            home: None,
+            handed: false,
+            terminal: true,
+            refused: 9,
+        };
+        // A machine that never made its state root: no app held a record there.
+        let absent = scratch.0.join("never-made");
+        let mut err = Vec::new();
+        assert!(matches!(
+            enter_at(&absent, &asked, &nowhere(), &mut err),
+            Ok(Entry::Exempt)
+        ));
+        assert!(err.is_empty(), "a first start says nothing");
+        assert!(
+            matches!(store::source_presence(&absent), SourcePresence::Absent),
+            "and makes no root of its own"
+        );
+        // Something that is no directory is not "no root": it is doubt.
+        let file = scratch.0.join("a-file");
+        std::fs::write(&file, b"x").expect("a file where the root should be");
+        let mut err = Vec::new();
+        assert!(matches!(
+            enter_at(&file, &asked, &nowhere(), &mut err),
+            Ok(Entry::Exit(9))
+        ));
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            doubt_line(Doubt::Unreadable, 0)
+        );
+        // A root that exists: this start takes the instance.
+        assert!(matches!(
+            enter_at(&scratch.0, &asked, &nowhere(), &mut Vec::new()),
+            Ok(Entry::Hold(_))
+        ));
     }
 
     #[test]

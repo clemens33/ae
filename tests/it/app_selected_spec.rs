@@ -265,7 +265,17 @@ impl Rig {
         self.app_count(label, home, 2)
     }
 
+    /// One more app on the same home: `--new`, so it neither takes the running
+    /// app's record nor takes the app over.
+    fn app_new(&self, label: &str, home: bool) -> (String, PathBuf) {
+        self.app_started(label, home, 2, true)
+    }
+
     fn app_count(&self, label: &str, home: bool, count: usize) -> (String, PathBuf) {
+        self.app_started(label, home, count, false)
+    }
+
+    fn app_started(&self, label: &str, home: bool, count: usize, fresh: bool) -> (String, PathBuf) {
         let gates = self.root.join(format!("gates-{label}"));
         fs::create_dir(&gates).expect("app read gates");
         let mut args = vec![
@@ -295,6 +305,9 @@ impl Rig {
         ]);
         if home {
             args.push(self.s.name.clone());
+        }
+        if fresh {
+            args.push("--new".into());
         }
         let pane = self
             .tmux(
@@ -1029,7 +1042,7 @@ fn apps_on_distinct_targets_compose_freely_and_only_sending_target_chat_is_exclu
     let s_chat = rig.chat(&rig.s);
     let t_chat = rig.chat(&rig.t);
     let (p, _) = rig.app("app-s", true);
-    let (q, _) = rig.app("app-t", true);
+    let (q, _) = rig.app_new("app-t", true);
     rig.select(&q, &rig.t);
     rig.enter(&q, &rig.t, false);
     rig.enter(&p, &rig.s, true);
@@ -1399,7 +1412,7 @@ fn old_entry_text_and_enter_never_duplicate_a_stream_in_the_selected_target() {
     for split in 1..=STREAM.len() {
         let rig = Rig::new(&format!("bsstale{split}"), false);
         let (p, _) = rig.app("first", true);
-        let (q, gates) = rig.app("lagging", true);
+        let (q, gates) = rig.app_new("lagging", true);
         rig.select(&p, &rig.t);
         rig.select(&q, &rig.t);
         rig.enter(&p, &rig.t, false);

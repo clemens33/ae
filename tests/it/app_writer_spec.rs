@@ -233,9 +233,19 @@ impl Rig {
     /// A real terminal, with both caller tmux variables explicitly removed.
     /// tmux supplies only the fixture PTY; ae resolves the recorded server.
     pub(crate) fn outside(&self, name: &str) -> (String, PathBuf) {
+        self.outside_with(name, &[])
+    }
+
+    /// An outside window that is one more app on the same home: `--new`, so it
+    /// neither takes the running app's record nor takes the app over.
+    pub(crate) fn outside_new(&self, name: &str) -> (String, PathBuf) {
+        self.outside_with(name, &["--new"])
+    }
+
+    fn outside_with(&self, name: &str, extra: &[&str]) -> (String, PathBuf) {
         let gates = self.root.join(format!("gates-{name}"));
         fs::create_dir(&gates).expect("private gates");
-        let args = vec![
+        let mut args = vec![
             "new-window".to_owned(),
             "-d".into(),
             "-P".into(),
@@ -264,6 +274,7 @@ impl Rig {
             "app".into(),
             self.home.clone(),
         ];
+        args.extend(extra.iter().map(|word| (*word).to_owned()));
         let refs: Vec<_> = args.iter().map(String::as_str).collect();
         let pane = self.tmux(&refs).trim().to_owned();
         assert!(pane.starts_with('%'), "fixture app pane: {pane}");

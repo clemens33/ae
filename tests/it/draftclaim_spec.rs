@@ -284,6 +284,8 @@ impl Rig {
             env!("CARGO_BIN_EXE_ae").into(),
             "app".into(),
             self.home.clone(),
+            // Each window is one more app on the same home, not its takeover.
+            "--new".into(),
         ];
         let refs: Vec<_> = args.iter().map(String::as_str).collect();
         let pane = self.tmux(&refs).trim().to_owned();

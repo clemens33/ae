@@ -244,7 +244,7 @@ fn a_terminal_that_reports_a_zero_size_is_drawn_at_the_fallback_size() {
         let pane = window(
             &rig,
             &format!(
-                "stty {stty}; stty size > {}; exec {} app {}",
+                "stty {stty}; stty size > {}; exec {} app {} --new",
                 quote(&size.to_string_lossy()),
                 quote(env!("CARGO_BIN_EXE_ae")),
                 quote(&rig.name),

@@ -1549,7 +1549,8 @@ window and pane. A second `ae app` reads that record:
 
 A pane that carries a non-empty `@ae_console` stamp, which is a session's `chat =
 app` window, neither holds nor consults the record, so each such window keeps its
-own app. Plain `ae`, `ae <name>` and a typed `ae app` are governed. An exec restart
+own app, and so does a start on a machine that has not made its ae home yet (no
+app can have held a record there). Plain `ae`, `ae <name>` and a typed `ae app` are governed. An exec restart
 keeps its pid and start identity, so it keeps the record; one that finds another
 app holding the lock runs as `--new` does.
 
