@@ -103,8 +103,9 @@ to the first.
   topic wait until the answer.
 - **This page does nothing visible until the orchestrator's charter teaches the topic records and
   the verdict lines.** The charter is not part of `ae web`. A seat that writes `status:` or prose
-  in `state:` leaves every topic unreadable, so no topic is Quiet and the block stays empty. A
-  seat without the verdict rule reads a verdict line as a plain chat message and writes no record.
+  in `state:` leaves every topic unreadable, so no topic is Quiet: the Quiet group, the Revisit
+  line, the strip above the chat and the walk do not appear. A seat without the verdict rule reads
+  a verdict line as a plain chat message and writes no record.
 - A server receipt settles a step. `sent` and `unknown: may have landed, not resent` are final:
   the walk shows the outcome and moves on, and the end screen lists each topic. A `refused`
   receipt stays on its topic with **Try again**, which sends a new draft; the owner may edit the
