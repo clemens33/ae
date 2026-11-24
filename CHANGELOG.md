@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.116] - 2026-11-24
+- Freeze Claude home-folder trust acceptance cases
+- Freeze Claude effective HOME trust acceptance tests
+- Freeze measured Claude trust behavior from owner ruling
+- Use test failure diagnostics accepted by Clippy
+- Assert the full folder from the wrapped trust capture
+- Answer every measured Claude folder-trust block and name a differing one with its reason
+- Keep the MCP replay path within the captured rule
+- Freeze refusals for unmeasured Claude dialog shapes
+- Answer only captured Claude settings combinations, measured folder wraps and the measured permission list
+- Keep an elided permission list and an unmeasured folder wrap report-only
+- Name the disallowed source first and require the captured indent on a wrapped folder
+- Build the differing-block reason beside the menu-text cutter's named caller
+- Pin the trust detector branches the mutation run found unexercised, and read one order for naming and answering
+- Pin that a wrapped folder joins only printable-ASCII fragments
+- Pin that unmeasured folder wraps and permission lists are never answered
+- Pin the measured permission-list grammar entry by entry
+- Pin that the watchdog answers the HOME dialog again after a carried reseat into another config home
+- Limit the wrapped-folder residual to unmeasured wraps and describe the carried-reseat test as a replay
+- Pin that a trust proof covers only its own variant and warning block
+- Pin that a block the answerer declines is named with the answerer's reason
+- Match the clipped hooks paragraph in the closest-shape reason test
+- Keep the trust proof cover test in the module's one tests block
+
 ## [v2026.11.115] - 2026-11-24
 - Accept copy = worktree and warn on an unknown copy value; document the layout default as vertical
 - Freeze durable app view acceptance tests
