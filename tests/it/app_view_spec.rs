@@ -727,7 +727,13 @@ impl Rig {
             .to_owned();
         let dir = self.state.join("sessions/orchestrator");
         fs::create_dir(&dir).expect("fixture orchestrator");
-        let overlay = self.state.join("orchestrator.config");
+        // A published core derives its state root from its canonical executable
+        // path, so a real launch records the overlay under that spelling. The
+        // scratch base is `/tmp`, a link to `/private/tmp` on macOS: the seat
+        // proof is a textual match, and an uncanonical overlay is no seat there.
+        let overlay = fs::canonicalize(&self.state)
+            .expect("canonical state root")
+            .join("orchestrator.config");
         fs::write(&overlay, "[workspace]\norchestrator = true\n").expect("role overlay");
         fs::write(
             dir.join("meta"),

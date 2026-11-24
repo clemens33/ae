@@ -31,8 +31,11 @@ impl Fixture {
         ] {
             fs::create_dir_all(fixture.0.join(dir)).expect("fixture directory");
         }
-        std::os::unix::fs::symlink("/bin/true", fixture.0.join("bin/opencode"))
-            .expect("inert executable");
+        std::os::unix::fs::symlink(
+            super::ocwarn_spec::inert_true(),
+            fixture.0.join("bin/opencode"),
+        )
+        .expect("inert executable");
         fs::write(
             fixture.0.join("config"),
             format!(

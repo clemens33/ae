@@ -12,6 +12,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
+/// The real `true` both ocwarn fixtures install as `opencode`: it ignores every
+/// argv, so no script, account or network request is involved. macOS keeps it at
+/// `/usr/bin/true` and has no `/bin/true`; Linux has `/usr/bin/true`, or only
+/// `/bin/true` before the usr merge. Neither present is a panic, never a skip: a
+/// fixture without its executable would only fail `ae doctor` later, on a
+/// misleading "command not found".
+pub(crate) fn inert_true() -> PathBuf {
+    let candidates = ["/usr/bin/true", "/bin/true"];
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("no inert `true` executable at any of {candidates:?}"))
+}
+
 struct Rig(super::cli::OwnedScratch);
 
 impl Rig {
@@ -27,7 +42,7 @@ impl Rig {
             fs::create_dir_all(rig.0.join(dir)).expect("fixture directory");
         }
         // No tool script, account or network request: true ignores every argv.
-        std::os::unix::fs::symlink("/bin/true", rig.0.join("bin/opencode"))
+        std::os::unix::fs::symlink(inert_true(), rig.0.join("bin/opencode"))
             .expect("inert OpenCode substitute");
         rig.profile("", "p/m#max");
         let session = rig.session();
