@@ -135,10 +135,11 @@ pub fn collect(root: &Path, sticky: &mut Sticky) -> Column {
     column
 }
 
-/// The six groups in [`Group::ALL`] order, each with its cards by slug: the
-/// memo cards of `cards`, sorted by slug as [`topic::cards`] returns them,
-/// and one bare card for each slug a wait tags that no memo files, inserted
-/// at its place so the order the search needs holds for the next slug.
+/// The six groups in [`Group::ALL`] order, each with its cards by slug but
+/// the Quiet group, which is by review ([`topic::review_order`]): the memo
+/// cards of `cards`, sorted by slug as [`topic::cards`] returns them, and one
+/// bare card for each slug a wait tags that no memo files, inserted at its
+/// place so the order the search needs holds for the next slug.
 fn arrange(mut cards: Vec<Card>, waits: &BTreeMap<String, Vec<Wait>>) -> Vec<(Group, Vec<Card>)> {
     for slug in waits.keys() {
         if let Err(at) = cards.binary_search_by(|card| card.slug.as_str().cmp(slug)) {
@@ -154,6 +155,11 @@ fn arrange(mut cards: Vec<Card>, waits: &BTreeMap<String, Vec<Wait>>) -> Vec<(Gr
         if let Some((_, list)) = groups.iter_mut().find(|(each, _)| *each == group) {
             list.push(card);
         }
+    }
+    // Quiet topics come the oldest review first: that order is the Revisit
+    // cycle's. The other groups keep their slug order.
+    if let Some((_, quiet)) = groups.iter_mut().find(|(each, _)| *each == Group::Quiet) {
+        quiet.sort_by(topic::review_order);
     }
     groups
 }

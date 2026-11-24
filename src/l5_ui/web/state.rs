@@ -406,6 +406,8 @@ fn desk(out: &mut String, desk: &topics::Column) {
     }
     out.push_str("],\"untagged\":");
     waits(out, &desk.untagged);
+    out.push_str(",\"revisit\":");
+    revisit(out, desk);
     out.push_str(",\"gaps\":[");
     for (at, gap) in desk.gaps.iter().enumerate() {
         if at > 0 {
@@ -419,6 +421,41 @@ fn desk(out: &mut String, desk: &topics::Column) {
         "],\"skipped\":{{\"claimed\":{},\"unproven\":{},\"invalid\":{}}}}}",
         skipped.claimed, skipped.unproven, skipped.invalid
     );
+}
+
+/// The Revisit ring as a JSON array: one entry for each Quiet card, in the
+/// Quiet group's order, with its slug, title, one line, review time and the
+/// slug of the entry that follows it.
+fn revisit(out: &mut String, desk: &topics::Column) {
+    let quiet: Vec<&Card> = desk
+        .groups
+        .iter()
+        .filter(|(each, _)| *each == Group::Quiet)
+        .flat_map(|(_, cards)| cards)
+        .collect();
+    out.push('[');
+    for (at, entry) in crate::topic::revisit(&quiet).iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"slug\":");
+        label(out, &entry.slug);
+        for (name, text) in [("title", &entry.title), ("line", &entry.line)] {
+            out.push_str(",\"");
+            out.push_str(name);
+            out.push_str("\":");
+            match text {
+                Some(text) => label(out, text),
+                None => out.push_str("null"),
+            }
+        }
+        out.push_str(",\"reviewed\":");
+        label(out, &entry.reviewed);
+        out.push_str(",\"next\":");
+        label(out, &entry.next);
+        out.push('}');
+    }
+    out.push(']');
 }
 
 /// One desk row: the card's slug, title, state word, review time and waits.
@@ -473,6 +510,8 @@ fn waits(out: &mut String, waits: &[Wait]) {
 /// for a text that is no slug and for a slug no card has.
 #[must_use]
 pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
+    use std::fmt::Write as _;
+
     if !crate::topic::is_slug(slug) {
         return None;
     }
@@ -489,6 +528,20 @@ pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
     string(&mut out, group.word());
     out.push_str(",\"reviewed\":");
     label(&mut out, &card.reviewed);
+    out.push_str(",\"verdict\":");
+    match crate::topic::verdicts(&card.slug, *group) {
+        Some(lines) => {
+            out.push_str("{\"keep\":");
+            label(&mut out, &lines.keep);
+            out.push_str(",\"ask\":");
+            label(&mut out, &lines.ask);
+            out.push_str(",\"close\":");
+            // The closing line's start ends in a space the page completes.
+            string(&mut out, &lines.close);
+            let _ = write!(out, ",\"reason_max\":{}}}", crate::topic::REASON_MAX);
+        }
+        None => out.push_str("null"),
+    }
     out.push_str(",\"unreadable\":");
     match &card.unreadable {
         Some(text) => body(&mut out, text),

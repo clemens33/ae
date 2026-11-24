@@ -6,6 +6,7 @@
 //! highest-ranked row that carries it, where rank is the source's incarnation
 //! and then the row's place in its file; timestamps are shown, never ordered.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// The longest slug, in bytes (all ASCII).
@@ -441,4 +442,114 @@ pub fn group(card: &Card, waits: bool) -> Group {
         Some(State::Closed) => Group::Closed,
         None => Group::Unreadable,
     }
+}
+
+/// The longest closing reason a page may send, in Unicode scalar values. The
+/// page owns the reason's rules; the server only names the number.
+pub const REASON_MAX: usize = 200;
+
+/// What the owner decides about a topic in the walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Keep,
+    Ask,
+    Close,
+}
+
+impl Verdict {
+    /// The verdict's word in a chat line.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Ask => "ask",
+            Self::Close => "close",
+        }
+    }
+}
+
+/// The chat line of a verdict on `slug`: `#<slug> keep` and `#<slug> ask`
+/// whole, and for [`Verdict::Close`] only its start, `#<slug> close ` with
+/// its trailing space, which the page completes with the owner's reason.
+/// `None` for a text that is no slug.
+#[must_use]
+pub fn verdict_line(slug: &str, verdict: Verdict) -> Option<String> {
+    if !is_slug(slug) {
+        return None;
+    }
+    let tail = if verdict == Verdict::Close { " " } else { "" };
+    Some(format!("#{slug} {}{tail}", verdict.word()))
+}
+
+/// The three verdict lines of one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdicts {
+    pub keep: String,
+    pub ask: String,
+    /// The start of the closing line, ending in one space.
+    pub close: String,
+}
+
+/// The verdict lines of a card in `group`, or `None` when the card may not
+/// take a verdict: only Quiet, Moving and Parked cards can be kept, asked
+/// about or closed. A card with a wait is in Needs you, so a wait takes it out.
+#[must_use]
+pub fn verdicts(slug: &str, group: Group) -> Option<Verdicts> {
+    if !matches!(group, Group::Quiet | Group::Moving | Group::Parked) {
+        return None;
+    }
+    Some(Verdicts {
+        keep: verdict_line(slug, Verdict::Keep)?,
+        ask: verdict_line(slug, Verdict::Ask)?,
+        close: verdict_line(slug, Verdict::Close)?,
+    })
+}
+
+/// The order of quiet cards: the oldest review first. A review time that is
+/// no `YYYY-MM-DDTHH:MM:SSZ` (empty, or hand-edited) counts as the oldest,
+/// and equal times fall back to the slug.
+#[must_use]
+pub fn review_order(left: &Card, right: &Card) -> Ordering {
+    let time = |card: &Card| crate::time::Timestamp::parse(&card.reviewed);
+    time(left)
+        .cmp(&time(right))
+        .then_with(|| left.slug.cmp(&right.slug))
+}
+
+/// One quiet topic as the Revisit line shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revisit {
+    pub slug: String,
+    pub title: Option<String>,
+    /// The first line of the topic's next step, else its last state, else
+    /// what it is.
+    pub line: Option<String>,
+    pub reviewed: String,
+    /// The slug of the following entry; the last entry points to the first,
+    /// and a lone entry to itself.
+    pub next: String,
+}
+
+/// The Revisit entries of `quiet`, in the order given, closed into a ring by
+/// each entry's `next`.
+#[must_use]
+pub fn revisit(quiet: &[&Card]) -> Vec<Revisit> {
+    quiet
+        .iter()
+        .enumerate()
+        .map(|(at, card)| {
+            let line = [&card.next, &card.last, &card.what]
+                .into_iter()
+                .flatten()
+                .find_map(|field| field.value.lines().next().map(str::to_owned));
+            let following = quiet.get(at + 1).or(quiet.first()).unwrap_or(card);
+            Revisit {
+                slug: card.slug.clone(),
+                title: card.title.as_ref().map(|field| field.value.clone()),
+                line,
+                reviewed: card.reviewed.clone(),
+                next: following.slug.clone(),
+            }
+        })
+        .collect()
 }
