@@ -1317,6 +1317,7 @@ fn agent_entries(
                     }),
                 model_drift,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: read.is_some_and(|read| {
                     unreachable_standing(
                         &read.events,
@@ -1360,6 +1361,22 @@ fn agent_entries(
                 && read.is_some_and(|read| {
                     crate::autoreseat::episode(&read.events, session, &slot.slot, &reference)
                         .is_some_and(|found| found.terminal.is_none() && found.open.is_some())
+                });
+            // The kind of the same `limit` record the standing reason reads:
+            // its summary head says whether the vendor refused the account.
+            entry.block = read
+                .filter(|_| entry.reason == Some(Reason::Limit))
+                .and_then(|read| {
+                    let (at, reason) = alert_record_since_in(
+                        &read.events,
+                        session,
+                        &slot.slot,
+                        &reference,
+                        started_epoch,
+                    )?;
+                    (reason == Reason::Limit)
+                        .then(|| crate::events::limit_block_kind(read.events.get(at)?))
+                        .flatten()
                 });
             entry
         })
@@ -4822,6 +4839,80 @@ mod tests {
                 open,
                 "{table}"
             );
+        }
+    }
+
+    /// The seat's limit cell names what the vendor refused when the newest
+    /// raising `limit` record is an account block, and stays the usage limit
+    /// cell for a usage limit or any record that carries no kind.
+    #[test]
+    fn a_limited_seat_names_the_kind_of_its_newest_limit_record() {
+        let limit = |ago: i64, summary: String| {
+            let extra = format!(r#","target":"lead","summary":"{summary}""#);
+            event(&at(ago), "_watchdog", "limit", &extra)
+        };
+        let billing = |ago| {
+            limit(
+                ago,
+                format!(
+                    "{} — Billing verification failed",
+                    crate::events::LIMIT_BILLING
+                ),
+            )
+        };
+        let account = |ago| {
+            limit(
+                ago,
+                format!("{} — monthly quota", crate::events::LIMIT_ACCOUNT),
+            )
+        };
+        let usage = |ago| {
+            limit(
+                ago,
+                format!("{} — waits for a reset", crate::events::LIMIT_USAGE),
+            )
+        };
+        for (lines, kind, cell) in [
+            (
+                vec![billing(900)],
+                Some(crate::vendorblock::Kind::Billing),
+                "needs you (billing)",
+            ),
+            (
+                vec![account(900)],
+                Some(crate::vendorblock::Kind::Account),
+                "needs you (account)",
+            ),
+            (vec![usage(900)], None, "needs you (usage limit)"),
+            // The newest raising record decides: a usage limit after a block
+            // says usage, a block after a usage limit says the block.
+            (
+                vec![billing(900), usage(600)],
+                None,
+                "needs you (usage limit)",
+            ),
+            (
+                vec![usage(900), account(600)],
+                Some(crate::vendorblock::Kind::Account),
+                "needs you (account)",
+            ),
+        ] {
+            let scratch = Scratch::new("limit-kind");
+            scratch.meta(META);
+            scratch.events(&lines);
+            let mut runtime = running();
+            runtime.agents = vec![AgentRuntime {
+                pane_id: None,
+                slot: "main".to_owned(),
+                alive: Some(true),
+                alert: Some(Reason::Limit),
+                observed: crate::harness_state::HarnessState::Unknown,
+            }];
+            let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].reason, Some(Reason::Limit), "{lines:?}");
+            assert_eq!(entry.agents[0].block, kind, "{lines:?}");
+            let table = crate::listing::table(&[&entry]);
+            assert!(table.contains(cell), "{cell}: {table}");
         }
     }
 

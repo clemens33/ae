@@ -80,6 +80,7 @@ fn delivery(effect: &Effect) -> bool {
         | Effect::Notify(_)
         | Effect::QuotaRefresh
         | Effect::ReconcileWedge
+        | Effect::BlockScope { .. }
         | Effect::Note(_) => false,
     }
 }

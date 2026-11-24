@@ -28,5 +28,6 @@ pub mod tmux;
 pub mod tool;
 pub mod topic;
 pub mod tracked;
+pub mod vendorblock;
 pub mod wait_on;
 pub mod watchdog;

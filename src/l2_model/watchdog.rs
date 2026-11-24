@@ -248,6 +248,7 @@ const CLAUDE_LIMIT_MENU: Menu = Menu {
 /// The widest a notice is quoted in a journal summary or a Notify line.
 const NOTICE_CELLS: usize = 160;
 
+pub(crate) mod blocked;
 pub(crate) mod startup;
 
 /// The human decision holding a seat.
@@ -792,10 +793,15 @@ fn newest_row<'a>(buf: &'a str, banner: &Banner) -> Option<(Vec<&'a str>, usize,
 /// the one menu-text cutter: the part a human needs is when it resets, and
 /// codex wraps that onto the next row. A tool that draws its limit as a MENU
 /// instead ([`limit_menu`]) has no such row: its notice is the menu's options,
-/// quoted the same way, and a drawn row always outranks it.
+/// quoted the same way, and a drawn row always outranks it. An ACCOUNT BLOCK
+/// (`blocked`: a billing refusal, a spent subscription quota) is the same class
+/// under the same latch: it answers only when no usage notice does, and
+/// [`blocked::kind_of`] reads its kind back out of the notice.
 #[must_use]
 pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
-    row_notice(buf, agent_bin).or_else(|| menu_notice(buf, agent_bin))
+    row_notice(buf, agent_bin)
+        .or_else(|| menu_notice(buf, agent_bin))
+        .or_else(|| blocked::notice(buf, agent_bin))
 }
 
 fn row_notice(buf: &str, agent_bin: &str) -> Option<String> {
@@ -830,6 +836,7 @@ pub fn limit_rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
             let dialog = limit_menu(buf, menu_for(agent_bin)?)?;
             Some(dialog.rows[dialog.title..dialog.hint].to_vec())
         })
+        .or_else(|| blocked::rows(buf, agent_bin))
 }
 
 /// Whether the limit [`limit_rows`] reads still stands, from what the pane

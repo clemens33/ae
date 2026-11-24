@@ -3145,8 +3145,11 @@ fn run_with(
     leg: impl FnOnce(&Path) -> AgyRun,
 ) -> crate::error::Result<u8> {
     // ONE config read: the scopes the leg was judged on are the scopes folded.
-    let scopes = match crate::config::read_identity(inputs.global, inputs.local) {
-        Ok(cfg) => configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
+    let (scopes, blocked) = match crate::config::read_identity(inputs.global, inputs.local) {
+        Ok(cfg) => (
+            configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
+            blocked_section(inputs, &cfg),
+        ),
         Err(error) => {
             writeln!(err, "{error}")?;
             return Ok(1);
@@ -3217,7 +3220,7 @@ fn run_with(
     match format {
         Format::Table => write!(
             out,
-            "{}",
+            "{}{blocked}",
             render_with_pace(groups, &pace, home, observation.now)
         )?,
         Format::Json => writeln!(
@@ -3227,6 +3230,94 @@ fn run_with(
         )?,
     }
     Ok(0)
+}
+
+/// The table's blocked section: every configured scope the vendor refused
+/// ([`crate::vendorblock`]), in config order, each with the one command that
+/// clears it. Empty when none is blocked, so a healthy table is unchanged. A
+/// scope is a `[clients]` label, or for an `OpenCode` profile whose model id is
+/// `provider/model` that upstream provider. Its record must parse, sit at its
+/// own file, name this scope's client, harness and provider, and not be stamped
+/// in the future. Reading is observation only: it never clears, repairs or
+/// rewrites a record.
+fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> String {
+    let Some(root) = inputs.state_root() else {
+        return String::new();
+    };
+    let held: Vec<crate::vendorblock::Record> = crate::vendorblock::Scope::configured(cfg)
+        .iter()
+        .filter_map(|scope| crate::vendorblock::block(root, scope, inputs.now))
+        .collect();
+    if held.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\nblocked scopes (spawn and launch refuse them until cleared):\n");
+    for record in &held {
+        text.push_str(&record.quota_line());
+        text.push('\n');
+    }
+    text
+}
+
+/// `ae quota clear <scope>`: remove one scope's block record (a `[clients]`
+/// label, or the upstream provider an `OpenCode` model id names), the ONLY way a
+/// block ends. Nothing measured proves a refused account works again, so
+/// no pane fact, no completed turn and no auto reseat clears it.
+///
+/// The record goes first, whatever the config says now, so a scope removed
+/// from the config never strands its block. Without a record the answer names
+/// which refusal it is: a configured scope with nothing recorded, or a word no
+/// `[clients]` row or `OpenCode` profile model defines.
+///
+/// # Errors
+///
+/// Returns an I/O error only when the supplied output stream cannot be written.
+pub fn run_clear(
+    inputs: &Inputs<'_>,
+    client: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    if !crate::vendorblock::is_provider(client) {
+        writeln!(err, "ae quota: unknown scope {client}")?;
+        return Ok(1);
+    }
+    let cfg = match crate::config::read_identity(inputs.global, inputs.local) {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            writeln!(err, "{error}")?;
+            return Ok(1);
+        }
+    };
+    let Some(root) = inputs.state_root() else {
+        writeln!(err, "ae quota: no state root to clear a block in")?;
+        return Ok(1);
+    };
+    match crate::vendorblock::clear(root, client) {
+        crate::vendorblock::Cleared::Removed => {
+            writeln!(out, "ae quota: cleared the block on {client}")?;
+            Ok(0)
+        }
+        crate::vendorblock::Cleared::Absent
+            if crate::vendorblock::Scope::configured(&cfg)
+                .iter()
+                .any(|scope| scope.key == client) =>
+        {
+            writeln!(err, "ae quota: no block recorded for {client}")?;
+            Ok(1)
+        }
+        crate::vendorblock::Cleared::Absent => {
+            writeln!(err, "ae quota: unknown scope {client}")?;
+            Ok(1)
+        }
+        crate::vendorblock::Cleared::Refused(why) => {
+            writeln!(
+                err,
+                "ae quota: could not clear the block on {client}: {why}"
+            )?;
+            Ok(1)
+        }
+    }
 }
 
 fn copilot_refresh(inputs: &Inputs<'_>) -> Option<(PathBuf, crate::go_usage::Refreshed)> {

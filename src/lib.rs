@@ -63,6 +63,7 @@ pub use l2_model::tmux;
 pub use l2_model::tool;
 pub use l2_model::topic;
 pub use l2_model::tracked;
+pub use l2_model::vendorblock;
 pub use l2_model::wait_on;
 pub use l2_model::watchdog;
 pub use l3_services::autoupgrade;
@@ -430,6 +431,9 @@ fn run_public_quota(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    if tail.first().is_some_and(|word| word == "clear") {
+        return run_public_quota_clear(shape, &tail[1..], out, err);
+    }
     let profiles = tail.first().is_some_and(|word| word == "--profiles");
     if profiles && tail.len() > 1 {
         writeln!(err, "ae quota: unknown argument: {}", tail[1])?;
@@ -474,6 +478,41 @@ fn run_public_quota(
             now: time::Timestamp::now().epoch(),
         },
         format,
+        out,
+        err,
+    )
+}
+
+/// `ae quota clear <scope>`: the one way a vendor block ends. Exactly one
+/// scope (a `[clients]` label or an upstream provider), else usage (exit 2)
+/// before any state is read.
+fn run_public_quota_clear(
+    shape: &shape::Shape,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let [client] = tail else {
+        writeln!(err, "ae quota: usage: ae quota clear <scope>")?;
+        return Ok(entry::EXIT_USAGE);
+    };
+    let Some(root) = doors::state_root(shape) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let cwd = doors::cwd();
+    let global = doors::config_file(shape, &root);
+    let local = doors::local_config(&cwd, Some(&global));
+    let roots = inventory::Roots::under(&root);
+    quota::run_clear(
+        &quota::Inputs {
+            home: doors::home().as_deref(),
+            global: Some(&global),
+            local: local.as_deref(),
+            sessions: Some(roots.sessions()),
+            now: time::Timestamp::now().epoch(),
+        },
+        client,
         out,
         err,
     )

@@ -1181,6 +1181,16 @@ pub fn requested_model(cmd: &str) -> Option<String> {
     model.contains('#').then_some(model)
 }
 
+/// The whole `--model` / `-m` value of a simple profile command, or `None`:
+/// absent, repeated, empty, control-character or `$` valued, or not one simple
+/// command. A reading of the words only; it judges nothing about the tool or
+/// the model.
+#[must_use]
+pub fn model_word(cmd: &str) -> Option<String> {
+    let command = lex_simple_command(cmd).ok()?;
+    opencode_flag(&command, &["--model", "-m"]).ok()?
+}
+
 /// The config home a resolved launch command will give its tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {

@@ -664,6 +664,38 @@ impl Event {
     }
 }
 
+/// The summary a usage-limit `limit` record opens with.
+pub const LIMIT_USAGE: &str = "vendor usage limit reached";
+/// The summary a billing-refusal `limit` record opens with.
+pub const LIMIT_BILLING: &str = "vendor billing blocked";
+/// The summary a spent-subscription `limit` record opens with.
+pub const LIMIT_ACCOUNT: &str = "vendor account blocked";
+
+/// The head a `limit` record's summary opens with for a block of `kind`.
+#[must_use]
+pub const fn limit_head(kind: crate::vendorblock::Kind) -> &'static str {
+    match kind {
+        crate::vendorblock::Kind::Billing => LIMIT_BILLING,
+        crate::vendorblock::Kind::Account => LIMIT_ACCOUNT,
+    }
+}
+
+/// What a `limit` record says the vendor refused, when it is an account block
+/// and not a usage limit: the one reading of the heads above.
+#[must_use]
+pub fn limit_block_kind(event: &Event) -> Option<crate::vendorblock::Kind> {
+    if event.action != "limit" {
+        return None;
+    }
+    let summary = event.summary.as_deref()?;
+    [
+        crate::vendorblock::Kind::Billing,
+        crate::vendorblock::Kind::Account,
+    ]
+    .into_iter()
+    .find(|kind| summary.starts_with(limit_head(*kind)))
+}
+
 /// The summary an unreachable failure's one `alert` opens with.
 pub const UNREACHABLE: &str = "nudge unreachable/occupied";
 /// The summary the `alert-cleared` that ends it opens with.

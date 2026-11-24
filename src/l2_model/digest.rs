@@ -80,6 +80,10 @@ pub struct AgentEntry {
     /// An auto reseat attempt is open in the seat's current limit episode.
     /// TABLE only, same rule as `own_work`.
     pub auto_reseat_open: bool,
+    /// What the vendor refused, when the seat's standing `limit` is an account
+    /// block and not a usage limit ([`crate::events::limit_block_kind`]). TABLE
+    /// only, same rule as `own_work`: the JSON key set is a published contract.
+    pub block: Option<crate::vendorblock::Kind>,
     /// The seat's one unreachable failure stands
     /// ([`crate::session::unreachable_standing`]). TABLE only.
     pub unreachable: bool,
@@ -938,6 +942,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,
@@ -977,6 +982,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,
@@ -1032,6 +1038,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,
@@ -1398,6 +1405,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,

@@ -456,7 +456,11 @@ fn push_agent_line(out: &mut String, session: &SessionEntry, agent: &AgentEntry,
 fn push_verdict(out: &mut String, session: &SessionEntry, agent: &AgentEntry, now: Timestamp) {
     let exact = session.agent_state_is_exact();
     if agent.reason == Some(crate::attention::Reason::Limit) {
-        out.push_str(limit_cell(agent));
+        push_limit_cell(
+            out,
+            agent.block.map_or("limit", crate::vendorblock::Kind::word),
+            agent,
+        );
     } else if agent.unreachable {
         out.push_str(crate::theme::seat_word("unreachable"));
     } else if exact && agent.state.as_deref() == Some("done") {
@@ -464,6 +468,8 @@ fn push_verdict(out: &mut String, session: &SessionEntry, agent: &AgentEntry, no
     } else if exact && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked")) {
         let typed = agent.wait_words(now);
         wait_cell(agent, typed.as_deref(), out);
+    } else if exact && matches!(agent.state.as_deref(), Some("billing" | "account")) {
+        push_limit_cell(out, agent.state.as_deref().unwrap_or_default(), agent);
     } else {
         out.push_str(match (exact, agent.state.as_deref()) {
             (true, Some(state)) => crate::theme::seat_word(state),
@@ -590,13 +596,13 @@ fn push_declaration(out: &mut String, agent: &AgentEntry, exact: bool, now: Time
     }
 }
 
-/// The verdict cell of a seat on its usage limit: the move off it, while an
-/// auto reseat attempt is open.
-const fn limit_cell(agent: &AgentEntry) -> &'static str {
+/// The verdict cell of a seat on its usage limit or an account block (`word`:
+/// `limit`, `billing` or `account`): the move off it, while an auto reseat
+/// attempt is open.
+fn push_limit_cell(out: &mut String, word: &str, agent: &AgentEntry) {
+    out.push_str(crate::theme::seat_word(word));
     if agent.auto_reseat_open {
-        "needs you (usage limit) · auto-reseat in flight"
-    } else {
-        "needs you (usage limit)"
+        out.push_str(" · auto-reseat in flight");
     }
 }
 
@@ -825,6 +831,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,
@@ -2042,6 +2049,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,
@@ -2083,6 +2091,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,
@@ -2140,6 +2149,7 @@ mod tests {
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,
@@ -2195,6 +2205,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,
@@ -2239,6 +2250,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            block: None,
             unreachable: false,
             declaration: None,
             effort: None,
@@ -2299,6 +2311,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,
@@ -2318,6 +2331,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                block: None,
                 unreachable: false,
                 declaration: None,
                 effort: None,

@@ -1274,6 +1274,8 @@ pub fn seat_word(word: &str) -> &str {
         "blocked" => "needs you (blocked)",
         "throttled" => "needs you (throttled)",
         "limit" => "needs you (usage limit)",
+        "billing" => "needs you (billing)",
+        "account" => "needs you (account)",
         "prompt" => "needs you (prompt)",
         "wedged" => "needs you (sweep wedged)",
         "stale" => "unknown",

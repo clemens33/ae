@@ -945,6 +945,18 @@ pub enum Effect {
     },
     /// A line for the human, published with `display-message`.
     Notify(String),
+    /// Write the block record of this seat's client scope: the first sighting
+    /// of an account block. The record is the first writer's, so a repeat
+    /// changes nothing; only `ae quota clear` removes it.
+    BlockScope {
+        /// What the vendor refused.
+        kind: crate::vendorblock::Kind,
+        /// The harness whose line was read: the scope of a seat the roster no
+        /// longer names is the one configured client of this tool.
+        tool: crate::tool::ToolKind,
+        /// The vendor's own reason, from the notice.
+        reason: String,
+    },
     /// ONE quota pass outside the cadence, on the cycle a seat left the usage
     /// limit. `run` collects it and performs it once; `quota = off` runs none.
     QuotaRefresh,

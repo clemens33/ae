@@ -65,6 +65,95 @@ impl Cycle<'_> {
         }
     }
 
+    /// Write the block record of this seat's scope under the session's own state
+    /// root (`<root>/sessions/<name>`'s grandparent). The scope is the seat's
+    /// `[clients]` label, or for an `OpenCode` seat whose profile model id is
+    /// `provider/model` that upstream provider, so a Copilot block leaves the
+    /// other providers of the same client usable. A seat the roster no longer
+    /// names falls back to the ONE configured client of the harness that drew the
+    /// line, and a harness with several is never guessed at. A write that fails
+    /// is said on the watchdog's stderr and stops nothing: the journal's `limit`
+    /// record already says what happened.
+    fn block_scope(
+        &self,
+        on: &Acting<'_>,
+        block: (crate::vendorblock::Kind, crate::tool::ToolKind, &str),
+        err: &mut impl Write,
+    ) {
+        let (kind, tool, reason) = block;
+        let Some(root) = self.meta_dir.parent().and_then(std::path::Path::parent) else {
+            return;
+        };
+        let global = crate::doors::config_file(crate::shape::current(), root);
+        let cfg =
+            crate::config::read_identity(Some(global.as_path()), self.local_config.as_deref()).ok();
+        let entry = self.roster.iter().find(|entry| entry.slot == on.slot);
+        let client = match entry {
+            Some(entry) => Some(super::seat_client_label(entry, cfg.as_ref())),
+            None => cfg.as_ref().and_then(|cfg| sole_client_of(cfg, tool)),
+        };
+        // An `OpenCode` client serves several upstream providers: the scope is
+        // the provider the seat's profile model id names, else the client's.
+        let provider = entry.and_then(|entry| {
+            crate::vendorblock::profile_provider(cfg.as_ref()?, entry.profile.as_deref()?)
+        });
+        let Some(client) = client else {
+            let _ = writeln!(
+                err,
+                "ae: watchdog: {}: no single client scope of {} to block ({}); the limit record stands",
+                on.agent,
+                tool.as_str(),
+                kind.word()
+            );
+            return;
+        };
+        let reason = match crate::vendorblock::clean(reason) {
+            clean if clean.is_empty() => kind.word().to_owned(),
+            clean => clean,
+        };
+        let scope = crate::vendorblock::Scope::new(&client, tool, provider);
+        let record = crate::vendorblock::Record {
+            tool: scope.tool,
+            client: scope.client,
+            since: on.seen.now_epoch,
+            kind,
+            seat: on.agent.to_owned(),
+            reason,
+            provider: scope.provider,
+        };
+        if crate::vendorblock::parse(crate::vendorblock::render(&record).as_bytes()).is_err() {
+            let _ = writeln!(
+                err,
+                "ae: watchdog: {}: a vendor block record for {:?} would be unreadable; not written",
+                on.agent,
+                record.scope()
+            );
+            return;
+        }
+        match crate::vendorblock::record_first(root, &record) {
+            Ok(true) => {
+                let _ = writeln!(
+                    err,
+                    "ae: watchdog: {}: scope {} is blocked ({}): {}",
+                    on.agent,
+                    record.scope(),
+                    kind.word(),
+                    record.reason
+                );
+            }
+            Ok(false) => {}
+            Err(why) => {
+                let _ = writeln!(
+                    err,
+                    "ae: watchdog: {}: could not record the {} block of {}: {why}",
+                    on.agent,
+                    kind.word(),
+                    record.scope()
+                );
+            }
+        }
+    }
+
     /// Perform one effect.
     #[allow(
         clippy::too_many_lines,
@@ -117,6 +206,10 @@ impl Cycle<'_> {
             }
             Effect::Note(text) => {
                 writeln!(err, "ae: watchdog: {agent}: {text}")?;
+                Ok(())
+            }
+            Effect::BlockScope { kind, tool, reason } => {
+                self.block_scope(on, (*kind, *tool, reason), err);
                 Ok(())
             }
             Effect::AnswerTrust { name } => self.answer_trust(*name, on, state, err),
@@ -1425,4 +1518,19 @@ pub(super) enum DeskClaim {
     /// A tick or overview landed since the observation: its spacing holds
     /// the overview and the line alike.
     Held,
+}
+
+/// The one `[clients]` label of `tool` the config defines, or `None` when it
+/// defines none or several: a block never lands on a guessed scope.
+fn sole_client_of(
+    cfg: &crate::config::IdentityConfig,
+    tool: crate::tool::ToolKind,
+) -> Option<String> {
+    let mut of_tool = cfg
+        .clients
+        .iter()
+        .filter(|(_, client)| client.tool == tool)
+        .map(|(label, _)| label);
+    let first = of_tool.next()?;
+    of_tool.next().is_none().then(|| first.clone())
 }

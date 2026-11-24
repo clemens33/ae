@@ -529,21 +529,26 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
     if next.limit_since.is_none() {
         next.limit_since = Some(seen.now_epoch);
         let cell = seen.limit_notice.as_deref();
-        let quoted = cell.map(|cell| format!(": {cell}")).unwrap_or_default();
-        effects.push(Effect::Emit {
-            action: "limit",
-            summary: format!(
-                "vendor usage limit reached — waits for a reset or a re-login{quoted}"
-            ),
-        });
-        let forecast = seen
-            .auto_deadline
-            .as_deref()
-            .map(|line| format!("; {line}"))
-            .unwrap_or_default();
-        effects.push(Effect::Notify(format!(
-            "hit its vendor usage limit{quoted}{forecast}"
-        )));
+        if let Some((kind, tool)) = cell.and_then(crate::watchdog::blocked::classify) {
+            book_block(effects, kind, tool, cell.unwrap_or_default());
+        } else {
+            let quoted = cell.map(|cell| format!(": {cell}")).unwrap_or_default();
+            effects.push(Effect::Emit {
+                action: "limit",
+                summary: format!(
+                    "{} — waits for a reset or a re-login{quoted}",
+                    crate::events::LIMIT_USAGE
+                ),
+            });
+            let forecast = seen
+                .auto_deadline
+                .as_deref()
+                .map(|line| format!("; {line}"))
+                .unwrap_or_default();
+            effects.push(Effect::Notify(format!(
+                "hit its vendor usage limit{quoted}{forecast}"
+            )));
+        }
     }
     // The limit episode ends any transient streak: a return to plain
     // throttling is news again, not a continuation.
@@ -552,6 +557,32 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
     next.last_hash_change = Some(seen.now_epoch);
     next.idle_since_epoch = None;
     next.nudge_count = 0;
+}
+
+/// The records of a seat's first sight of an ACCOUNT BLOCK: the same `limit`
+/// word every reader already folds, a head that names the kind, the notice, and
+/// the one scope block the loop writes. No reset is read for it, so no wake is
+/// ever booked.
+fn book_block(
+    effects: &mut Vec<Effect>,
+    kind: crate::vendorblock::Kind,
+    tool: crate::tool::ToolKind,
+    notice: &str,
+) {
+    let reason = crate::watchdog::blocked::reason_of(notice);
+    effects.push(Effect::Emit {
+        action: "limit",
+        summary: format!("{} — {reason}", crate::events::limit_head(kind)),
+    });
+    effects.push(Effect::Notify(format!(
+        "hit a vendor {} block: {reason} — its client is refused for every spawn until `ae quota clear`",
+        kind.word()
+    )));
+    effects.push(Effect::BlockScope {
+        kind,
+        tool,
+        reason: reason.to_owned(),
+    });
 }
 
 /// The grace a passed reset is given before its wake, for the vendor's clock.
