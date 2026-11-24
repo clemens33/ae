@@ -3030,9 +3030,11 @@ fn trustfix_folder_splits_without_a_measured_wrap_are_named_without_keys() {
 }
 
 /// Owner incident 2026-11-24 16:52Z: a carried reseat of a seat in HOME from
-/// one claude config home to another. The successor is a new tool start under
-/// a new launch, with the same seat folder and conversation and no seed wait,
-/// so only the watchdog can answer its HOME trust dialog (R1).
+/// one claude config home to another. The fixture does not run the reseat
+/// command: it replays the post-reseat state for the same seat and folder (a
+/// new profile, config home and launch, and a new tool start with no seed
+/// wait) and proves that the watchdog answers its HOME trust dialog at that
+/// boundary (R1).
 #[test]
 fn trustfix_home_answers_again_after_a_carried_reseat_into_another_config_home() {
     let mut rig = Rig::new("home-carried-reseat", "claude", "normal");

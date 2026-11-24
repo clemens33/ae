@@ -787,8 +787,8 @@ named again.
 
 Claude login past the theme picker, Gemini CLI, Claude's accessible `Enter y/n:` branch
 and the fresh-home bypass acceptance screen have no measured signatures. At 30×12 the
-full Claude settings variant can scroll past the short history. A wrapped folder path
-still prevents an automatic trust answer. A turnless relaunch and a carried reseat
+full Claude settings variant can scroll past the short history. A folder path wrapped at
+any column other than a measured wrap still prevents an automatic trust answer. A turnless relaunch and a carried reseat
 continue to rely on the watchdog for reporting.
 
 ## What the watchdog cannot do
