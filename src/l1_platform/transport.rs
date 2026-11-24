@@ -840,20 +840,26 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// The process-table snapshot leg of the one process door — the ONLY way
 /// product code runs `ps`, the program FIXED here.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
+    run_ps_observed(argv).unwrap_or((false, String::new()))
+}
+
+/// [`run_ps`], keeping a `ps` that did not run (`None`) apart from one that ran
+/// and failed (`Some((false, _))`, as for a pid that is gone).
+pub(crate) fn run_ps_observed(argv: &crate::procs::PsArgv) -> Option<(bool, String)> {
     // `LC_ALL=C` so a start identity (`lstart=`) reads the same under any locale.
-    match spawn(
+    spawn(
         "ps",
         argv.as_args(),
         &[("LC_ALL", "C")],
         Streams::Captured,
         None,
-    ) {
-        Some(output) => (
+    )
+    .map(|output| {
+        (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
-        ),
-        None => (false, String::new()),
-    }
+        )
+    })
 }
 
 /// The boot-time leg of the one process door — the ONLY way product code runs

@@ -1532,7 +1532,9 @@ window and pane. A second `ae app` reads that record:
 
 - Inside tmux on the same ae-owned server, it switches your client to the running
   app's pane and exits 0 with one line, `ae app is already open at %N; switched
-  to it`. A home you named is not applied, and the line says so.
+  to it`. A home you named is not applied, and the line says so. When tmux cannot
+  name that one client (none, or two on the same pane), it refuses and takes
+  nothing over.
 - From anywhere else (outside tmux, another server), it asks the running app to
   hand over, through the file `app-takeover`. The running app saves its view,
   acknowledges in `app-takeover-ack`, quits, prints `ae app: <pid> took over` and
@@ -1552,8 +1554,9 @@ keeps its pid and start identity, so it keeps the record; one that finds another
 app holding the lock runs as `--new` does.
 
 `ae app --new [session]` starts another app beside the running one. It takes no
-lock and no record, reads the saved view once and never writes it. It does not
-combine with `--app-own` or `--app-view`.
+lock and no record, reads the saved view once and never writes it, and it prints
+no hint, because plain `ae` could not have started it. It does not combine with
+`--app-own` or `--app-view`.
 
 ## What survives a quit
 

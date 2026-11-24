@@ -90,8 +90,13 @@ fn press(rig: &Rig, pane: &str, key: &str, why: &str, met: impl Fn(&str) -> bool
 }
 
 fn open(rig: &Rig, tag: &str, gate_dir: Option<&Path>) -> (String, PathBuf) {
+    open_with(rig, tag, gate_dir, &[])
+}
+
+/// [`open`] with the app's own operands: a second app in one home is `app --new`.
+fn open_with(rig: &Rig, tag: &str, gate_dir: Option<&Path>, args: &[&str]) -> (String, PathBuf) {
     let rc = rig.scratch.join(format!("rc-{tag}"));
-    let line = command(&[], &rc, true);
+    let line = command(args, &rc, true);
     let line = gate_dir.map_or(line.clone(), |dir| {
         format!(
             "AE_TEST_APP_READ_GATE={} {line}",
@@ -395,7 +400,7 @@ fn two_apps_opening_together_bind_one_seat() {
     let gate = rig.scratch.join("gates");
     std::fs::create_dir(&gate).expect("decoder gate directory");
     let (first, rc1) = open(&rig, "first", Some(&gate));
-    let (second, rc2) = open(&rig, "second", Some(&gate));
+    let (second, rc2) = open_with(&rig, "second", Some(&gate), &["app", "--new"]);
     std::fs::write(gate.join("@app-keys"), "").expect("hold both decoders");
     send(&rig, &first, "O");
     send(&rig, &second, "O");
@@ -1049,7 +1054,12 @@ mod start_publication {
             let world = world_gate(rig, &gates);
             let launch = Launch::new(rig, "orchestrator");
             let rc_first = rig.scratch.join("rc-winner");
-            let first = rig.pane("host", &launch.command(&command(&[], &rc_first, true)));
+            // The observer above is the home's one app. The launching app is a
+            // second one beside it, so it starts with `--new`.
+            let first = rig.pane(
+                "host",
+                &launch.command(&command(&["app", "--new"], &rc_first, true)),
+            );
             rig.wait(&first, "the launching app initially lists one", |s| {
                 lands(s, "one")
             });

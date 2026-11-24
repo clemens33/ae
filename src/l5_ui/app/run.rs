@@ -40,10 +40,12 @@ pub fn run(
         .as_deref()
         .filter(|name| crate::session_launch::name::is_session_name(name))
         .map(str::to_owned);
+    let unavailable = crate::EXIT_UNAVAILABLE;
     let asked = instance::Asked {
         home: named.as_deref(),
         handed: handed.is_some(),
         terminal,
+        refused: unavailable,
     };
     if !terminal {
         // A start with no terminal still focuses the running app; anything
@@ -54,7 +56,7 @@ pub fn run(
             return Ok(code);
         }
         write!(err, "{NO_TERMINAL}")?;
-        return Ok(crate::EXIT_UNAVAILABLE);
+        return Ok(unavailable);
     }
     let Some(root) = root else {
         writeln!(err, "ae: {}", crate::shape::NO_STATE_ROOT)?;
@@ -94,7 +96,8 @@ pub fn run(
     } else {
         at.and_then(|(server, pane)| transport::observe_pane_console(server, pane))
     };
-    let hint = !(own || handed.is_some()) && says_hint(at.is_some(), stamp.as_deref());
+    // `--new` is no start plain `ae` could make, so the hint that points at it would mislead.
+    let hint = !(own || fresh || handed.is_some()) && says_hint(at.is_some(), stamp.as_deref());
     // The owner's own start of ae: the app the entry opened (bare `ae`, a
     // launch that lands here), `ae app` typed outside tmux, or typed in a pane
     // proved ordinary — tmux named its session, and it carries no console stamp

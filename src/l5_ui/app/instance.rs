@@ -548,6 +548,20 @@ pub fn timeout_line(pid: u32) -> String {
     format!("ae app: {pid} did not hand over\n")
 }
 
+/// The one line a second app leaves when it could not switch its client to the
+/// running one.
+#[must_use]
+pub fn focus_failed_line(pane: &str) -> String {
+    format!("ae app is already open at {pane}; this client could not be switched to it\n")
+}
+
+/// The one line a second app leaves when the running one acknowledged and then
+/// kept the lock.
+#[must_use]
+pub fn release_line(pid: u32) -> String {
+    format!("ae app: {pid} handed over but still holds the app record\n")
+}
+
 /// The one line a refused start leaves.
 #[must_use]
 pub fn doubt_line(doubt: Doubt, pid: u32) -> String {
@@ -629,6 +643,9 @@ pub(super) struct Asked<'a> {
     pub(super) handed: bool,
     /// The caller has a terminal on stdin and stdout.
     pub(super) terminal: bool,
+    /// The exit status of a start that refuses: the caller names it, so this
+    /// layer names no code of the shell above it.
+    pub(super) refused: u8,
 }
 
 /// The running app's hold on the instance: the lock, until it is dropped.
@@ -734,16 +751,19 @@ fn identity_text(printed: &str) -> Option<String> {
 
 /// The start identity of `pid`: `None` when `ps` could not say.
 fn identity_of(pid: u32) -> Option<String> {
-    match transport::run_ps(&procs::PsArgv::lstart_of(pid)) {
-        (true, printed) => identity_text(&printed),
-        (false, _) => None,
+    match transport::run_ps_observed(&procs::PsArgv::lstart_of(pid)) {
+        Some((true, printed)) => identity_text(&printed),
+        _ => None,
     }
 }
 
+/// What the process table says of the recorded pid: a `ps` that did not run is
+/// doubt ([`Liveness::Unknown`]), never a gone process.
 fn liveness(held: &Instance) -> Liveness {
-    match transport::run_ps(&procs::PsArgv::lstart_of(held.pid)) {
-        (false, _) => Liveness::Gone,
-        (true, printed) => match identity_text(&printed) {
+    match transport::run_ps_observed(&procs::PsArgv::lstart_of(held.pid)) {
+        None => Liveness::Unknown,
+        Some((false, _)) => Liveness::Gone,
+        Some((true, printed)) => match identity_text(&printed) {
             None => Liveness::Unknown,
             Some(identity) if identity == held.identity => Liveness::Same,
             Some(_) => Liveness::Reused,
@@ -868,6 +888,7 @@ fn hold(file: File, root: &Path, here: &Here) -> Option<Guard> {
 fn held_or_refused(
     file: File,
     root: &Path,
+    asked: &Asked<'_>,
     here: &Here,
     err: &mut impl Write,
 ) -> crate::error::Result<Entry> {
@@ -875,7 +896,7 @@ fn held_or_refused(
         Ok(Entry::Hold(guard))
     } else {
         say(err, &doubt_line(Doubt::Unreadable, 0))?;
-        Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+        Ok(Entry::Exit(asked.refused))
     }
 }
 
@@ -924,7 +945,7 @@ pub(super) fn enter(
             Some(_) => return Ok(Entry::Exempt),
             None => {
                 say(err, &doubt_line(Doubt::Stamp, 0))?;
-                return Ok(Entry::Exit(crate::EXIT_UNAVAILABLE));
+                return Ok(Entry::Exit(asked.refused));
             }
         }
     }
@@ -952,7 +973,8 @@ pub(super) fn enter(
                 (file, hold) = try_lock(&lock);
             }
             if hold == Hold::Held {
-                return Ok(Entry::Fresh);
+                say(err, &doubt_line(Doubt::NotHolder, own))?;
+                return Ok(Entry::Exit(asked.refused));
             }
         }
     }
@@ -960,7 +982,7 @@ pub(super) fn enter(
         (Some(file), _) => entered_free(file, root, asked, &here, err),
         (None, Hold::Unreadable) => {
             say(err, &doubt_line(Doubt::Unreadable, 0))?;
-            Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+            Ok(Entry::Exit(asked.refused))
         }
         (None, _) => entered_held(root, asked, &here, err),
     }
@@ -995,18 +1017,18 @@ fn entered_free(
         _ => Liveness::Gone,
     };
     match judge(&record, Hold::Free, live, &here.caller()) {
-        Verdict::Reclaim => held_or_refused(file, root, here, err),
+        Verdict::Reclaim => held_or_refused(file, root, asked, here, err),
         Verdict::Refuse(doubt) => {
             let named = match &record {
                 Record::Parsed(held) => held.pid,
                 _ => 0,
             };
             say(err, &doubt_line(doubt, named))?;
-            Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+            Ok(Entry::Exit(asked.refused))
         }
         Verdict::Focus { .. } | Verdict::TakeOver => {
             say(err, &doubt_line(Doubt::Unreadable, 0))?;
-            Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+            Ok(Entry::Exit(asked.refused))
         }
     }
 }
@@ -1026,19 +1048,22 @@ fn entered_held(
     match (verdict, record) {
         (Verdict::Refuse(doubt), _) => {
             say(err, &doubt_line(doubt, named))?;
-            Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+            Ok(Entry::Exit(asked.refused))
         }
         (Verdict::Focus { session }, Record::Parsed(held)) => {
             if focus(here, &session, &held.pane) {
                 say(err, &focused_line(&held.pane, asked.home))?;
                 return Ok(Entry::Exit(0));
             }
-            take_over(root, asked, &held, err)
+            // A caller on the running app's own server never takes it over: a
+            // client tmux cannot name, or two it cannot tell apart, is doubt.
+            say(err, &focus_failed_line(&held.pane))?;
+            Ok(Entry::Exit(asked.refused))
         }
         (_, Record::Parsed(held)) => take_over(root, asked, &held, err),
         (Verdict::Reclaim | Verdict::Focus { .. } | Verdict::TakeOver, _) => {
             say(err, &doubt_line(Doubt::Unreadable, 0))?;
-            Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+            Ok(Entry::Exit(asked.refused))
         }
     }
 }
@@ -1082,7 +1107,7 @@ fn take_over(
     }
     let refuse = |err: &mut dyn Write, line: String| -> crate::error::Result<Entry> {
         err.write_all(line.as_bytes())?;
-        Ok(Entry::Exit(crate::EXIT_UNAVAILABLE))
+        Ok(Entry::Exit(asked.refused))
     };
     let nonce = nonce();
     let request = Request {
@@ -1115,12 +1140,12 @@ fn take_over(
                 Phase::Waiting => {}
             }
         } else if began.elapsed() >= HANDOVER_WAIT {
-            return refuse(err, timeout_line(held.pid));
+            return refuse(err, release_line(held.pid));
         }
         if let Ok(file) = store::lock(&lock, Duration::ZERO) {
             withdraw(root, &nonce);
             let here = Here::read();
-            return held_or_refused(file, root, &here, err);
+            return held_or_refused(file, root, asked, &here, err);
         }
         std::thread::sleep(TICK);
     }
