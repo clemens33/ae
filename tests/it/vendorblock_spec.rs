@@ -241,6 +241,21 @@ fn a_quote_or_a_later_assistant_row_is_not_an_account_block() {
     }
 }
 
+/// Lead ruling: at a width with no measured sidebar column, only the end of
+/// the row counts. The 100-column capture is that width. Widths 110 and 120
+/// are the other measured ones and have no capture here.
+#[test]
+fn a_width_with_no_sidebar_column_rejects_text_after_the_phrase() {
+    let phrase = "     Error: You have exceeded your monthly quota";
+    let continued = OPENCODE_100.replace(phrase, &format!("{phrase}    • not a measured sidebar"));
+    assert!(
+        continued.contains("    • not a measured sidebar"),
+        "the row no longer ends at the phrase"
+    );
+    assert_eq!(class(&continued, "opencode"), None);
+    assert_eq!(notice(&continued, "opencode"), None);
+}
+
 /// The measured 140-column sidebar starts at `L + 4`. Shifting it is the
 /// negative above; this pins the fixture the positive uses.
 #[test]
