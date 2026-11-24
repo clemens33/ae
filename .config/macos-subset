@@ -16,6 +16,7 @@ module app_open_live_spec::menu_live  # ProcessTable,TmuxClient
 module app_open_live_spec::outside  # TmuxClient
 module app_resize_spec  # TmuxClient
 module appfanout_spec  # ProcessTable
+module appsingle_live_spec  # OsConditional,TmuxClient
 module autochoice_spec  # TmuxClient
 module autoreseat  # TmuxClient
 module chat_look_spec  # OsConditional

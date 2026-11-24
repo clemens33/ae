@@ -1157,3 +1157,216 @@ fn withdraw(root: &Path, nonce: &str) {
         remove(&root.join(REQUEST));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ae-appinstance-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).expect("scratch root");
+            Self(root)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn nowhere() -> Here {
+        Here {
+            server: None,
+            pane: None,
+        }
+    }
+
+    /// A guard for this very process, as a start outside tmux takes it.
+    fn guard_in(root: &Scratch) -> Guard {
+        let file = store::lock(&root.0.join(LOCK), Duration::ZERO).expect("the free lock");
+        hold(file, &root.0, &nowhere()).expect("the record is written")
+    }
+
+    /// Whether anything stands at `name` under the scratch root.
+    fn present(root: &Scratch, name: &str) -> bool {
+        !matches!(
+            store::source_presence(&root.0.join(name)),
+            SourcePresence::Absent
+        )
+    }
+
+    fn nonce_of(digit: char) -> String {
+        digit.to_string().repeat(NONCE_LEN)
+    }
+
+    #[test]
+    fn the_refusal_and_focus_failure_lines_are_these_words() {
+        assert_eq!(
+            focus_failed_line("%3"),
+            "ae app is already open at %3; this client could not be switched to it\n"
+        );
+        assert_eq!(
+            release_line(41),
+            "ae app: 41 handed over but still holds the app record\n"
+        );
+        assert_ne!(release_line(41), timeout_line(41));
+    }
+
+    #[test]
+    fn a_start_identity_keeps_its_letters_and_digits_only() {
+        assert_eq!(
+            identity_text("Tue Nov 24 13:51:00 2026\n").as_deref(),
+            Some("TueNov241351002026")
+        );
+        assert_eq!(identity_text(" \n"), None);
+        assert_eq!(identity_text(&"x".repeat(IDENTITY_MAX + 1)), None);
+    }
+
+    #[test]
+    fn a_nonce_is_32_hex_digits_and_never_repeats() {
+        let (one, two) = (nonce(), nonce());
+        assert!(nonce_ok(&one) && nonce_ok(&two), "{one} {two}");
+        assert_ne!(one, two);
+    }
+
+    #[test]
+    fn the_process_table_names_this_process_gone_or_reused() {
+        let own = std::process::id();
+        let identity = identity_of(own).expect("ps names this process");
+        let record = |pid: u32, identity: &str| Instance {
+            pid,
+            identity: identity.to_owned(),
+            server: Server::None,
+            session: String::new(),
+            window: String::new(),
+            pane: String::new(),
+        };
+        assert_eq!(liveness(&record(own, &identity)), Liveness::Same);
+        assert_eq!(liveness(&record(own, "OtherIdentity")), Liveness::Reused);
+        assert_eq!(liveness(&record(u32::MAX - 1, &identity)), Liveness::Gone);
+    }
+
+    #[test]
+    fn the_holder_writes_a_record_that_names_itself_and_nothing_else() {
+        let root = Scratch::new();
+        let _guard = guard_in(&root);
+        let Record::Parsed(held) = read_record(&root.0) else {
+            panic!("the record parses");
+        };
+        assert_eq!(held.pid, std::process::id());
+        assert_eq!(Some(held.identity), identity_of(std::process::id()));
+        assert_eq!(held.server, Server::None);
+        assert!(held.session.is_empty() && held.window.is_empty() && held.pane.is_empty());
+        assert!(
+            store::lock(&root.0.join(LOCK), Duration::ZERO).is_err(),
+            "held"
+        );
+        assert!(!present(&root, REQUEST) && !present(&root, ACK));
+    }
+
+    #[test]
+    fn an_absent_or_damaged_record_is_read_as_such() {
+        let root = Scratch::new();
+        assert_eq!(read_record(&root.0), Record::Absent);
+        std::fs::write(root.0.join(INSTANCE), b"1 nonsense\n").expect("damage");
+        assert_eq!(read_record(&root.0), Record::Damaged);
+        std::fs::write(root.0.join(INSTANCE), vec![b'a'; INSTANCE_CAP + 1]).expect("oversize");
+        assert_eq!(read_record(&root.0), Record::Damaged);
+    }
+
+    #[test]
+    fn the_guard_honours_only_a_request_that_names_its_own_pid_and_identity() {
+        let root = Scratch::new();
+        let mut guard = guard_in(&root);
+        let later = guard.polled + TICK * 2;
+        let other = Request {
+            target_pid: std::process::id().wrapping_add(1),
+            target_identity: guard.identity.clone(),
+            requester: 7,
+            nonce: nonce_of('a'),
+        };
+        std::fs::write(
+            root.0.join(REQUEST),
+            render_request(&other).expect("spelled"),
+        )
+        .expect("write");
+        assert!(!guard.poll(later), "another pid's request is left alone");
+        assert!(present(&root, REQUEST), "and stays where it is");
+        assert_eq!(guard.requester(), None);
+
+        let mine = Request {
+            target_pid: guard.pid,
+            target_identity: guard.identity.clone(),
+            requester: 9,
+            nonce: nonce_of('b'),
+        };
+        std::fs::write(
+            root.0.join(REQUEST),
+            render_request(&mine).expect("spelled"),
+        )
+        .expect("write");
+        assert!(!guard.poll(later), "no second look inside one tick");
+        assert!(guard.poll(later + TICK * 2));
+        assert_eq!(guard.requester(), Some(9));
+        assert!(guard.poll(later), "an honoured request stays honoured");
+
+        assert!(!present(&root, ACK), "nothing is acknowledged early");
+        guard.acknowledge();
+        assert_eq!(
+            read_ack(&root.0).expect("the acknowledgement").nonce,
+            nonce_of('b')
+        );
+        assert!(!present(&root, REQUEST), "the request is cleared");
+    }
+
+    #[test]
+    fn the_guard_sweeps_a_stale_acknowledgement_only_after_its_own_grace() {
+        let root = Scratch::new();
+        let mut guard = guard_in(&root);
+        std::fs::write(
+            root.0.join(ACK),
+            render_ack(&Ack {
+                nonce: nonce_of('c'),
+            })
+            .expect("spelled"),
+        )
+        .expect("write");
+        assert!(!guard.poll(guard.polled + TICK * 2));
+        assert!(present(&root, ACK), "too early to sweep");
+        guard.born -= SWEEP + TICK;
+        assert!(!guard.poll(guard.polled + TICK * 2));
+        assert!(!present(&root, ACK), "swept once the grace has passed");
+    }
+
+    #[test]
+    fn a_waiter_withdraws_its_own_request_and_never_another_one() {
+        let root = Scratch::new();
+        let request = |digit: char| Request {
+            target_pid: 5,
+            target_identity: "Ident".to_owned(),
+            requester: 6,
+            nonce: nonce_of(digit),
+        };
+        std::fs::write(
+            root.0.join(REQUEST),
+            render_request(&request('d')).expect("spelled"),
+        )
+        .expect("write");
+        withdraw(&root.0, &nonce_of('e'));
+        assert!(present(&root, REQUEST), "a newer request stays");
+        withdraw(&root.0, &nonce_of('d'));
+        assert!(!present(&root, REQUEST));
+    }
+}
