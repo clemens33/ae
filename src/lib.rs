@@ -3143,12 +3143,24 @@ fn run_say(
 /// The ONE `chat` record: a line the Telegram bridge forwards, written by
 /// `actor`, addressed to no seat.
 pub(crate) fn chat_line(ts: time::Timestamp, actor: &str, actor_slot: &str, text: &str) -> String {
+    chat_line_for(ts, actor, actor_slot, "", text)
+}
+
+/// [`chat_line`] that carries `reference`, so a later reader finds the line it
+/// owes by what it refers to: one append is then record and delivery at once.
+pub(crate) fn chat_line_for(
+    ts: time::Timestamp,
+    actor: &str,
+    actor_slot: &str,
+    reference: &str,
+    text: &str,
+) -> String {
     tracked::event_line(&tracked::EventFields {
         ts,
         actor,
         action: "chat",
         target: "",
-        reference: "",
+        reference,
         actor_slot,
         actor_session: "",
         target_slot: "",

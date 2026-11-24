@@ -619,6 +619,151 @@ impl Cycle<'_> {
         )
     }
 
+    /// ORCHESTRATOR MODEL GUARD: the words of the one owner notice when the
+    /// orchestrator's main seat has a move due (its usage limit is reached, or
+    /// its account reads at the threshold) and its policy produces none, for
+    /// any reason: the policy is `off`, nothing is configured, the running
+    /// model is not proven, only other models are listed, a same-model
+    /// candidate is refused, or the orchestrator's own guards hold it. `None`
+    /// when no move is due or one is permitted. Decided BEFORE any attempt
+    /// opens, with the leg's own stance and chooser, so no retry budget is
+    /// spent and a candidate that becomes usable still moves the seat.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered verdict, read top to bottom"
+    )]
+    pub(super) fn orchestrator_stays(
+        &self,
+        quota: &QuotaCarry,
+        events: &[Event],
+        (slot, agent): (&str, &str),
+        (capture, due): (
+            &str,
+            (
+                &crate::autoreseat::Room,
+                Option<crate::autoreseat::LimitReset>,
+                bool,
+            ),
+        ),
+        now: i64,
+    ) -> Option<String> {
+        use crate::autoreseat::{Ineligible, Room};
+        let (room, reset, limited) = due;
+        if !self.meta_agent
+            || slot != "main"
+            || self.auto.switch != crate::autoreseat::Switch::All
+            || !(limited || matches!(room, Room::Crossed(_)))
+        {
+            return None;
+        }
+        let profile = self.seat_profile(slot);
+        let seat = crate::autoreseat::Seat {
+            session: self.session,
+            slot,
+            agent,
+            profile: &profile,
+            orchestrator: true,
+        };
+        let declared = match crate::autoreseat::eligible(&self.auto, &seat) {
+            Ok(list) => list,
+            Err(Ineligible::Unmapped) => &[],
+            Err(_) => return None,
+        };
+        let row = self.roster.iter().find(|row| row.slot == slot)?;
+        // A move the human's observed choice holds is the observed hold's to say.
+        if crate::run::observed_standing(self.meta_dir, slot).is_some() {
+            return None;
+        }
+        let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
+        let auto = self.auto.seat_view(self.lead_pair, slot);
+        let stance = crate::autoreseat::leg::orchestrator_stance(
+            &auto,
+            &bytes,
+            row,
+            (self.meta_dir, Some(capture)),
+        )?;
+        let auto = auto.staged(Some(stance.clone()));
+        let list = crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, declared);
+        let by_hand = list.first().map(|(name, _)| name.clone());
+        let reason = if list.is_empty() {
+            format!("nothing is configured to take it ({profile} has no candidate)")
+        } else if stance == crate::autoreseat::Stance::Off {
+            "auto_reseat_orchestrator = off".to_owned()
+        } else {
+            match crate::autoreseat::leg::orchestrator_list(
+                self.meta_dir,
+                &bytes,
+                (self.session, slot, agent),
+                list.clone(),
+            ) {
+                Err((class, why)) => class.details(&why).trim_start_matches("held: ").to_owned(),
+                Ok(kept) => {
+                    let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
+                    let left_on_headroom =
+                        crate::autoreseat::left_on_headroom(events, self.session, slot, agent);
+                    let latched = crate::autoreseat::latched_identities(
+                        &self.roster,
+                        events,
+                        self.session,
+                        slot,
+                    );
+                    let judged = crate::autoreseat::leg::candidates(
+                        &kept,
+                        |to| crate::reseat::resolved(self.meta_dir, to),
+                        (&left, &left_on_headroom),
+                        quota.last_observation.as_ref(),
+                        &latched,
+                        now,
+                    );
+                    let pair = crate::autoreseat::leg::pair_of(
+                        self.meta_dir,
+                        &bytes,
+                        &self.roster,
+                        self.lead_pair,
+                        slot,
+                    );
+                    let route = crate::autoreseat::Route::Move {
+                        seat_profile: &profile,
+                    };
+                    let bar = auto.headroom_at.filter(|_| !limited);
+                    let choice = crate::autoreseat::choose_seat(
+                        &auto,
+                        route,
+                        &judged,
+                        now,
+                        bar,
+                        pair.as_ref(),
+                    );
+                    if choice.pick.is_some() {
+                        return None;
+                    }
+                    crate::autoreseat::leg::passed_over_words(&choice)
+                }
+            }
+        };
+        let when = |at: i64| format!(", resets {}", crate::time::Timestamp::from_epoch(at));
+        let scope = match room {
+            Room::Crossed(window) => format!(
+                "{} reads {:.0}%{}",
+                window.label,
+                window.judged,
+                window.resets_at.map(when).unwrap_or_default()
+            ),
+            _ => format!(
+                "its usage limit is reached{}",
+                reset.map(|reset| when(reset.at)).unwrap_or_default()
+            ),
+        };
+        let action = match by_hand {
+            Some(name) => format!(
+                "Move it by hand: ae reseat {} main --using {name}",
+                self.session
+            ),
+            None => format!("No candidate is configured: add an [auto_reseat] row for {profile}."),
+        };
+        Some(format!("{reason}. {scope}. {action}"))
+    }
+
     /// The line the first-sight notice of `agent`'s limit gains when auto
     /// reseat may move it, ranked over this cycle's held quota observation.
     pub(super) fn auto_deadline(
@@ -676,6 +821,21 @@ impl Cycle<'_> {
         // The seat's own view carries the lead floor, so the forecast never
         // promises a move the leg would refuse (#309).
         let auto = self.auto.seat_view(self.lead_pair, slot);
+        // The orchestrator's model guard: the forecast never promises a move
+        // the leg would refuse for the model (`auto_reseat_orchestrator`).
+        let stance = (self.meta_agent && slot == "main")
+            .then(|| {
+                let capture =
+                    crate::autoreseat::leg::live_capture(self.meta_dir, self.session, agent);
+                crate::autoreseat::leg::orchestrator_stance(
+                    &auto,
+                    &bytes,
+                    row,
+                    (self.meta_dir, capture.as_deref()),
+                )
+            })
+            .flatten();
+        let auto = auto.staged(stance);
         let route = crate::autoreseat::Route::Move {
             seat_profile: &profile,
         };

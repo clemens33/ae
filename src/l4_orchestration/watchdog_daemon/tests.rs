@@ -6252,6 +6252,7 @@ fn the_auto_writer_records_only_what_the_journal_still_owes_under_the_lock() {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         },
         auto_trust: crate::config::AutoTrust::Off,
@@ -6498,6 +6499,7 @@ fn the_auto_reseat_step_triggers_one_due_seat_and_names_each_hold_once() {
         limited: true,
         room: crate::autoreseat::Room::Unread,
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: None,
         wake_landed: None,
@@ -6515,6 +6517,7 @@ fn the_auto_reseat_step_triggers_one_due_seat_and_names_each_hold_once() {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let (one, two) = (
@@ -6719,6 +6722,7 @@ fn a_refused_limit_seat_is_triggered_again_after_its_cooldown_and_given_up_on_on
         limited,
         room: crate::autoreseat::Room::Unread,
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: None,
         wake_landed: None,
@@ -6736,6 +6740,7 @@ fn a_refused_limit_seat_is_triggered_again_after_its_cooldown_and_given_up_on_on
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let acts = |seats: &[AutoSeat], events: &[Event], now: i64| {
@@ -6881,6 +6886,7 @@ fn the_give_up_is_journaled_as_a_hold_and_told_once_while_it_is_owed() {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         },
         auto_trust: crate::config::AutoTrust::Off,
@@ -7082,6 +7088,7 @@ fn the_headroom_arm_opens_rearms_and_decides_only_while_near() {
         limited,
         room,
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: None,
         wake_landed: None,
@@ -7099,6 +7106,7 @@ fn the_headroom_arm_opens_rearms_and_decides_only_while_near() {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let acts = |settings: &Settings, seat: AutoSeat, events: &[Event], now: i64| {
@@ -7276,6 +7284,7 @@ fn a_raised_threshold_moves_nothing_below_it_even_after_a_restart() {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let seat = |at: u8, judged: f64| AutoSeat {
@@ -7290,6 +7299,7 @@ fn a_raised_threshold_moves_nothing_below_it_even_after_a_restart() {
         limited: false,
         room: room(&[window(judged)], at),
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: None,
         wake_landed: None,
@@ -7353,6 +7363,7 @@ fn seam_seat() -> super::AutoSeat {
         limited: true,
         room: crate::autoreseat::Room::Unread,
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: None,
         wake_landed: None,
@@ -7408,6 +7419,7 @@ fn an_unmapped_seat_is_named_only_while_its_limit_episode_is_owed_a_move() {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let key = crate::time::Timestamp::from_epoch(100);
@@ -7593,6 +7605,7 @@ fn route_settings(threshold: bool) -> crate::autoreseat::Settings {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     }
 }

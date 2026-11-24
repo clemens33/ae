@@ -320,11 +320,78 @@ pub(crate) fn orchestrator_exchange(
     None
 }
 
+// ORCHESTRATOR MODEL GUARD (orchpin): what the live pane of `agent` draws now.
+pub(crate) fn live_capture(dir: &Path, session: &str, agent: &str) -> Option<String> {
+    let (found, server) = crate::tracked::resolve_on(agent, session, dir).ok()?;
+    crate::transport::capture_pane(&server, &found.pane)
+}
+
+// ORCHESTRATOR MODEL GUARD (orchpin): the stance `auto_reseat_orchestrator`
+// gives the orchestrator's main seat, judged from the facts that prove its
+// model: its launch record (bound to its CURRENT launch), the recorded profile
+// pin, the model its live pane draws, and a standing observed model change.
+// `None` under `on`: the seat is judged like every main seat.
+pub(crate) fn orchestrator_stance(
+    settings: &Settings,
+    bytes: &[u8],
+    seat: &crate::meta::RosterEntry,
+    (dir, capture): (&Path, Option<&str>),
+) -> Option<super::Stance> {
+    match settings.orchestrator.mode {
+        super::OrchestratorMove::On => None,
+        super::OrchestratorMove::Off => Some(super::Stance::Off),
+        super::OrchestratorMove::SameModel => {
+            let tool =
+                crate::tool::ToolKind::from_binary_name(seat.binary.as_deref().unwrap_or_default());
+            let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(bytes));
+            let launch = meta.launch_id(&seat.slot);
+            let launched = match crate::meta::launched(bytes, &seat.slot) {
+                crate::meta::Rows::Valid(base)
+                    // A seat with no current launch id has nothing to bind to:
+                    // the reseat's own guard refuses every automatic move of an
+                    // orchestrator that records no launch, with its own words.
+                    if launch.is_none()
+                        || base
+                            .start
+                            .strip_prefix(seat.slot.as_str())
+                            .and_then(|rest| rest.strip_prefix(':'))
+                            .and_then(|rest| rest.rsplit_once(':'))
+                            .map(|(id, _)| id)
+                            == launch =>
+                {
+                    base.model
+                }
+                _ => None,
+            };
+            let profile_pin = seat
+                .profile
+                .as_deref()
+                .and_then(|profile| crate::reseat::resolved(dir, profile))
+                .and_then(|found| found.pin);
+            let drawn =
+                capture.and_then(|text| crate::harness_state::observed_identity(text, tool).model);
+            let drift = matches!(
+                crate::meta::observed_pair(bytes, &seat.slot),
+                crate::meta::Rows::Valid(_)
+            );
+            Some(super::Stance::Keep(super::orchestrator_origin(
+                &super::OriginFacts {
+                    tool,
+                    launched: launched.as_deref(),
+                    profile_pin: profile_pin.as_deref(),
+                    drawn: drawn.as_deref(),
+                    drift,
+                },
+            )))
+        }
+    }
+}
+
 /// The candidates an orchestrator's seat may take, or the hold that keeps it
 /// where it is: nothing may be in flight ([`orchestrator_in_flight`]), and only
 /// a candidate on which ae can resume the SAME conversation is kept
 /// ([`crate::reseat::travels`]).
-fn orchestrator_list(
+pub(crate) fn orchestrator_list(
     dir: &Path,
     bytes: &[u8],
     (session, slot, agent): (&str, &str, &str),
@@ -1498,6 +1565,8 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
             Borrowed("its model matches tier rows that disagree")
         }
         Skip::Floor(super::Floor::Unusable) => Borrowed("the lead floor is unusable"),
+        Skip::OrchestratorModel => Borrowed("the orchestrator keeps its model"),
+        Skip::OrchestratorOff => Borrowed("the orchestrator never moves automatically"),
     }
 }
 
@@ -1663,6 +1732,15 @@ pub(crate) fn run(
     // The seat's own threshold: the lead pair reads its own row when it is set.
     let settings = global.seat_view(lead_pair, &argv.slot);
     let orchestrator = crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role;
+    // ORCHESTRATOR MODEL GUARD: the orchestrator main seat is judged by the stance
+    // of auto_reseat_orchestrator, proved from its launch record and live pane.
+    let live = orchestrator
+        .then(|| live_capture(dir, &argv.session, &agent))
+        .flatten();
+    let stance = orchestrator
+        .then(|| orchestrator_stance(&settings, &bytes, seat, (dir, live.as_deref())))
+        .flatten();
+    let settings = settings.staged(stance);
     let asked = Seat {
         session: &argv.session,
         slot: &argv.slot,
@@ -2334,6 +2412,11 @@ pub(crate) fn root_refusal_told(
 /// the room [`refused_return`] always leaves it, so the cut never decides.
 const ROOT_REFUSAL_MATCH: usize = 300;
 
+/// ORCHESTRATOR MODEL GUARD: what a choice with no pick passed over, and why.
+pub(crate) fn passed_over_words(choice: &super::Choice) -> String {
+    unusable(&choice.skipped)
+}
+
 fn unusable(skipped: &[(String, Skip)]) -> String {
     let named: Vec<String> = skipped
         .iter()
@@ -2467,8 +2550,14 @@ type Told<'a> = (
 /// recipient that is busy, gone or replaced since `told` was read is the
 /// helper's to refuse; the outcome is already durable.
 fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
-    let (roster, lead_pair, spawner, bytes) = told;
     said(argv, now, text);
+    fan_out(argv, told, text);
+}
+
+/// The lead pair and the spawner, each told `text` through the session's own
+/// send helper ([`tell`] without its chat line).
+fn fan_out(argv: &Argv, told: Told<'_>, text: &str) {
+    let (roster, lead_pair, spawner, bytes) = told;
     for recipient in super::recipients(roster, lead_pair, &argv.slot, spawner) {
         // The roster row `recipients` named, found by the rule it found it.
         let slot = roster
@@ -2479,6 +2568,64 @@ fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
     }
 }
 
+// ORCHESTRATOR MODEL GUARD: the words every owner notice of this guard opens
+// with. The chat line that carries them is also the episode's receipt.
+const STAYS_HEAD: &str = "auto reseat: orchestrator stays: ";
+
+/// Whether the owner was already told, for the episode keyed `reference`, that
+/// the orchestrator's due move stays undone: the notice's own chat line, which
+/// carries the key, is the receipt.
+fn stays_told(events: &[crate::events::Event], reference: &str) -> bool {
+    events.iter().any(|event| {
+        event.actor == WATCHDOG_ACTOR
+            && event.action == "chat"
+            && event.reference.as_deref() == Some(reference)
+            && event
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.starts_with(STAYS_HEAD))
+    })
+}
+
+/// Tell the owner, ONCE per episode, that the due move of the orchestrator's
+/// seat stays undone and why: one targetless chat line carrying the episode
+/// key, appended as the watchdog, then the lead pair and the spawner as every
+/// ending is told. One append is both the committed receipt and the delivery,
+/// so a restart repeats nothing and a death cannot consume the warning. The
+/// notice never ends the episode: the move still happens once it can.
+pub(crate) fn tell_stays(
+    dir: &Path,
+    (session, slot, agent): (&str, &str, &str),
+    key: Timestamp,
+    now: Timestamp,
+    body: &str,
+) {
+    let reference = key.to_string();
+    if stays_told(&crate::watchdog_daemon::read_events(dir), &reference) {
+        return;
+    }
+    let text = format!("{STAYS_HEAD}{agent} not moved: {body}");
+    let line = crate::chat_line_for(now, WATCHDOG_ACTOR, "", &reference, &text);
+    if crate::store::open(dir).append_event(&line).is_err() {
+        return;
+    }
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let events = crate::watchdog_daemon::read_events(dir);
+    let argv = Argv {
+        session: session.to_owned(),
+        dir: dir.to_path_buf(),
+        slot: slot.to_owned(),
+        key,
+    };
+    let told = (
+        meta.roster(),
+        crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
+        super::spawner(&events, session, slot, agent),
+        bytes.as_slice(),
+    );
+    fan_out(&argv, told, &text);
+}
 /// Deliver `text` to `agent` through the session's own send helper, bound to
 /// the incarnation `bytes`, the deciding meta snapshot, holds at `slot`. A row
 /// that snapshot cannot prove, or no slot at all, is refused here with one
@@ -2731,6 +2878,12 @@ pub(crate) fn trigger(
         profile: &profile,
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
+    // ORCHESTRATOR MODEL GUARD: the same stance the leg will judge it by.
+    let stance = seat
+        .orchestrator
+        .then(|| orchestrator_stance(&settings, &bytes, row, (dir, Some(text))))
+        .flatten();
+    let settings = settings.staged(stance);
     let pin = crate::reseat::resolved(dir, &profile).and_then(|found| found.pin);
     let mut start = start_read(
         &settings,
@@ -4524,6 +4677,7 @@ mod tests {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -4686,6 +4840,7 @@ mod tests {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -5176,6 +5331,7 @@ mod tests {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -5622,6 +5778,7 @@ mod tests {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
             notes: Vec::new(),
         };
         let seat = Seat {

@@ -39,6 +39,7 @@ fn settings() -> Settings {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     }
 }
@@ -68,6 +69,7 @@ fn seat(slot: &str, agent: &str) -> AutoSeat {
         limited: true,
         room: Room::Unread,
         derives: false,
+        stays: None,
         start: StartRead::default(),
         reset: None,
         wake_landed: None,

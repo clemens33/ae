@@ -2963,6 +2963,20 @@ impl Cycle<'_> {
                                 crate::autoreseat::Room::Crossed(_) | crate::autoreseat::Room::Near
                             ),
                     ),
+                    stays: self.orchestrator_stays(
+                        &carry.quota,
+                        &events,
+                        (&slot, agent),
+                        (
+                            &capture,
+                            (
+                                &own_room,
+                                carried.limit_reset,
+                                carried.limit_since.is_some() || resume.exhausted.is_some(),
+                            ),
+                        ),
+                        now,
+                    ),
                     room: own_room,
                     start: resume,
                     reset: carried.limit_reset,

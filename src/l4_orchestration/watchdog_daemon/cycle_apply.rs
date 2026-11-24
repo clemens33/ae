@@ -737,6 +737,7 @@ impl Cycle<'_> {
             | AutoAct::GaveUp { slot, agent, .. }
             | AutoAct::OpenReturn { slot, agent, .. }
             | AutoAct::Flapped { slot, agent, .. }
+            | AutoAct::Stays { slot, agent, .. }
             | AutoAct::Unmapped { slot, agent, .. } => (slot, agent),
             AutoAct::Trigger { .. } => return Ok(()),
         };
@@ -841,6 +842,18 @@ impl Cycle<'_> {
                 }
                 return Ok(());
             }
+            // ORCHESTRATOR MODEL GUARD: the one owner notice of the episode; the
+            // journal's own notice is its receipt, so a restart repeats nothing.
+            AutoAct::Stays { key, body, .. } => {
+                crate::autoreseat::leg::tell_stays(
+                    self.meta_dir,
+                    (self.session, slot, agent),
+                    *key,
+                    Timestamp::from_epoch(now),
+                    body,
+                );
+                return Ok(());
+            }
             AutoAct::Held { .. } | AutoAct::Overdue { .. } | AutoAct::Trigger { .. } => {}
         }
         let (key, overdue, action, summary, trigger) = match act {
@@ -903,6 +916,7 @@ impl Cycle<'_> {
             &self.auto.headroom_note,
             &self.auto.lead.note,
             &self.auto.floor_note,
+            &self.auto.orchestrator.note,
         ]
         .into_iter()
         .flatten()

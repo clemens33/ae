@@ -188,6 +188,8 @@ const HEADROOM_KEY: &str = "auto_reseat_at";
 const LEAD_KEY: &str = "auto_reseat_lead_at";
 /// The lead pair's capability floor: a tier from `[model_tiers]` (#309).
 const FLOOR_KEY: &str = "auto_reseat_lead_floor";
+/// The orchestrator's own move policy: `off`, `same-model` or `on`.
+const ORCHESTRATOR_KEY: &str = "auto_reseat_orchestrator";
 /// The section that gives a model its tier.
 const TIERS_SECTION: &str = "model_tiers";
 
@@ -441,6 +443,100 @@ pub enum Floor {
     Unusable,
 }
 
+// ORCHESTRATOR MODEL GUARD (orchpin): `auto_reseat_orchestrator` and the origin
+// proof. Everything of it lives in this block, in `choose_seat`'s stamp and in
+// `leg::orchestrator_stance`.
+
+/// What `[workspace] auto_reseat_orchestrator` lets an automatic move do to the
+/// orchestrator's main seat. It only narrows `auto_reseat = all`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OrchestratorMove {
+    /// Never moves automatically.
+    Off,
+    /// Moves only onto the very model it runs.
+    #[default]
+    SameModel,
+    /// Moves as every main seat does.
+    On,
+}
+
+/// The tool and exact model id the orchestrator runs, or why ae cannot prove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    Proven { id: String, tool: ToolKind },
+    Unproven(String),
+}
+
+/// What the orchestrator's seat view judges every candidate against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stance {
+    /// `auto_reseat_orchestrator = off`: no candidate is taken.
+    Off,
+    /// `same-model`: only a candidate pinned to the origin's exact id.
+    Keep(Origin),
+}
+
+/// The orchestrator row as judged, and the view it gives one seat.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrchestratorPolicy {
+    pub mode: OrchestratorMove,
+    /// The note an unusable `auto_reseat_orchestrator` left, also in `notes`.
+    pub note: Option<String>,
+    /// Set only in a view of the orchestrator's main seat ([`Settings::staged`]).
+    pub stance: Option<Stance>,
+}
+
+/// What the origin proof reads about a running orchestrator.
+#[derive(Debug, Clone, Copy)]
+pub struct OriginFacts<'a> {
+    pub tool: ToolKind,
+    /// The model of the launch baseline bound to the seat's CURRENT launch.
+    pub launched: Option<&'a str>,
+    /// The recorded profile's model flag value.
+    pub profile_pin: Option<&'a str>,
+    /// The model the live pane draws, where it draws one.
+    pub drawn: Option<&'a str>,
+    /// An observed model change stands for the seat.
+    pub drift: bool,
+}
+
+/// The model the orchestrator runs, proved: the model a tool whose footer draws
+/// exact ids shows; otherwise the launch record, or the profile's pin when the
+/// pane draws it. A claude label that contradicts the record, a pin that names
+/// no version and a seat nothing proves are [`Origin::Unproven`]. The family
+/// rule only tells a label from a contradiction; it never qualifies a model.
+#[must_use]
+pub fn orchestrator_origin(facts: &OriginFacts<'_>) -> Origin {
+    let unproven = |why: String| Origin::Unproven(why);
+    if !facts.tool.is_known() {
+        return unproven("its tool is not known".to_owned());
+    }
+    let rule = facts.tool.adapter().pin_match;
+    let satisfied = |id: &str, drawn: &str| crate::model_drift::satisfies(id, drawn, rule);
+    let id = match (rule, facts.drawn) {
+        (crate::tool::PinMatch::Exact, Some(drawn)) => drawn.to_owned(),
+        _ => match (facts.launched, facts.profile_pin, facts.drawn) {
+            (Some(launched), ..) => launched.to_owned(),
+            (None, Some(pin), Some(drawn)) if !facts.drift && satisfied(pin, drawn) => {
+                pin.to_owned()
+            }
+            _ => return unproven("no launch record or live pane proves its model".to_owned()),
+        },
+    };
+    if rule == crate::tool::PinMatch::FamilyVersion {
+        if !crate::model_drift::pin_names_a_version(&id) {
+            return unproven(format!("{id} names no version"));
+        }
+        if let Some(drawn) = facts.drawn.filter(|drawn| !satisfied(&id, drawn)) {
+            return unproven(format!("the pane draws {drawn}, not {id}"));
+        }
+    }
+    Origin::Proven {
+        id,
+        tool: facts.tool,
+    }
+}
+
 /// How the candidates of a move were reached, for the lead floor.
 #[derive(Debug, Clone, Copy)]
 pub enum Route<'a> {
@@ -482,6 +578,8 @@ pub struct Settings {
     /// Set only in a [`Self::seat_view`] of a lead-pair seat that a floor
     /// judges: the one place a chooser learns the seat is a lead.
     pub lead_seat: bool,
+    /// `auto_reseat_orchestrator` and the orchestrator seat's own stance.
+    pub orchestrator: OrchestratorPolicy,
     /// One line per entry ignored or knob refused, for the operator.
     pub notes: Vec<String>,
 }
@@ -500,6 +598,7 @@ impl Settings {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: OrchestratorPolicy::default(),
             notes,
         }
     }
@@ -532,6 +631,18 @@ impl Settings {
             }
         }
         view.lead_seat = judged;
+        std::borrow::Cow::Owned(view)
+    }
+
+    /// These settings as the orchestrator's main seat is judged by them: the
+    /// stance `auto_reseat_orchestrator` gives it, or unchanged under `on`.
+    #[must_use]
+    pub fn staged(&self, stance: Option<Stance>) -> std::borrow::Cow<'_, Self> {
+        if stance.is_none() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut view = self.clone();
+        view.orchestrator.stance = stance;
         std::borrow::Cow::Owned(view)
     }
 
@@ -672,6 +783,11 @@ pub fn settings_in(file: &Path, text: &str) -> Settings {
                 settled.floor = floor;
                 settled.notes.extend(note.clone());
                 settled.floor_note = note;
+                let (mode, note) =
+                    parse_orchestrator(read(ORCHESTRATOR_KEY), times(ORCHESTRATOR_KEY));
+                settled.orchestrator.mode = mode;
+                settled.notes.extend(note.clone());
+                settled.orchestrator.note = note;
                 settled.tiers = parse_tiers(
                     crate::config::section_entries(file, text, TIERS_SECTION),
                     &mut settled.notes,
@@ -708,6 +824,35 @@ fn parse_floor(
     };
     let note = format!("{why}; a lead seat takes no model change until it is fixed");
     (FloorSetting::Unusable(detail), Some(note))
+}
+
+/// `auto_reseat_orchestrator` as written. Absent is `same-model`; so is a value
+/// ae cannot use, with the one note that says so (a typo never frees the
+/// orchestrator to change model). A value is echoed escaped.
+fn parse_orchestrator(
+    raw: Result<Option<String>, String>,
+    times: Result<usize, String>,
+) -> (OrchestratorMove, Option<String>) {
+    let unusable = |said: String| {
+        let note = format!("{said}; the orchestrator moves only onto its own model (same-model)");
+        (OrchestratorMove::SameModel, Some(note))
+    };
+    match (raw, times) {
+        (Err(why), _) | (_, Err(why)) => unusable(why),
+        (Ok(_), Ok(times)) if times > 1 => {
+            unusable(format!("{ORCHESTRATOR_KEY} is set {times} times"))
+        }
+        (Ok(None), _) => (OrchestratorMove::SameModel, None),
+        (Ok(Some(raw)), _) => match raw.trim() {
+            "off" => (OrchestratorMove::Off, None),
+            "same-model" => (OrchestratorMove::SameModel, None),
+            "on" => (OrchestratorMove::On, None),
+            _ => unusable(format!(
+                "{ORCHESTRATOR_KEY} = {:?} is not off, same-model or on",
+                raw.trim()
+            )),
+        },
+    }
 }
 
 /// A tier or floor number: digits only, `0` to `255`, no sign.
@@ -921,6 +1066,7 @@ fn settle(
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: OrchestratorPolicy::default(),
         notes,
     }
 }
@@ -2586,6 +2732,11 @@ pub enum Skip {
     /// The lead floor passes it over: its model is under the floor or has no
     /// tier ([`choose_seat`], #309).
     Floor(Floor),
+    /// The orchestrator's model is kept and this candidate does not run it, or
+    /// ae cannot prove it does (`auto_reseat_orchestrator = same-model`).
+    OrchestratorModel,
+    /// `auto_reseat_orchestrator = off`: the orchestrator is never moved.
+    OrchestratorOff,
 }
 
 /// What links a seat to its pair partner, from the roster alone (#305).
@@ -2816,14 +2967,70 @@ pub fn choose_seat(
     room: Option<u8>,
     pair: Option<&PairGuard>,
 ) -> Choice {
-    if !settings.lead_seat || settings.floor == FloorSetting::None {
+    let floored = settings.lead_seat && settings.floor != FloorSetting::None;
+    if !floored && settings.orchestrator.stance.is_none() {
         return choose_paired(judged, now, room, pair);
     }
     let stamped: Vec<Candidate> = judged
         .iter()
-        .map(|candidate| stamp_floor(settings, route, candidate))
+        .map(|candidate| {
+            let candidate = if floored {
+                stamp_floor(settings, route, candidate)
+            } else {
+                candidate.clone()
+            };
+            stamp_orchestrator(settings, route, candidate)
+        })
         .collect();
     choose_paired(&stamped, now, room, pair)
+}
+
+// ORCHESTRATOR MODEL GUARD: `candidate` with the verdict of the orchestrator's
+// stance on it, or unchanged when it has none, a floor already refused it, or
+// it runs exactly the origin's model. A return follows the same rule: its
+// origin candidate is judged like any other.
+fn stamp_orchestrator(settings: &Settings, route: Route<'_>, candidate: Candidate) -> Candidate {
+    let Some(stance) = &settings.orchestrator.stance else {
+        return candidate;
+    };
+    let mut out = candidate;
+    if out.floor.is_some() {
+        return out;
+    }
+    let row = match (out.provenance, route) {
+        (Provenance::Declared | Provenance::DeclaredTwin, Route::Move { seat_profile }) => {
+            format!(", declared in [auto_reseat] {seat_profile}")
+        }
+        _ => String::new(),
+    };
+    let model = out.model.pin.as_deref().unwrap_or("unknown");
+    match stance {
+        Stance::Off => {
+            out.floor = Some((
+                Skip::OrchestratorOff,
+                format!("{row}, {ORCHESTRATOR_KEY} = off"),
+            ));
+        }
+        Stance::Keep(Origin::Unproven(why)) => {
+            out.floor = Some((
+                Skip::OrchestratorModel,
+                format!("{row}, model {model} (not proven to be its model: {why})"),
+            ));
+        }
+        Stance::Keep(Origin::Proven { id, tool }) => {
+            let same = out.model.pin.as_deref() == Some(id.as_str())
+                && out.model.tool == Some(*tool)
+                && (tool.adapter().pin_match == crate::tool::PinMatch::Exact
+                    || crate::model_drift::pin_names_a_version(id));
+            if !same {
+                out.floor = Some((
+                    Skip::OrchestratorModel,
+                    format!("{row}, model {model} (it runs {id})"),
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// `candidate` with the lead floor's verdict on it ([`choose_seat`]).
@@ -3828,6 +4035,7 @@ mod tests {
             floor_note: None,
             tiers: Vec::new(),
             lead_seat: false,
+            orchestrator: OrchestratorPolicy::default(),
             notes: Vec::new(),
         }
     }

@@ -16,6 +16,9 @@ pub(super) struct AutoSeat {
     pub(super) room: crate::autoreseat::Room,
     /// Its `[auto_reseat]` row names nothing, but its own family does.
     pub(super) derives: bool,
+    /// ORCHESTRATOR MODEL GUARD: this cycle's due move of the orchestrator's main
+    /// seat yields no move whatever the cause; the words of the one owner notice.
+    pub(super) stays: Option<String>,
     /// This cycle's read of it against the session's resume.
     pub(super) start: crate::autoreseat::StartRead,
     /// Its latched episode's carried binding reset: a near short one waits
@@ -40,6 +43,14 @@ pub(super) enum AutoAct {
         agent: String,
         key: Timestamp,
         profile: String,
+    },
+    /// Say, once per episode, that the due move of the orchestrator stays
+    /// undone and why: no attempt opens, so nothing is spent.
+    Stays {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        body: String,
     },
     /// Say, once per episode, that the last round was refused or failed and
     /// no attempt follows.
@@ -142,7 +153,7 @@ pub(super) fn auto_acts_with(
         // The origin is a return's one candidate, so a seat with no row of its
         // own may still go home: only the return path decides it then.
         let homeward_only = match crate::autoreseat::eligible(settings, &asked) {
-            Err(Ineligible::Unmapped) if seat.derives => false,
+            Err(Ineligible::Unmapped) if seat.derives || seat.stays.is_some() => false,
             Err(Ineligible::Unmapped) if seat.limited => {
                 acts.extend(unmapped_act(settings, seat, events, session, now));
                 continue;
@@ -244,6 +255,17 @@ pub(super) fn auto_acts_with(
                 trigger,
             }),
             Decision::Hold(_) | Decision::Attempt if trigger == Trigger::Headroom && !near => {}
+            // ORCHESTRATOR MODEL GUARD: a due move the policy cannot make is said
+            // to the owner once, and no attempt opens: nothing is spent, so a
+            // candidate that becomes usable moves the seat next cycle.
+            Decision::Hold(_) | Decision::Attempt if seat.stays.is_some() && !homeward => {
+                acts.extend(seat.stays.clone().map(|body| AutoAct::Stays {
+                    slot,
+                    agent,
+                    key,
+                    body,
+                }));
+            }
             // A return's holds are silent: a working seat is no news (M6).
             Decision::Hold(_) if homeward => {}
             Decision::Hold(reason) => {

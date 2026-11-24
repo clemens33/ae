@@ -645,6 +645,7 @@ fn auto_reseat_waits_for_a_near_short_reset_and_moves_otherwise() {
         limited,
         room,
         derives: false,
+        stays: None,
         start: crate::autoreseat::StartRead::default(),
         reset: seat_reset,
         wake_landed,
@@ -662,6 +663,7 @@ fn auto_reseat_waits_for_a_near_short_reset_and_moves_otherwise() {
         floor_note: None,
         tiers: Vec::new(),
         lead_seat: false,
+        orchestrator: crate::autoreseat::OrchestratorPolicy::default(),
         notes: Vec::new(),
     };
     let acts = |settings: &Settings, seats: &[AutoSeat], events: &[Event], now: i64| {

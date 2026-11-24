@@ -1014,6 +1014,40 @@ read in the leg and again by the move under the lifecycle lock:
    at its shell. Nothing removes the record: a launch id is minted once, so a line
    naming no current launch binds nothing.
 
+**The model guard.** `[workspace] auto_reseat_orchestrator = off | same-model | on`
+(default `same-model`, global only) says what an automatic move may do to the
+orchestrator's main seat, the seat of the meta session whose role row marks it
+the orchestrator. It only narrows `auto_reseat = all`.
+
+- `same-model` is a stamp in `autoreseat::choose_seat`, so the leg (limit and
+  headroom), the trigger, the return and the forecast all obey it. A candidate
+  passes only when its profile pins the byte-equal model id of the seat's
+  origin, on the same tool, and the id names a version. The origin
+  (`autoreseat::orchestrator_origin`, `leg::orchestrator_stance`) is the seat's
+  launch record (`launched.<slot>`, bound to the current launch id when the seat records one) checked
+  against the live pane: a tool whose footer draws exact ids (`PinMatch::Exact`)
+  shows its own id, a claude label that contradicts the record, an alias-only
+  pin or a seat nothing proves is unproven, and an unproven origin refuses every
+  candidate. The family rule (`model_drift::satisfies`) only tells a label from a
+  contradiction, never qualifies a model. A refusal names the candidate's model
+  and, for a declared row, the `[auto_reseat]` row. The return home follows the
+  same rule.
+- `off` stamps every candidate refused; `on` stamps nothing.
+- One owner notice per episode, whatever refused the move
+  (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`). When a
+  move is due (a usage limit past its grace, or the account at the threshold)
+  and the policy produces none (`off`, nothing configured, an unproven model,
+  only other models, a same-model candidate with no room, a request in flight,
+  no candidate keeping the conversation), the daemon decides BEFORE it triggers
+  and opens no attempt, so no retry is spent and a candidate that becomes usable
+  moves the seat the next cycle. The notice is one targetless watchdog `chat`
+  line carrying the episode key as its reference: that line is both the receipt
+  and the delivery, a restart finds it in the journal and repeats nothing, and
+  the lead pair and the spawner are told after it. It names the scope window,
+  its reset time and the reason, then `ae reseat <session> main --using <profile>`
+  when a manual profile exists, else that no candidate is configured.
+- An unusable value means `same-model`, with one note per watchdog start.
+
 The session's identity stays: `meta_agent`, `session_id`, the seat overlay,
 `main_pane`, the charter, the desk board, memos and the journal are not touched;
 the move mints a new `launch_id.main`, which the dispatcher proof requires to be
