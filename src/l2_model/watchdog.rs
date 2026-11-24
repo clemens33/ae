@@ -8725,4 +8725,29 @@ tail line
         let why = found.differs.expect("named with a reason");
         assert!(why.contains("never measured together"), "{why}");
     }
+
+    /// trustfix survivor: a wrapped folder joins only from printable-ASCII
+    /// fragments; a space at the measured column length is not a fragment.
+    #[test]
+    fn a_wrapped_folder_joins_only_printable_ascii_fragments() {
+        let frame = include_str!(
+            "../../tests/fixtures/dialogseat/claude-2.1.330-settings-40x12.history.txt"
+        );
+        let measured = super::human_prompt_class(frame, "claude").expect("named");
+        assert_eq!(
+            measured
+                .trust
+                .as_ref()
+                .map(|sighting| sighting.folder.as_str()),
+            Some("/tmp/ae-dialog-probe/project"),
+            "control: the measured wrap joins"
+        );
+        let spaced = frame.replace(
+            " /tmp/ae-dialog-probe/proj\n",
+            " /tmp/ae-dialog probe/proj\n",
+        );
+        assert_ne!(spaced, frame, "setup: the first fragment changed");
+        let found = super::human_prompt_class(&spaced, "claude");
+        assert_eq!(found.and_then(|found| found.trust), None);
+    }
 }
