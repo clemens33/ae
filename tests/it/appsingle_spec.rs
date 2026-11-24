@@ -54,11 +54,18 @@
 //! `app-view`. It may restore that file once, as a fresh start does. It does
 //! not combine with `--app-own` or `--app-view`.
 //!
-//! A pane stamped `@ae_console` (a `chat = app` window, including its
-//! respawn) neither holds nor consults the record (D2). Typed `ae app`,
-//! plain `ae`, `ae <name>` landings and a handed exec restart are governed.
-//! This file does not call tmux, so that stamp check is reviewed on the run
-//! path.
+//! A pane that carries a non-empty `@ae_console` (a `chat = app` window,
+//! including its respawn) neither holds nor consults the record (D2). An
+//! empty or absent stamp is governed. A stamp tmux did not answer is doubt,
+//! not an exemption. A fixture that needs a second TUI uses `--new` or a
+//! pane that carries the stamp. This file does not forbid that move.
+//!
+//! Typed `ae app`, plain `ae` and `ae <name>` landings are governed. A
+//! handed exec restart is governed when the lock is free. When the lock is
+//! already held, that restart keeps the handed view in memory and has the
+//! `--new` effects: no record, no `app-view` write, a TUI, and it does not
+//! focus, take over or refuse. The argv still cannot combine `--new` with
+//! `--app-view`. `tests/it/app_hint_spec.rs` takes the frozen `USAGE` text.
 //!
 //! The grammar is the space-separated `1` lines below. The request carries
 //! the target pid, the target start identity, the requester pid and the
