@@ -3313,4 +3313,10 @@ mod sleepgap_spec;
 mod waithold_cycle_spec;
 
 #[cfg(test)]
+#[path = "watchdog_daemon/vendorblock_latch_spec.rs"]
+mod vendorblock_latch_spec;
+#[cfg(test)]
+pub(crate) use vendorblock_latch_spec::apply_booked;
+
+#[cfg(test)]
 mod tests;

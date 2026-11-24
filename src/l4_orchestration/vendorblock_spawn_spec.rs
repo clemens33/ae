@@ -169,3 +169,100 @@ fn an_unblocked_client_of_the_same_binary_is_not_refused_as_blocked() {
         );
     }
 }
+
+const MUSE_402: &str = include_str!("../../tests/fixtures/vendorblock/muse-402.reconstructed.txt");
+const MUSE_HEALTHY: &str = include_str!("../../tests/fixtures/vendorblock/muse-healthy-hi.raw.txt");
+
+/// D5: booking the block writes the record. A later frame with the row gone
+/// releases the usage-limit latch and does not delete the record. Spawn
+/// still refuses.
+#[test]
+fn a_released_latch_does_not_clear_the_block_record() {
+    let scratch = Scratch::new("latch");
+    let meta_dir = scratch.root.join("sessions/latch");
+    let record = scratch.root.join("vendorblock/muse.rec");
+    let (seen, first) = sight(&crate::watchdog_daemon::PaneState::default(), MUSE_402);
+    assert!(
+        format!("{:?}", first.effects).contains("BlockScope"),
+        "first sight books the block: {:?}",
+        first.effects
+    );
+    assert_eq!(first.next.limit_since, Some(10_000), "the latch is held");
+    let mut state = first.next.clone();
+    crate::watchdog_daemon::apply_booked(&meta_dir, &first.effects, &seen, &mut state);
+    let kept = std::fs::read(&record).expect("first sight writes vendorblock/muse.rec");
+    let (healthy, released) = sight(&first.next, MUSE_HEALTHY);
+    assert_eq!(released.next.limit_since, None, "the latch released");
+    let mut state = released.next.clone();
+    crate::watchdog_daemon::apply_booked(&meta_dir, &released.effects, &healthy, &mut state);
+    assert_eq!(
+        std::fs::read(&record).expect("the record survives the latch release"),
+        kept
+    );
+    let (rc, err) = spawn(&scratch.root, "emberm");
+    assert_ne!(rc, 0, "{err}");
+    assert!(err.contains("ae quota clear muse"), "{err}");
+    assert_eq!(
+        std::fs::read(&record).expect("spawn leaves the record"),
+        kept
+    );
+}
+
+fn sight(
+    prior: &crate::watchdog_daemon::PaneState,
+    frame: &str,
+) -> (
+    crate::watchdog_daemon::Observation,
+    crate::watchdog_daemon::Accounting,
+) {
+    let mut seen = latch_obs();
+    seen.throttle = crate::watchdog::throttle_class(frame, "muse");
+    seen.limit_notice = crate::watchdog::limit_notice(frame, "muse");
+    let booked =
+        crate::watchdog_daemon::account(prior, &seen, &crate::watchdog_daemon::Knobs::default());
+    (seen, booked)
+}
+
+fn latch_obs() -> crate::watchdog_daemon::Observation {
+    crate::watchdog_daemon::Observation {
+        now_epoch: 10_000,
+        hash: 7,
+        harness: crate::watchdog_daemon::HarnessObservation {
+            frame: crate::harness_state::HarnessState::Unknown,
+            human_draft: false,
+            durable_stale: false,
+            declaration: None,
+        },
+        identity: 1,
+        is_dead: false,
+        throttle: None,
+        limit_notice: None,
+        limit_reset: None,
+        limit_woke_journal: None,
+        auto_continue: false,
+        capture_ok: true,
+        human_prompt: None,
+        throttle_quota: None,
+        quiet: None,
+        ended_wait: None,
+        done_progress: crate::watchdog::DoneProgress::None,
+        wait_progress: crate::watchdog::WaitProgress::None,
+        wait_rung: 0,
+        wait_ends_elsewhere: false,
+        target_moved: None,
+        descendancy: crate::procs::Descendancy::Present,
+        launch_attempt: crate::tmux::Evidence::Silent,
+        outstanding_alert: None,
+        unreachable: false,
+        failed_elsewhere: false,
+        prompt_named: false,
+        start: None,
+        last_actor_event_age_secs: 0,
+        declared_age_secs: 0,
+        suspended: crate::watchdog::Suspensions::default(),
+        sweep: None,
+        own_work: crate::session::OwnWork::default(),
+        auto_in_flight: None,
+        auto_deadline: None,
+    }
+}
