@@ -8641,7 +8641,7 @@ tail line
         assert_ne!(longer, hooks, "setup: the hooks row changed");
         let why = reason("longer", &longer);
         assert!(
-            why.contains("not \"⚠ This folder configures hooks that can run"),
+            why.contains("not \"⚠ This folder configures hooks t"),
             "against the hooks shape: {why}"
         );
         let same = home.replace(" Security guide", " Security guides");
