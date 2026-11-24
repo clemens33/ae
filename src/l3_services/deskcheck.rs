@@ -4,24 +4,28 @@
 //! which of them no board item names, so the orchestrator can see what the
 //! board has dropped. It writes nothing, takes no lock and appends no journal
 //! record: every read is the fleet read the live part takes plus one strict
-//! read of each running session's journal, the read `relay --status` takes
-//! before its echo writes.
+//! read of each session's journal, the read `relay --status` takes before its
+//! echo writes. A journal of a stopped session is read too, because a
+//! dispatcher that stopped leaves its relay owed.
 //!
 //! Three kinds of obligation exist:
 //!
-//! * `owner-ask`: an ask the owner opened in a session's chat that nobody has
-//!   replied to. The line lists the relays that cite it with the state each
-//!   one reads, so a reply owed and a relay still pending stay apart.
-//! * `relay`: a claimed `relay-attempt`, followed to its target by session
-//!   uuid and read as that target's request state. A pending, accepted or
-//!   never-opened request is open; a replied, cancelled or retired one is
-//!   closed. A target that is stopped, purged, ambiguous or unreadable is
+//! * `owner-ask`: an ask the owner opened in a running session's chat that
+//!   nobody has replied to. The line lists the relays that cite it, through
+//!   a bound relay's own record, with the state each one reads, so a reply
+//!   owed and a relay still pending stay apart. An ask open in a session that
+//!   is not running is one coverage line, not an obligation.
+//! * `relay`: a claimed `relay-attempt` of any readable session, followed to
+//!   its target by session uuid and read as that target's request state. A
+//!   pending, accepted or never-opened request is open; a replied, cancelled
+//!   or retired one is closed. A target that is stopped, purged, ambiguous,
+//!   unreadable or whose record lost the evidence of its uuid or journal is
 //!   never counted as answered: it is unresolved coverage.
 //! * `seat`: a seat whose newest declaration is `waiting-user`, bound to its
 //!   session uuid and its seat launch: the session meta's `launch_id.<slot>`
 //!   names the launch and its `launch_time.<slot>` baseline proves the
-//!   declaration was made inside it. The `state` writer records no launch of
-//!   its own, so the baseline is the one boundary the record carries.
+//!   declaration was made after it. Both stamps are whole seconds, so a
+//!   declaration in the second of the baseline is unresolved, never bound.
 //!
 //! A board item matches an obligation only by its typed id at a token
 //! boundary in the item's text or link: the request id for an ask or a relay,
@@ -29,16 +33,22 @@
 //! match is a `hint` and never an answer; a hinted obligation leaves
 //! `unboarded` and is listed on its own. Only `unboarded` decides the exit
 //! status: 0 when it is empty, 1 when it lists something, 2 when the check
-//! itself failed.
+//! itself failed. An unboarded line is a candidate: the board may name the
+//! obligation in other words, so the orchestrator adjudicates each one.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::desk::{self as record, Desk, Item};
 use crate::deskstore;
 use crate::digest::Status;
 use crate::events::{Event, SessionKey};
+use crate::inventory::{FailedSource, Roots};
+use crate::meta::Anomaly;
 use crate::relay::{self, Claim};
+use crate::requests::{self, Request};
+use crate::session::{self, RecordSnapshot};
 use crate::time::Timestamp;
 use crate::tracked;
 
@@ -53,12 +63,69 @@ pub(crate) const EXIT_CHECK_FAILED: u8 = 2;
 /// The known-closed entries a default report prints.
 pub(crate) const CLOSED_SHOWN: usize = 20;
 
-/// One running session's journal, read strictly: the bytes the request fold
-/// reads and the records they parse to.
+/// One session's journal, read strictly: the records, the request fold of
+/// those same bytes, and an index of the records a relay reads. The fold and
+/// the index are taken once, so that a claim never walks the journal again and
+/// every relay to the session reads its state from the one fold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Journal {
-    pub(crate) bytes: Vec<u8>,
     pub(crate) events: Vec<Event>,
+    pub(crate) states: Vec<Request>,
+    /// Where the `relay-attempt` and `relay-result` records of each reference sit.
+    relay_at: HashMap<String, Vec<usize>>,
+    /// Where the console ask openings of each reference sit.
+    ask_at: HashMap<String, Vec<usize>>,
+    /// The reference of each claimed relay, in the order of its first attempt.
+    attempts: Vec<String>,
+}
+
+impl Journal {
+    pub(crate) fn new(events: Vec<Event>, states: Vec<Request>) -> Self {
+        let mut relay_at: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut ask_at: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut attempts: Vec<String> = Vec::new();
+        let mut claimed: HashSet<String> = HashSet::new();
+        for (at, event) in events.iter().enumerate() {
+            let Some(id) = event.reference.as_deref().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if event.action == relay::ATTEMPT || event.action == relay::RESULT {
+                relay_at.entry(id.to_owned()).or_default().push(at);
+            }
+            if event.action == relay::ATTEMPT && claimed.insert(id.to_owned()) {
+                attempts.push(id.to_owned());
+            }
+            if event.actor == tracked::CONSOLE_SINK && event.action == tracked::Kind::Ask.action() {
+                ask_at.entry(id.to_owned()).or_default().push(at);
+            }
+        }
+        Self {
+            events,
+            states,
+            relay_at,
+            ask_at,
+            attempts,
+        }
+    }
+
+    fn picked(&self, positions: Option<&Vec<usize>>) -> Vec<Event> {
+        positions
+            .into_iter()
+            .flatten()
+            .filter_map(|at| self.events.get(*at))
+            .cloned()
+            .collect()
+    }
+
+    /// The attempts and results of relay `id`, in journal order.
+    fn relay_events(&self, id: &str) -> Vec<Event> {
+        self.picked(self.relay_at.get(id))
+    }
+
+    /// The console ask openings of `id`, in journal order.
+    fn ask_events(&self, id: &str) -> Vec<Event> {
+        self.picked(self.ask_at.get(id))
+    }
 }
 
 /// A seat declared `waiting-user`, with the facts that bind it to a launch.
@@ -82,11 +149,25 @@ pub(crate) struct SessionInput {
     /// The session's own uuid, lower-case, when its meta names one.
     pub(crate) uuid: Option<String>,
     pub(crate) status: Status,
-    /// Why the record is partly unreadable, when it is.
+    /// Why the evidence that identifies the session or its journal is
+    /// damaged, when it is: a lost uuid or journal proof, never a degradation
+    /// of another field.
     pub(crate) record_gap: Option<String>,
+    /// The journal, read strictly whatever the liveness, or why it cannot be.
     pub(crate) journal: Result<Journal, String>,
     /// The `waiting-user` seats, or why seat states are not exact.
     pub(crate) waits: Result<Vec<Wait>, String>,
+}
+
+impl SessionInput {
+    /// Why this session's identity or journal cannot prove an obligation.
+    fn proof_gap(&self) -> Option<String> {
+        match (&self.record_gap, &self.journal) {
+            (Some(why), _) => Some(why.clone()),
+            (None, Err(why)) => Some(format!("journal unreadable: {why}")),
+            (None, Ok(_)) => None,
+        }
+    }
 }
 
 /// Which obligation a row is.
@@ -252,21 +333,23 @@ fn fate(claim: &Claim, id: &str, origin: &str, sessions: &[SessionInput]) -> Fat
         Status::Unknown => return Fate::Unresolved("target liveness unknown".to_owned()),
         Status::Running => {}
     }
+    if let Some(why) = &target.record_gap {
+        return Fate::Unresolved(format!("the target's record: {why}"));
+    }
     let journal = match &target.journal {
         Ok(journal) => journal,
         Err(why) => return Fate::Unresolved(format!("the target journal: {why}")),
     };
-    match relay::opening(&journal.events, id, origin, claim) {
+    match relay::opening(&journal.ask_events(id), id, origin, claim) {
         Err(why) => Fate::Unresolved(why),
         Ok(None) => Fate::Open("absent", absent_label(claim)),
-        Ok(Some(_)) => {
-            match relay::request_state(&target.name, &claim.target_uuid, &journal.bytes, id) {
-                word @ ("pending" | "accepted") => Fate::Open(word, String::new()),
-                word @ ("replied" | "cancelled" | "retired") => Fate::Closed(word),
-                "absent" => Fate::Open("absent", absent_label(claim)),
-                other => Fate::Unresolved(format!("the request reads as {other}")),
-            }
-        }
+        Ok(Some(_)) => match relay::request_word(&journal.states, id) {
+            word @ ("pending" | "accepted") => Fate::Open(word, String::new()),
+            word @ ("replied" | "cancelled" | "retired") => Fate::Closed(word),
+            other => Fate::Unresolved(format!(
+                "the target holds the opening and its request reads as {other}"
+            )),
+        },
     }
 }
 
@@ -279,10 +362,40 @@ fn absent_label(claim: &Claim) -> String {
     }
 }
 
-/// One claimed relay of a running session.
+/// The owner ask a relay says it answers, as its attempt records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Join {
+    /// The attempt cites no owner ask and claims none.
+    Absent,
+    /// A bound relay that cites this ask.
+    Bound(String),
+    /// A join that cannot be read as a bound one, and why.
+    Malformed(String),
+}
+
+/// The join an attempt records: a bound relay and the ask it cites together,
+/// the two facts `relay_verify` requires. One without the other is malformed.
+fn join(attempt: &Event) -> Join {
+    let mode = attempt.relay_mode.as_deref();
+    let cited = attempt
+        .owner_input
+        .as_deref()
+        .filter(|cited| !cited.is_empty());
+    match (mode, cited) {
+        (Some("bound"), Some(cited)) => Join::Bound(cited.to_owned()),
+        (Some("bound"), None) => Join::Malformed("a bound relay that cites no ask".to_owned()),
+        (mode, Some(cited)) => Join::Malformed(format!(
+            "cites ask {cited} but its mode is {}, not bound",
+            mode.unwrap_or("unrecorded")
+        )),
+        (_, None) => Join::Absent,
+    }
+}
+
+/// One claimed relay of a session.
 struct Relay {
     id: String,
-    owner_input: Option<String>,
+    join: Join,
     at: Timestamp,
     place: String,
     fate: Fate,
@@ -296,26 +409,13 @@ fn relays(
     sessions: &[SessionInput],
     gaps: &mut Vec<Gap>,
 ) -> Vec<Relay> {
-    let mut ids: Vec<&str> = Vec::new();
-    for event in &journal.events {
-        if event.action == relay::ATTEMPT
-            && let Some(id) = event.reference.as_deref().filter(|id| !id.is_empty())
-            && !ids.contains(&id)
-        {
-            ids.push(id);
-        }
-    }
     let mut found = Vec::new();
-    for id in ids {
-        let attempt = journal
-            .events
-            .iter()
-            .find(|event| event.action == relay::ATTEMPT && event.reference.as_deref() == Some(id));
-        let (at, owner_input) = attempt.map_or((None, None), |event| {
-            (Some(event.ts), event.owner_input.clone())
-        });
-        let Some(at) = at else { continue };
-        match relay::claimed(&journal.events, id, origin) {
+    for id in &journal.attempts {
+        let records = journal.relay_events(id);
+        let Some(attempt) = records.iter().find(|event| event.action == relay::ATTEMPT) else {
+            continue;
+        };
+        match relay::claimed(&records, id, origin) {
             Err(why) => gaps.push(Gap {
                 subject: format!("relay {id} ({})", session.name),
                 reason: why,
@@ -326,9 +426,9 @@ fn relays(
                     session.name, claim.target_session, claim.target_slot
                 );
                 found.push(Relay {
-                    id: id.to_owned(),
-                    owner_input,
-                    at,
+                    id: id.clone(),
+                    join: join(attempt),
+                    at: attempt.ts,
                     place,
                     fate: fate(&claim, id, origin, sessions),
                 });
@@ -359,7 +459,43 @@ fn owner_asks<'a>(journal: &'a Journal, name: &str, uuid: &str) -> Vec<&'a Event
         .collect()
 }
 
-/// An obligation proven open, before the board is consulted.
+/// The owner asks of a session that is not running, in one gap line: nobody
+/// can answer them now, and they are not obligations a board can chase.
+fn idle_asks(session: &SessionInput, asks: &[&Event], unresolved: &mut Vec<Gap>) {
+    const NAMED: usize = 3;
+    if asks.is_empty() {
+        return;
+    }
+    let mut ids: Vec<&str> = asks
+        .iter()
+        .filter_map(|ask| ask.reference.as_deref())
+        .take(NAMED)
+        .collect();
+    let more = asks.len().saturating_sub(ids.len());
+    let word = match session.status {
+        Status::Stopped => "stopped",
+        _ => "of unknown liveness",
+    };
+    let tail = if more == 0 {
+        String::new()
+    } else {
+        ids.push("...");
+        format!(" and {more} more")
+    };
+    unresolved.push(Gap {
+        subject: format!("session {}", session.name),
+        reason: format!(
+            "{} open owner ask(s) in a session {word}, not chased: {}{tail}",
+            asks.len(),
+            ids.join(", ")
+        ),
+    });
+}
+
+/// An obligation proven open, before the board is consulted. Every session
+/// whose journal reads claims its relays, whatever its liveness: a dispatcher
+/// that stopped leaves its relay owed. The liveness restriction sits on the
+/// TARGET of a relay and on who can still answer an owner ask.
 fn open_rows(
     sessions: &[SessionInput],
     unresolved: &mut Vec<Gap>,
@@ -367,43 +503,67 @@ fn open_rows(
 ) -> Vec<Row> {
     let mut open = Vec::new();
     for session in sessions {
-        if session.status != Status::Running {
+        if session.record_gap.is_some() {
             continue;
         }
         let Ok(journal) = &session.journal else {
             continue;
         };
         let Some(uuid) = session.uuid.as_deref() else {
-            unresolved.push(Gap {
-                subject: format!("session {}", session.name),
-                reason: "no session id recorded, so its journal cannot be bound".to_owned(),
-            });
+            if !journal.attempts.is_empty() || session.status == Status::Running {
+                unresolved.push(Gap {
+                    subject: format!("session {}", session.name),
+                    reason: "no session id recorded, so its journal cannot be bound".to_owned(),
+                });
+            }
             continue;
         };
         let claimed = relays(session, uuid, journal, sessions, unresolved);
-        for ask in owner_asks(journal, &session.name, uuid) {
-            let Some(id) = ask.reference.as_deref() else {
-                continue;
-            };
-            let cited: Vec<String> = claimed
-                .iter()
-                .filter(|relay| relay.owner_input.as_deref() == Some(id))
-                .map(|relay| format!("{} {}", relay.id, relay.fate.word()))
-                .collect();
-            let detail = if cited.is_empty() {
-                "reply owed, no relay".to_owned()
-            } else {
-                format!("reply owed, relays {}", cited.join(", "))
-            };
-            open.push(Row {
-                kind: Kind::OwnerAsk,
-                key: id.to_owned(),
-                place: session.name.clone(),
-                at: Some(ask.ts),
-                detail,
-            });
+        let asks = owner_asks(journal, &session.name, uuid);
+        if session.status == Status::Running {
+            for ask in asks {
+                let Some(id) = ask.reference.as_deref() else {
+                    continue;
+                };
+                let cited: Vec<String> = claimed
+                    .iter()
+                    .filter(|relay| matches!(&relay.join, Join::Bound(cited) if cited == id))
+                    .map(|relay| format!("{} {}", relay.id, relay.fate.word()))
+                    .collect();
+                let detail = if cited.is_empty() {
+                    "reply owed, no relay".to_owned()
+                } else {
+                    format!("reply owed, relays {}", cited.join(", "))
+                };
+                open.push(Row {
+                    kind: Kind::OwnerAsk,
+                    key: id.to_owned(),
+                    place: session.name.clone(),
+                    at: Some(ask.ts),
+                    detail,
+                });
+            }
+        } else {
+            idle_asks(session, &asks, unresolved);
         }
         for relay in claimed {
+            let subject = format!("relay {} ({})", relay.id, relay.place);
+            match &relay.join {
+                Join::Absent => {}
+                Join::Malformed(why) => unresolved.push(Gap {
+                    subject: subject.clone(),
+                    reason: format!("owner join not read: {why}"),
+                }),
+                Join::Bound(cited) if !journal.ask_at.contains_key(cited) => {
+                    unresolved.push(Gap {
+                        subject: subject.clone(),
+                        reason: format!(
+                            "owner join not read: it cites ask {cited}, which this journal does not hold"
+                        ),
+                    });
+                }
+                Join::Bound(_) => {}
+            }
             let row = |detail: String| Row {
                 kind: Kind::Relay,
                 key: relay.id.clone(),
@@ -480,11 +640,20 @@ fn wait_rows(sessions: &[SessionInput], unresolved: &mut Vec<Gap>) -> Vec<Row> {
                 gap("waiting-user, but the declaration time is unreadable".to_owned());
                 continue;
             };
-            if since.epoch() < epoch {
-                gap(format!(
-                    "waiting-user declared {since} before the seat's current launch {}",
-                    Timestamp::from_epoch(epoch)
-                ));
+            // Both stamps are whole seconds, so an old declaration and its
+            // replacement's launch can share one: only a declaration strictly
+            // after the launch baseline proves the current incarnation.
+            if since.epoch() <= epoch {
+                let launched = Timestamp::from_epoch(epoch);
+                gap(if since.epoch() == epoch {
+                    format!(
+                        "waiting-user declared {since} in the same second as the seat's current launch {launched}; the order of the two is not proved"
+                    )
+                } else {
+                    format!(
+                        "waiting-user declared {since} before the seat's current launch {launched}"
+                    )
+                });
                 continue;
             }
             open.push(Row {
@@ -503,40 +672,32 @@ fn wait_rows(sessions: &[SessionInput], unresolved: &mut Vec<Gap>) -> Vec<Row> {
 pub(crate) fn evaluate(
     board: Option<&Desk>,
     sessions: &[SessionInput],
-    fleet_gap: Option<&str>,
+    fleet: Vec<Gap>,
     as_of: Timestamp,
 ) -> Report {
-    let mut unresolved: Vec<Gap> = Vec::new();
+    let mut unresolved: Vec<Gap> = fleet;
     let mut closed: Vec<Row> = Vec::new();
-    if let Some(why) = fleet_gap {
-        unresolved.push(Gap {
-            subject: "fleet".to_owned(),
-            reason: why.to_owned(),
-        });
-    }
     let (mut read, mut stopped, mut unreadable) = (0, 0, 0);
     for session in sessions {
-        let reason = match session.status {
-            Status::Stopped => {
+        let reason = match (session.status, session.proof_gap()) {
+            (Status::Unknown, _) => Some("liveness unknown".to_owned()),
+            (Status::Stopped, Some(why)) => Some(format!("stopped, and {why}")),
+            (Status::Running, Some(why)) => Some(why),
+            (Status::Stopped, None) => {
                 stopped += 1;
-                continue;
+                None
             }
-            Status::Unknown => Some("liveness unknown".to_owned()),
-            Status::Running => match (&session.record_gap, &session.journal) {
-                (Some(why), _) => Some(why.clone()),
-                (None, Err(why)) => Some(format!("journal unreadable: {why}")),
-                (None, Ok(_)) => None,
-            },
+            (Status::Running, None) => {
+                read += 1;
+                None
+            }
         };
-        match reason {
-            Some(reason) => {
-                unreadable += 1;
-                unresolved.push(Gap {
-                    subject: format!("session {}", session.name),
-                    reason,
-                });
-            }
-            None => read += 1,
+        if let Some(reason) = reason {
+            unreadable += 1;
+            unresolved.push(Gap {
+                subject: format!("session {}", session.name),
+                reason,
+            });
         }
     }
     let mut open = open_rows(sessions, &mut unresolved, &mut closed);
@@ -656,16 +817,138 @@ pub(crate) fn render(report: &Report, all: bool) -> String {
     out
 }
 
+/// The sources the fleet read lost, one gap each, and the pairing check: a
+/// fleet that lost a source lists none of the sessions it held, so the
+/// absence of an obligation there proves nothing.
+fn fleet_gaps(incomplete: &[FailedSource], complete: bool, paired: bool) -> Vec<Gap> {
+    let mut gaps: Vec<Gap> = incomplete
+        .iter()
+        .map(|source| Gap {
+            subject: "fleet source".to_owned(),
+            reason: match source {
+                FailedSource::CanonicalRoot(path) => {
+                    format!("the session root {} would not enumerate", path.display())
+                }
+                FailedSource::WorktreeRoot(path) => {
+                    format!("the worktree root {} would not enumerate", path.display())
+                }
+                FailedSource::WorktreeState(path) => {
+                    format!("the worktree state {} would not enumerate", path.display())
+                }
+                FailedSource::Server(_) => {
+                    "a tmux server did not answer, so the sessions it holds are not listed"
+                        .to_owned()
+                }
+            },
+        })
+        .collect();
+    if !complete && gaps.is_empty() {
+        gaps.push(Gap {
+            subject: "fleet".to_owned(),
+            reason: "the inventory is incomplete and names no source".to_owned(),
+        });
+    }
+    if !paired {
+        gaps.push(Gap {
+            subject: "fleet".to_owned(),
+            reason: "the fleet read did not pair its records".to_owned(),
+        });
+    }
+    gaps
+}
+
+/// Why the record of a session reads as degraded, and whether that loses the
+/// evidence a relay is proved from: a lost meta, a malformed meta line, a
+/// repeated `session_id` or lost journal records do. A repeated roster row or
+/// an unusable idle-nudge pin degrade the seat states and nothing else.
+fn degradation(snapshot: Option<&RecordSnapshot>) -> (String, bool) {
+    let Some(snapshot) = snapshot else {
+        return ("no durable record".to_owned(), true);
+    };
+    let mut reasons: Vec<String> = Vec::new();
+    let mut proof = false;
+    match snapshot.meta.as_ref() {
+        None => {
+            reasons.push("the meta is unreadable".to_owned());
+            proof = true;
+        }
+        Some(meta) => {
+            for anomaly in meta.anomalies() {
+                if !session::anomalies_degrade(std::slice::from_ref(anomaly)) {
+                    continue;
+                }
+                proof |= match anomaly {
+                    Anomaly::MalformedLine { .. } => true,
+                    Anomaly::DuplicateKey { key, .. } => key == "session_id",
+                    _ => false,
+                };
+                reasons.push(anomaly.to_string());
+            }
+        }
+    }
+    if snapshot
+        .events
+        .as_ref()
+        .is_none_or(session::SessionRead::lost_records)
+    {
+        reasons.push("journal records were lost".to_owned());
+        proof = true;
+    }
+    if reasons.is_empty() {
+        reasons.push("an unusable idle-nudge pin".to_owned());
+    }
+    (reasons.join("; "), proof)
+}
+
+/// The `waiting-user` seats of one fleet entry, each with the facts that bind
+/// it to its launch.
+fn waits_of(
+    entry: &crate::digest::SessionEntry,
+    snapshot: Option<&RecordSnapshot>,
+    as_of: Timestamp,
+) -> Vec<Wait> {
+    let meta = snapshot.and_then(|snapshot| snapshot.meta.as_ref());
+    crate::brief::agent_lines_from_world(entry, as_of)
+        .into_iter()
+        .filter(|line| line.state == "waiting-user")
+        .map(|line| {
+            let slot = meta
+                .and_then(|meta| meta.roster().iter().find(|seat| seat.name == line.name))
+                .map(|seat| seat.slot.clone());
+            let launch_id = slot
+                .as_deref()
+                .and_then(|slot| meta.and_then(|meta| meta.launch_id(slot)))
+                .map(str::to_owned);
+            let launch_epoch = slot
+                .as_deref()
+                .and_then(|slot| meta.and_then(|meta| meta.launch_epoch(slot)));
+            Wait {
+                since: line
+                    .age_secs
+                    .map(|age| Timestamp::from_epoch(as_of.epoch().saturating_sub(age))),
+                agent: line.name,
+                slot,
+                launch_id,
+                launch_epoch,
+            }
+        })
+        .collect()
+}
+
 /// Pair each fleet entry with its durable record and read what the check
-/// needs: the strict journal of a running session and its waiting seats.
-fn inputs(read: &crate::fleet_read::WorldRead) -> (Vec<SessionInput>, Option<String>) {
+/// needs: the strict journal of every session whose record exists, whatever
+/// its liveness, and its waiting seats.
+fn inputs(read: &crate::fleet_read::WorldRead) -> (Vec<SessionInput>, Vec<Gap>) {
     let classified = &read.snapshot.sessions;
     let entries = &read.world.sessions;
-    if classified.len() != entries.len() {
-        return (
-            Vec::new(),
-            Some("the fleet read did not pair its records".to_owned()),
-        );
+    let paired = classified.len() == entries.len();
+    let gaps = fleet_gaps(
+        &read.snapshot.incomplete,
+        read.world.inventory_complete(),
+        paired,
+    );
+    if !paired {
+        return (Vec::new(), gaps);
     }
     let as_of = read.world.now;
     let sessions = entries
@@ -673,61 +956,51 @@ fn inputs(read: &crate::fleet_read::WorldRead) -> (Vec<SessionInput>, Option<Str
         .zip(classified)
         .map(|(entry, classified)| {
             let durable = classified.candidate.durable.as_ref();
-            let dir: Option<PathBuf> = durable.map(|record| record.path.clone());
-            let meta = durable.and_then(|record| record.snapshot.meta.as_ref());
-            let journal = match (&dir, entry.status) {
-                (_, Status::Stopped) => Err("session stopped".to_owned()),
-                (None, _) => Err("no durable record".to_owned()),
-                (Some(dir), _) => {
-                    relay::strict_journal(dir).map(|(bytes, events)| Journal { bytes, events })
-                }
+            let snapshot = durable.map(|record| &record.snapshot);
+            let journal = match durable {
+                None => Err("no durable record".to_owned()),
+                Some(record) => relay::strict_journal(&record.path).map(|(bytes, events)| {
+                    let key = entry.session_uuid.as_deref().map_or_else(
+                        || SessionKey::named(&entry.name),
+                        |uuid| SessionKey::new(&entry.name, uuid),
+                    );
+                    Journal::new(events, requests::states_in(&bytes, key))
+                }),
             };
-            let waits = if entry.degraded {
-                Err("record partly unreadable".to_owned())
-            } else if !entry.agent_state_is_exact() {
-                Err("seat states are not exact".to_owned())
+            let (degraded, record_gap) = if entry.degraded {
+                let (reason, proof) = degradation(snapshot);
+                let words = format!("record degraded: {reason}");
+                (Some(words.clone()), proof.then_some(words))
             } else {
-                Ok(crate::brief::agent_lines_from_world(entry, as_of)
-                    .into_iter()
-                    .filter(|line| line.state == "waiting-user")
-                    .map(|line| {
-                        let slot = meta
-                            .and_then(|meta| {
-                                meta.roster().iter().find(|seat| seat.name == line.name)
-                            })
-                            .map(|seat| seat.slot.clone());
-                        let launch_id = slot
-                            .as_deref()
-                            .and_then(|slot| meta.and_then(|meta| meta.launch_id(slot)))
-                            .map(str::to_owned);
-                        let launch_epoch = slot
-                            .as_deref()
-                            .and_then(|slot| meta.and_then(|meta| meta.launch_epoch(slot)));
-                        Wait {
-                            since: line.age_secs.map(|age| {
-                                Timestamp::from_epoch(as_of.epoch().saturating_sub(age))
-                            }),
-                            agent: line.name,
-                            slot,
-                            launch_id,
-                            launch_epoch,
-                        }
-                    })
-                    .collect())
+                (None, None)
+            };
+            let waits = match degraded {
+                Some(words) => Err(words),
+                None if !entry.agent_state_is_exact() => {
+                    Err("seat states are not exact".to_owned())
+                }
+                None => Ok(waits_of(entry, snapshot, as_of)),
             };
             SessionInput {
                 name: entry.name.clone(),
                 uuid: entry.session_uuid.clone(),
                 status: entry.status,
-                record_gap: entry
-                    .degraded
-                    .then(|| "record partly unreadable".to_owned()),
+                record_gap,
                 journal,
                 waits,
             }
         })
         .collect();
-    (sessions, None)
+    (sessions, gaps)
+}
+
+/// The one stderr line of a board record that cannot be read: control text in
+/// the path or the reason cannot alter it.
+fn board_error_line(path: &Path, why: &dyn std::fmt::Display) -> String {
+    clean(&format!(
+        "desk check: the board record {} cannot be read: {why}",
+        path.display()
+    ))
 }
 
 /// `desk check [--all]`: read the board and the fleet, print the report.
@@ -745,30 +1018,26 @@ pub(crate) fn run(
         Ok(board) => board,
         Err(why) => {
             let path = dir.join(record::RECORD_FILE);
-            let line = format!(
-                "desk check: the board record {} cannot be read: {why}",
-                path.display()
-            );
-            writeln!(err, "{}", line.replace('\n', " "))?;
+            writeln!(err, "{}", board_error_line(&path, &why))?;
             return Ok(EXIT_CHECK_FAILED);
         }
     };
-    let Some(root) = dir.parent().and_then(Path::parent) else {
+    // The board is this session's own record, wherever it sits; the fleet is
+    // the whole of `AE_HOME`, found from either layout the record can be in.
+    let Some(root) = Roots::home_of(dir) else {
         writeln!(
             err,
-            "desk check: the state root of {} cannot be resolved",
-            dir.display()
+            "{}",
+            clean(&format!(
+                "desk check: the state root of {} cannot be resolved",
+                dir.display()
+            ))
         )?;
         return Ok(EXIT_CHECK_FAILED);
     };
-    let read = crate::fleet_read::world_read(root, &mut crate::session::RecordSnapshot::read);
-    let (sessions, fleet_gap) = inputs(&read);
-    let report = evaluate(
-        board.as_ref(),
-        &sessions,
-        fleet_gap.as_deref(),
-        read.world.now,
-    );
+    let read = crate::fleet_read::world_read(root, &mut session::RecordSnapshot::read);
+    let (sessions, fleet) = inputs(&read);
+    let report = evaluate(board.as_ref(), &sessions, fleet, read.world.now);
     out.write_all(render(&report, all).as_bytes())?;
     Ok(report.code())
 }

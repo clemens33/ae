@@ -617,12 +617,15 @@ of the fleet below the board: seat states, ages, reasons and open asks to you,
 computed by ae itself ([Chat](chat.md#what-it-shows)).
 
 `desk check [--all]` reads the board and the fleet and lists what ae itself owes the
-owner that no board item names: an open ask of the owner, a relay whose target
-has not answered, a seat waiting on the owner. It writes nothing. A board item
-matches only by the id it carries in its text or link, and that match is a
-hint, so a lost item shows as `unboarded` and a reworded one as `boarded
-(hint)`. A stopped, missing or unreadable target stays `unresolved coverage`,
-never answered ([Helpers](reference/helpers.md#board)).
+owner: an open ask of the owner, a relay whose target has not answered, a seat
+waiting on the owner. It writes nothing. A board item matches an obligation only
+when its text or link carries the obligation's exact typed id (the request id,
+or `session:agent`) as a whole token, and even then the match is only a hint.
+Every line under `unboarded` is a candidate, not a finding: the board may name
+it in other words, so the orchestrator judges each one by hand. A stopped,
+missing or unreadable target, a lost fleet source and a seat whose launch the
+record cannot prove stay `unresolved coverage`, never answered
+([Helpers](reference/helpers.md#board)).
 
 The board stands to the right of the open panel in side and full-screen modes.
 Its default width is 36 cells including its left border. It fits from 161

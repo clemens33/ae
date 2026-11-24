@@ -1085,7 +1085,12 @@ fn request_in(console: &Console, bytes: &[u8], id: &str) -> &'static str {
 /// The state of request `id` in the journal `bytes` of the session named
 /// `name` whose `session_id` is `uuid`: the word `relay --status` prints.
 pub(crate) fn request_state(name: &str, uuid: &str, bytes: &[u8], id: &str) -> &'static str {
-    let states = requests::states_in(bytes, SessionKey::new(name, uuid));
+    request_word(&requests::states_in(bytes, SessionKey::new(name, uuid)), id)
+}
+
+/// The word of request `id` among `states`, the fold of one journal: `absent`
+/// when the fold does not list it.
+pub(crate) fn request_word(states: &[requests::Request], id: &str) -> &'static str {
     let Some(request) = states.iter().find(|request| request.id == id.as_bytes()) else {
         return "absent";
     };

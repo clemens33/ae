@@ -8,13 +8,17 @@
 )]
 
 use super::{
-    CLOSED_SHOWN, EXIT_UNBOARDED, Fate, Gap, Hint, Journal, Kind, Report, Row, SessionInput, Wait,
-    absent_label, evaluate, fate, hint, mentions, render,
+    CLOSED_SHOWN, EXIT_UNBOARDED, Fate, Gap, Hint, Join, Journal, Kind, Report, Row, SessionInput,
+    Wait, absent_label, board_error_line, degradation, evaluate, fate, fleet_gaps, hint, join,
+    mentions, render,
 };
 use crate::desk::{Desk, parse_input};
 use crate::digest::Status;
-use crate::events::Event;
+use crate::events::{Cursor, Event, SessionKey};
+use crate::inventory::{FailedSource, ServerId};
+use crate::meta::Meta;
 use crate::relay::Claim;
+use crate::session::{MetaRead, RecordSnapshot, SessionRead};
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 
@@ -32,16 +36,17 @@ fn board(text: &str) -> Desk {
     }
 }
 
-fn journal(lines: &[String]) -> Journal {
+fn journal(name: &str, uuid: &str, lines: &[String]) -> Journal {
     let bytes: Vec<u8> = lines
         .iter()
         .flat_map(|line| format!("{}\n", line.trim_end()).into_bytes())
         .collect();
+    let states = crate::requests::states_in(&bytes, SessionKey::new(name, uuid));
     let events = lines
         .iter()
         .map(|line| Event::parse_line(line.trim_end()).expect("a record"))
         .collect();
-    Journal { bytes, events }
+    Journal::new(events, states)
 }
 
 fn session(name: &str, uuid: &str, status: Status, lines: &[String]) -> SessionInput {
@@ -50,7 +55,7 @@ fn session(name: &str, uuid: &str, status: Status, lines: &[String]) -> SessionI
         uuid: Some(uuid.to_owned()),
         status,
         record_gap: None,
-        journal: Ok(journal(lines)),
+        journal: Ok(journal(name, uuid, lines)),
         waits: Ok(Vec::new()),
     }
 }
@@ -177,23 +182,24 @@ fn a_hint_names_the_item_and_the_field() {
 }
 
 #[test]
-fn a_wait_binds_to_a_launch_that_began_before_its_declaration() {
-    for (since, epoch, bound) in [
-        (Some(100), Some(90), true),
-        (Some(100), Some(100), true),
-        (Some(100), Some(101), false),
+fn a_wait_binds_only_to_a_launch_that_began_strictly_before_its_declaration() {
+    for (since, epoch, bound, phrase) in [
+        (100, 90, true, ""),
+        (100, 99, true, ""),
+        (100, 100, false, "in the same second"),
+        (100, 101, false, "before the seat's current launch"),
     ] {
-        let input = with_waits(vec![wait(since, epoch)]);
-        let report = evaluate(None, &[input], None, at(200));
+        let input = with_waits(vec![wait(Some(since), Some(epoch))]);
+        let report = evaluate(None, &[input], Vec::new(), at(200));
         assert_eq!(
             report.unboarded.len(),
             usize::from(bound),
-            "{since:?} {epoch:?}"
+            "{since} {epoch}"
         );
         assert_eq!(
             report.unresolved.len(),
             usize::from(!bound),
-            "{since:?} {epoch:?}"
+            "{since} {epoch}"
         );
         if bound {
             let row = &report.unboarded[0];
@@ -207,12 +213,30 @@ fn a_wait_binds_to_a_launch_that_began_before_its_declaration() {
         } else {
             let gap = &report.unresolved[0];
             assert_eq!(gap.subject, "seat alpha:lead");
-            assert!(
-                gap.reason.contains("before the seat's current launch"),
-                "{}",
-                gap.reason
-            );
+            assert!(gap.reason.contains(phrase), "{}", gap.reason);
         }
+    }
+}
+
+#[test]
+fn the_two_same_second_histories_are_both_unresolved_and_neither_a_row() {
+    // History A: an old wait declared in second 100, then a relaunch that
+    // stamped second 100. History B: a relaunch that stamped second 100, then
+    // a new wait declared in second 100. The record is the same in both.
+    for history in ["old wait, then relaunch", "relaunch, then new wait"] {
+        let report = evaluate(
+            None,
+            &[with_waits(vec![wait(Some(100), Some(100))])],
+            Vec::new(),
+            at(200),
+        );
+        assert!(report.unboarded.is_empty(), "{history}");
+        assert_eq!(report.unresolved.len(), 1, "{history}");
+        assert!(
+            report.unresolved[0].reason.contains("not proved"),
+            "{history}: {}",
+            report.unresolved[0].reason
+        );
     }
 }
 
@@ -239,7 +263,7 @@ fn a_wait_without_a_proven_launch_is_unresolved_with_its_reason() {
         ("no baseline", wait(Some(100), None), "launch_time.main"),
         ("no time", wait(None, Some(90)), "declaration time"),
     ] {
-        let report = evaluate(None, &[with_waits(vec![wait])], None, at(200));
+        let report = evaluate(None, &[with_waits(vec![wait])], Vec::new(), at(200));
         assert!(report.unboarded.is_empty(), "{name}");
         let reason = report.unresolved.first().map(|gap| gap.reason.clone());
         missing.push((name, reason.is_some_and(|reason| reason.contains(expected))));
@@ -247,7 +271,7 @@ fn a_wait_without_a_proven_launch_is_unresolved_with_its_reason() {
     assert!(missing.iter().all(|(_, found)| *found), "{missing:?}");
     let mut anonymous = with_waits(vec![wait(Some(100), Some(90))]);
     anonymous.uuid = None;
-    let report = evaluate(None, &[anonymous], None, at(200));
+    let report = evaluate(None, &[anonymous], Vec::new(), at(200));
     assert!(report.unboarded.is_empty());
     assert!(report.unresolved[0].reason.contains("no session id"));
 }
@@ -256,7 +280,7 @@ fn a_wait_without_a_proven_launch_is_unresolved_with_its_reason() {
 fn a_seat_state_that_is_not_exact_is_a_gap_never_clean() {
     let mut input = session("alpha", TARGET, Status::Running, &[]);
     input.waits = Err("seat states are not exact".to_owned());
-    let report = evaluate(None, &[input], None, at(200));
+    let report = evaluate(None, &[input], Vec::new(), at(200));
     assert!(report.unboarded.is_empty());
     assert_eq!(report.unresolved[0].subject, "seats of alpha");
 }
@@ -288,7 +312,7 @@ fn sessions_are_read_stopped_or_unreadable_and_only_the_last_is_a_gap() {
     let report = evaluate(
         None,
         &[broken, unknown, stopped, degraded, fine],
-        None,
+        Vec::new(),
         at(5),
     );
     assert_eq!((report.read, report.stopped, report.unreadable), (1, 1, 3));
@@ -311,15 +335,35 @@ fn sessions_are_read_stopped_or_unreadable_and_only_the_last_is_a_gap() {
 }
 
 #[test]
-fn a_fleet_that_did_not_pair_is_one_gap() {
-    let report = evaluate(
-        None,
-        &[],
-        Some("the fleet read did not pair its records"),
-        at(5),
-    );
-    assert_eq!(report.unresolved.len(), 1);
-    assert_eq!(report.unresolved[0].subject, "fleet");
+fn a_fleet_that_lost_a_source_names_each_one_and_never_reads_clean() {
+    use std::path::PathBuf;
+    let lost = [
+        FailedSource::CanonicalRoot(PathBuf::from("/s/sessions")),
+        FailedSource::WorktreeRoot(PathBuf::from("/s/worktrees")),
+        FailedSource::WorktreeState(PathBuf::from("/w/.ae")),
+        FailedSource::Server(ServerId::Ambient),
+    ];
+    let gaps = fleet_gaps(&lost, false, true);
+    assert_eq!(gaps.len(), 4);
+    for (gap, phrase) in gaps.iter().zip([
+        "/s/sessions would not enumerate",
+        "/s/worktrees would not enumerate",
+        "/w/.ae would not enumerate",
+        "a tmux server did not answer",
+    ]) {
+        assert_eq!(gap.subject, "fleet source");
+        assert!(gap.reason.contains(phrase), "{}", gap.reason);
+    }
+    let unnamed = fleet_gaps(&[], false, true);
+    assert_eq!(unnamed.len(), 1);
+    assert!(unnamed[0].reason.contains("names no source"));
+    let unpaired = fleet_gaps(&[], true, false);
+    assert_eq!(unpaired.len(), 1);
+    assert_eq!(unpaired[0].subject, "fleet");
+    assert!(fleet_gaps(&[], true, true).is_empty());
+    let report = evaluate(None, &[], gaps, at(5));
+    assert_eq!(report.unresolved.len(), 4);
+    assert_eq!(report.code(), 0, "a coverage gap never decides the exit");
 }
 
 #[test]
@@ -387,7 +431,7 @@ fn an_owner_ask_lists_its_relays_and_a_stopped_target_stays_unresolved() {
     ];
     let orch = session("orch", ORCH, Status::Running, &lines);
     let stopped = session("target", TARGET, Status::Stopped, &[]);
-    let report = evaluate(None, &[orch, stopped], None, at(200));
+    let report = evaluate(None, &[orch, stopped], Vec::new(), at(200));
     assert_eq!(rows(&report), ["ask-1"]);
     let ask = &report.unboarded[0];
     assert_eq!(ask.kind, Kind::OwnerAsk);
@@ -423,7 +467,7 @@ fn a_replied_owner_ask_is_no_obligation_while_its_relay_stays_a_gap() {
         tracked::event_line(&reply),
     ];
     let orch = session("orch", ORCH, Status::Running, &lines);
-    let report = evaluate(None, &[orch], None, at(200));
+    let report = evaluate(None, &[orch], Vec::new(), at(200));
     assert!(report.unboarded.is_empty(), "{:?}", report.unboarded);
     assert!(
         report
@@ -440,14 +484,14 @@ fn a_board_item_moves_an_obligation_to_the_hint_section_and_off_the_exit_code() 
     let bare = evaluate(
         Some(&board("RUNNING\nR1 | nothing\n")),
         &[orch()],
-        None,
+        Vec::new(),
         at(200),
     );
     assert_eq!(bare.code(), EXIT_UNBOARDED);
     let named = evaluate(
         Some(&board("RUNNING\nR1 | Waiting on ask-1\n")),
         &[orch()],
-        None,
+        Vec::new(),
         at(200),
     );
     assert_eq!(named.code(), 0);
@@ -520,7 +564,7 @@ fn evaluate_orders_open_obligations_oldest_first() {
     ];
     let orch = session("orch", ORCH, Status::Running, &lines);
     let target = session("target", TARGET, Status::Running, &[]);
-    let report = evaluate(None, &[orch, target], None, at(400));
+    let report = evaluate(None, &[orch, target], Vec::new(), at(400));
     assert_eq!(rows(&report), ["relay-old", "relay-new"]);
     assert!(
         report.unboarded[0]
@@ -588,4 +632,292 @@ fn shown_fields_cannot_carry_control_text() {
     let text = render(&report, false);
     assert!(!text.contains('\u{1b}'), "{text:?}");
     assert!(text.contains("line one line two"), "{text:?}");
+}
+
+#[test]
+fn a_stopped_dispatcher_still_owes_its_relay_to_a_running_target() {
+    let lines = [
+        owner_ask("ask-1", 100),
+        claim_line("relay-1", Some("ask-1"), 110),
+    ];
+    let orch = session("orch", ORCH, Status::Stopped, &lines);
+    let target = session("target", TARGET, Status::Running, &[]);
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    assert_eq!(rows(&report), ["relay-1"], "the owner ask is no obligation");
+    assert_eq!(report.unboarded[0].kind, Kind::Relay);
+    assert!(
+        report.unboarded[0].detail.contains("no opening"),
+        "{}",
+        report.unboarded[0].detail
+    );
+    assert_eq!((report.read, report.stopped, report.unreadable), (1, 1, 0));
+    let ask = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.subject == "session orch")
+        .expect("the idle owner ask is coverage");
+    assert!(
+        ask.reason
+            .starts_with("1 open owner ask(s) in a session stopped, not chased: ask-1"),
+        "{}",
+        ask.reason
+    );
+}
+
+#[test]
+fn an_unreadable_stopped_journal_is_coverage_and_not_a_stopped_count() {
+    let mut orch = session("orch", ORCH, Status::Stopped, &[]);
+    orch.journal = Err("journal line 9 is not a record".to_owned());
+    let report = evaluate(None, &[orch], Vec::new(), at(200));
+    assert_eq!((report.read, report.stopped, report.unreadable), (0, 0, 1));
+    assert_eq!(report.unresolved.len(), 1);
+    assert_eq!(
+        report.unresolved[0].reason,
+        "stopped, and journal unreadable: journal line 9 is not a record"
+    );
+}
+
+#[test]
+fn idle_owner_asks_name_three_ids_and_count_the_rest() {
+    let lines: Vec<String> = ["ask-a", "ask-b", "ask-c", "ask-d", "ask-e"]
+        .iter()
+        .zip(100..)
+        .map(|(id, ts)| owner_ask(id, ts))
+        .collect();
+    let orch = session("orch", ORCH, Status::Unknown, &lines);
+    let report = evaluate(None, &[orch], Vec::new(), at(200));
+    assert!(report.unboarded.is_empty());
+    let ask = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.reason.contains("open owner ask(s)"))
+        .expect("the idle asks are one coverage line");
+    assert!(
+        ask.reason
+            .contains("5 open owner ask(s) in a session of unknown liveness"),
+        "{}",
+        ask.reason
+    );
+    assert!(
+        ask.reason.ends_with("ask-a, ask-b, ask-c, ... and 2 more"),
+        "{}",
+        ask.reason
+    );
+}
+
+#[test]
+fn a_target_whose_record_lost_its_proof_keeps_the_relay_unresolved() {
+    let orch = session(
+        "orch",
+        ORCH,
+        Status::Running,
+        &[claim_line("relay-1", None, 110)],
+    );
+    let mut target = session("target", TARGET, Status::Running, &[]);
+    target.record_gap = Some("record degraded: journal records were lost".to_owned());
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    assert!(report.unboarded.is_empty(), "{:?}", report.unboarded);
+    assert!(report.closed.is_empty());
+    let relay = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.subject.starts_with("relay relay-1"))
+        .expect("the relay is coverage");
+    assert!(
+        relay
+            .reason
+            .contains("the target's record: record degraded: journal records were lost"),
+        "{}",
+        relay.reason
+    );
+}
+
+#[test]
+fn an_unrelated_degradation_leaves_the_relay_read_and_names_its_reason_for_the_seats() {
+    let orch = session(
+        "orch",
+        ORCH,
+        Status::Running,
+        &[claim_line("relay-1", None, 110)],
+    );
+    let mut target = session("target", TARGET, Status::Running, &[]);
+    target.waits = Err("record degraded: duplicate meta key goal at line 4".to_owned());
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    assert_eq!(rows(&report), ["relay-1"], "the target's proof stands");
+    assert_eq!(report.read, 2);
+    let seats = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.subject == "seats of target")
+        .expect("the seats are coverage");
+    assert!(
+        seats.reason.contains("duplicate meta key goal"),
+        "{}",
+        seats.reason
+    );
+}
+
+fn meta_snapshot(meta: &str, events: Option<SessionRead>) -> RecordSnapshot {
+    RecordSnapshot {
+        meta: Some(Meta::parse(meta)),
+        meta_read: MetaRead::Parsed,
+        events,
+        legacy_created_epoch: None,
+    }
+}
+
+fn complete_events() -> Option<SessionRead> {
+    Some(SessionRead {
+        events: Vec::new(),
+        last_active: None,
+        pending: Vec::new(),
+        cursor: Cursor::default(),
+        skipped: Vec::new(),
+    })
+}
+
+#[test]
+fn a_degradation_costs_the_relay_proof_only_when_it_touches_the_proof() {
+    let id = "session_id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n";
+    let lost_proof = [
+        (format!("{id}no equals sign here\n"), complete_events()),
+        (
+            format!("{id}session_id=aaaaaaaa-bbbb-4ccc-8ddd-000000000000\n"),
+            complete_events(),
+        ),
+        (id.to_owned(), None),
+    ];
+    for (meta, events) in lost_proof {
+        let (reason, proof) = degradation(Some(&meta_snapshot(&meta, events)));
+        assert!(proof, "{meta:?}: {reason}");
+        assert!(!reason.is_empty());
+    }
+    let (reason, proof) = degradation(Some(&meta_snapshot(
+        &format!("{id}goal=a\ngoal=b\n"),
+        complete_events(),
+    )));
+    assert!(!proof, "{reason}");
+    assert!(reason.contains("duplicate meta key goal"), "{reason}");
+    let (reason, proof) = degradation(Some(&meta_snapshot(id, complete_events())));
+    assert!(!proof);
+    assert_eq!(reason, "an unusable idle-nudge pin");
+    let (reason, proof) = degradation(None);
+    assert!(proof);
+    assert_eq!(reason, "no durable record");
+    let unread = RecordSnapshot::default();
+    let (reason, proof) = degradation(Some(&unread));
+    assert!(proof);
+    assert!(reason.contains("the meta is unreadable"), "{reason}");
+}
+
+#[test]
+fn a_relay_binds_to_an_owner_ask_only_through_a_bound_attempt_that_cites_it() {
+    let attempt = |keys: &[(&'static str, &str)]| -> Event {
+        let fields = EventFields {
+            actor_session_id: ORCH,
+            target_session_id: TARGET,
+            target_session_uuid: TARGET,
+            ..EventFields::new(
+                at(110),
+                "boss",
+                "relay-attempt",
+                "target:lead",
+                "relay-1",
+                "main",
+                "orch",
+                "main",
+                "target",
+                "task",
+                "",
+            )
+        };
+        Event::parse_line(tracked::event_line_with(&fields, "launch-1", keys).trim_end())
+            .expect("a record")
+    };
+    assert_eq!(join(&attempt(&[])), Join::Absent);
+    assert_eq!(
+        join(&attempt(&[
+            ("relay_mode", "bound"),
+            ("owner_input", "ask-1")
+        ])),
+        Join::Bound("ask-1".to_owned())
+    );
+    assert!(matches!(
+        join(&attempt(&[("relay_mode", "bound")])),
+        Join::Malformed(why) if why.contains("cites no ask")
+    ));
+    assert!(matches!(
+        join(&attempt(&[("relay_mode", "quote"), ("owner_input", "ask-1")])),
+        Join::Malformed(why) if why.contains("mode is quote")
+    ));
+    assert!(matches!(
+        join(&attempt(&[("owner_input", "ask-1")])),
+        Join::Malformed(why) if why.contains("mode is unrecorded")
+    ));
+    assert_eq!(join(&attempt(&[("relay_mode", "quote")])), Join::Absent);
+}
+
+#[test]
+fn an_unbound_or_unheld_owner_join_is_coverage_and_never_an_owner_fact() {
+    let lines = [
+        owner_ask("ask-1", 100),
+        claim_line("relay-1", Some("ask-gone"), 110),
+    ];
+    let orch = session("orch", ORCH, Status::Running, &lines);
+    let target = session("target", TARGET, Status::Running, &[]);
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    let ask = report
+        .unboarded
+        .iter()
+        .find(|row| row.kind == Kind::OwnerAsk)
+        .expect("the owner ask is still owed");
+    assert_eq!(
+        ask.detail, "reply owed, no relay",
+        "the join names ask-gone"
+    );
+    let gap = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.reason.starts_with("owner join not read"))
+        .expect("the join is coverage");
+    assert!(gap.reason.contains("ask-gone"), "{}", gap.reason);
+}
+
+#[test]
+fn a_journal_index_hands_back_each_claim_and_opening_once_in_order() {
+    let lines = [
+        claim_line("relay-1", None, 100),
+        owner_ask("ask-1", 105),
+        claim_line("relay-2", None, 110),
+        claim_line("relay-1", None, 120),
+    ];
+    let journal = journal("orch", ORCH, &lines);
+    assert_eq!(journal.attempts, ["relay-1", "relay-2"]);
+    let one = journal.relay_events("relay-1");
+    assert_eq!(one.len(), 2);
+    assert!(
+        one.iter()
+            .all(|event| event.reference.as_deref() == Some("relay-1"))
+    );
+    assert_eq!(journal.relay_events("relay-2").len(), 1);
+    assert!(journal.relay_events("nothing").is_empty());
+    assert_eq!(journal.ask_events("ask-1").len(), 1);
+    assert!(journal.ask_events("relay-1").is_empty());
+}
+
+#[test]
+fn the_board_error_line_cannot_be_altered_by_control_text() {
+    let line = board_error_line(
+        std::path::Path::new("/s/\u{1b}[31mred\n/desk-record"),
+        &"line one\nline two",
+    );
+    assert!(!line.contains('\u{1b}') && !line.contains('\n'), "{line:?}");
+    assert!(
+        line.starts_with("desk check: the board record /s/"),
+        "{line}"
+    );
+    assert!(
+        line.ends_with("cannot be read: line one line two"),
+        "{line}"
+    );
 }

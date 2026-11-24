@@ -18,6 +18,8 @@ use crate::session::RecordSnapshot;
 /// The single `.ae` owner: seat-target control-root checks read this rather
 /// than spelling the literal a second time.
 pub(crate) const WORKTREE_STATE_DIR: &str = ".ae";
+const SESSIONS_DIR: &str = "sessions";
+const WORKTREES_DIR: &str = "worktrees";
 
 /// The ae state roots for one invocation, derived from `AE_HOME`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +35,30 @@ impl Roots {
     pub fn under<P: Into<PathBuf>>(ae_home: P) -> Self {
         let home = ae_home.into();
         Self {
-            sessions: home.join("sessions"),
-            worktrees: home.join("worktrees"),
+            sessions: home.join(SESSIONS_DIR),
+            worktrees: home.join(WORKTREES_DIR),
         }
+    }
+
+    /// The `AE_HOME` that holds the session state directory `dir`, read from
+    /// where `dir` sits: `<home>/sessions/<name>` or
+    /// `<home>/worktrees/<worktree>/.ae/<name>`, the inverse of both layouts.
+    /// `None` for a directory in neither, so no caller guesses a fleet from a
+    /// path that names none.
+    #[must_use]
+    pub fn home_of(dir: &Path) -> Option<&Path> {
+        let named = |path: &Path, name: &str| path.file_name().is_some_and(|leaf| leaf == name);
+        let holder = dir.parent()?;
+        if named(holder, SESSIONS_DIR) {
+            return holder.parent();
+        }
+        if named(holder, WORKTREE_STATE_DIR) {
+            let worktrees = holder.parent()?.parent()?;
+            return named(worktrees, WORKTREES_DIR)
+                .then(|| worktrees.parent())
+                .flatten();
+        }
+        None
     }
 
     /// The canonical root, `<AE_HOME>/sessions`.
@@ -2551,6 +2574,28 @@ mod tests {
         let roots = Roots::under("/home/x/.ae");
         assert_eq!(roots.sessions(), Path::new("/home/x/.ae/sessions"));
         assert_eq!(roots.worktrees(), Path::new("/home/x/.ae/worktrees"));
+    }
+
+    #[test]
+    fn home_of_inverts_both_layouts_and_refuses_a_path_in_neither() {
+        let home = Path::new("/home/x/.ae");
+        for dir in [
+            "/home/x/.ae/sessions/orch",
+            "/home/x/.ae/worktrees/checkout/.ae/orch",
+            "/home/x/.ae/worktrees/checkout/.ae/other-name",
+        ] {
+            assert_eq!(Roots::home_of(Path::new(dir)), Some(home), "{dir}");
+        }
+        for dir in [
+            "/home/x/.ae/worktrees/checkout/orch",
+            "/home/x/.ae/orch",
+            "/home/x/other/.ae/orch",
+            "/home/x/.ae/worktrees/.ae/orch",
+            "/",
+            "orch",
+        ] {
+            assert_eq!(Roots::home_of(Path::new(dir)), None, "{dir}");
+        }
     }
 
     #[test]
