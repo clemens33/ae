@@ -84,6 +84,7 @@ mod daemons;
 mod dechist_spec;
 mod declared_task_spec;
 mod deliver;
+mod desk_check_routes;
 mod desk_check_spec;
 mod desk_display_spec;
 #[allow(

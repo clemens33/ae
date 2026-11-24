@@ -9,8 +9,8 @@
 
 use super::{
     CLOSED_SHOWN, EXIT_UNBOARDED, Fate, Gap, Hint, Join, Journal, Kind, Report, Row, SessionInput,
-    Wait, absent_label, board_error_line, degradation, evaluate, fate, fleet_gaps, hint, join,
-    mentions, render,
+    Wait, Witness, absent_label, board_error_line, degradation, evaluate, fate, fleet_gaps, hint,
+    holders, join, mentions, render, witness_of,
 };
 use crate::desk::{Desk, parse_input};
 use crate::digest::Status;
@@ -124,6 +124,7 @@ fn wait(since: Option<i64>, epoch: Option<i64>) -> Wait {
         slot: Some("main".to_owned()),
         launch_id: Some("tok-1".to_owned()),
         launch_epoch: epoch,
+        witness: Witness::Absent,
     }
 }
 
@@ -371,7 +372,7 @@ fn a_target_is_followed_by_uuid_and_only_a_running_readable_one_is_read() {
     let origin = ORCH;
     let sessions = |targets: Vec<SessionInput>| targets;
     let none = sessions(vec![session("other", ORCH, Status::Running, &[])]);
-    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &none) else {
+    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &holders(&none)) else {
         panic!("a target no session holds is unresolved");
     };
     assert!(why.contains(TARGET), "{why}");
@@ -379,25 +380,30 @@ fn a_target_is_followed_by_uuid_and_only_a_running_readable_one_is_read() {
         session("one", TARGET, Status::Running, &[]),
         session("two", TARGET, Status::Running, &[]),
     ]);
-    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &twice) else {
+    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &holders(&twice)) else {
         panic!("a target two sessions hold is unresolved");
     };
     assert!(why.starts_with("2 sessions hold"), "{why}");
     for (status, word) in [(Status::Stopped, "stopped"), (Status::Unknown, "unknown")] {
         let held = sessions(vec![session("t", TARGET, status, &[])]);
-        let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &held) else {
+        let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &holders(&held)) else {
             panic!("a {word} target is unresolved");
         };
         assert!(why.contains(word), "{why}");
     }
     let mut unreadable = session("t", TARGET, Status::Running, &[]);
     unreadable.journal = Err("the journal is a directory".to_owned());
-    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &[unreadable]) else {
+    let Fate::Unresolved(why) = fate(&claim(None), "r1", origin, &holders(&[unreadable])) else {
         panic!("an unreadable target journal is unresolved");
     };
     assert!(why.starts_with("the target journal: "), "{why}");
     let silent = sessions(vec![session("t", TARGET, Status::Running, &[])]);
-    let Fate::Open(word, label) = fate(&claim(Some("not-delivered")), "r1", origin, &silent) else {
+    let Fate::Open(word, label) = fate(
+        &claim(Some("not-delivered")),
+        "r1",
+        origin,
+        &holders(&silent),
+    ) else {
         panic!("a running target with no opening leaves the relay open");
     };
     assert_eq!(
@@ -643,25 +649,36 @@ fn a_stopped_dispatcher_still_owes_its_relay_to_a_running_target() {
     let orch = session("orch", ORCH, Status::Stopped, &lines);
     let target = session("target", TARGET, Status::Running, &[]);
     let report = evaluate(None, &[orch, target], Vec::new(), at(200));
-    assert_eq!(rows(&report), ["relay-1"], "the owner ask is no obligation");
-    assert_eq!(report.unboarded[0].kind, Kind::Relay);
+    assert_eq!(rows(&report), ["ask-1", "relay-1"]);
+    let ask = &report.unboarded[0];
+    assert_eq!(ask.kind, Kind::OwnerAsk);
+    assert_eq!(
+        ask.detail, "reply owed, relays relay-1 absent, origin stopped",
+        "the owner ask stays a candidate and says where it stands"
+    );
+    let relay = &report.unboarded[1];
+    assert_eq!(relay.kind, Kind::Relay);
+    assert!(relay.detail.contains("no opening"), "{}", relay.detail);
     assert!(
-        report.unboarded[0].detail.contains("no opening"),
+        relay.detail.ends_with(", origin stopped"),
         "{}",
-        report.unboarded[0].detail
+        relay.detail
     );
     assert_eq!((report.read, report.stopped, report.unreadable), (1, 1, 0));
-    let ask = report
-        .unresolved
-        .iter()
-        .find(|gap| gap.subject == "session orch")
-        .expect("the idle owner ask is coverage");
-    assert!(
-        ask.reason
-            .starts_with("1 open owner ask(s) in a session stopped, not chased: ask-1"),
-        "{}",
-        ask.reason
+    assert!(report.unresolved.is_empty(), "{:?}", report.unresolved);
+    assert_eq!(report.code(), EXIT_UNBOARDED);
+    let named = evaluate(
+        Some(&board("RUNNING\nR1 | Waiting on ask-1\n")),
+        &[
+            session("orch", ORCH, Status::Stopped, &lines),
+            session("target", TARGET, Status::Running, &[]),
+        ],
+        Vec::new(),
+        at(200),
     );
+    assert_eq!(rows(&named), ["relay-1"], "an exact match moves the ask");
+    assert_eq!(named.hinted.len(), 1);
+    assert_eq!(named.hinted[0].0.key, "ask-1");
 }
 
 #[test]
@@ -677,31 +694,120 @@ fn an_unreadable_stopped_journal_is_coverage_and_not_a_stopped_count() {
     );
 }
 
+fn partial(name: &str, uuid: &str, status: Status, lines: &[String], why: &str) -> SessionInput {
+    let mut input = session(name, uuid, status, &[]);
+    let events = lines
+        .iter()
+        .map(|line| Event::parse_line(line.trim_end()).expect("a record"))
+        .collect();
+    input.journal = Ok(Journal::partial(events, why.to_owned()));
+    input
+}
+
 #[test]
-fn idle_owner_asks_name_three_ids_and_count_the_rest() {
-    let lines: Vec<String> = ["ask-a", "ask-b", "ask-c", "ask-d", "ask-e"]
+fn an_unknown_liveness_origin_keeps_its_asks_as_labelled_candidates_and_its_read_reason() {
+    let lines: Vec<String> = ["ask-a", "ask-b"]
         .iter()
         .zip(100..)
         .map(|(id, ts)| owner_ask(id, ts))
         .collect();
-    let orch = session("orch", ORCH, Status::Unknown, &lines);
-    let report = evaluate(None, &[orch], Vec::new(), at(200));
-    assert!(report.unboarded.is_empty());
-    let ask = report
+    let mut orch = session("orch", ORCH, Status::Unknown, &lines);
+    let report = evaluate(None, &[orch.clone()], Vec::new(), at(200));
+    assert_eq!(rows(&report), ["ask-a", "ask-b"]);
+    assert!(
+        report
+            .unboarded
+            .iter()
+            .all(|row| row.detail == "reply owed, no relay, origin liveness unknown")
+    );
+    assert_eq!(report.unresolved.len(), 1);
+    assert_eq!(report.unresolved[0].reason, "liveness unknown");
+    orch.record_gap = Some("record degraded: the meta is unreadable".to_owned());
+    let damaged = evaluate(None, &[orch], Vec::new(), at(200));
+    assert!(damaged.unboarded.is_empty());
+    assert_eq!(
+        damaged.unresolved[0].reason,
+        "liveness unknown, and record degraded: the meta is unreadable"
+    );
+}
+
+#[test]
+fn a_partly_read_origin_keeps_its_claims_and_loses_its_asks_to_coverage() {
+    let lines: Vec<String> = [
+        owner_ask("ask-a", 100),
+        owner_ask("ask-b", 101),
+        owner_ask("ask-c", 102),
+        owner_ask("ask-d", 103),
+        owner_ask("ask-e", 104),
+        claim_line("relay-1", None, 110),
+    ]
+    .into();
+    let orch = partial(
+        "orch",
+        ORCH,
+        Status::Running,
+        &lines,
+        "line 7 is not a record",
+    );
+    let target = session("target", TARGET, Status::Running, &[]);
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    assert_eq!(rows(&report), ["relay-1"], "the readable claim stands");
+    assert!(
+        report.unboarded[0]
+            .detail
+            .ends_with(", origin journal partly unreadable"),
+        "{}",
+        report.unboarded[0].detail
+    );
+    assert_eq!((report.read, report.unreadable), (1, 1));
+    let session_gap = report
         .unresolved
         .iter()
-        .find(|gap| gap.reason.contains("open owner ask(s)"))
-        .expect("the idle asks are one coverage line");
+        .find(|gap| gap.subject == "session orch" && gap.reason.starts_with("journal partly"))
+        .expect("the session has its one gap");
+    assert!(session_gap.reason.contains("line 7 is not a record"));
+    let asks = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.reason.contains("owner ask(s) read from a journal"))
+        .expect("the asks are one coverage line");
     assert!(
-        ask.reason
-            .contains("5 open owner ask(s) in a session of unknown liveness"),
+        asks.reason
+            .starts_with("5 owner ask(s) read from a journal that cannot be read strictly, not proved open: ask-a, ask-b, ask-c, ... and 2 more"),
         "{}",
-        ask.reason
+        asks.reason
     );
+}
+
+#[test]
+fn a_partly_read_target_proves_no_request_state() {
+    let orch = session(
+        "orch",
+        ORCH,
+        Status::Running,
+        &[claim_line("relay-1", None, 110)],
+    );
+    let target = partial(
+        "target",
+        TARGET,
+        Status::Running,
+        &[],
+        "line 3 is not a record",
+    );
+    let report = evaluate(None, &[orch, target], Vec::new(), at(200));
+    assert!(report.unboarded.is_empty(), "{:?}", report.unboarded);
+    assert!(report.closed.is_empty());
+    let relay = report
+        .unresolved
+        .iter()
+        .find(|gap| gap.subject.starts_with("relay relay-1"))
+        .expect("the relay is coverage");
     assert!(
-        ask.reason.ends_with("ask-a, ask-b, ask-c, ... and 2 more"),
+        relay
+            .reason
+            .starts_with("the target journal is only partly readable: line 3"),
         "{}",
-        ask.reason
+        relay.reason
     );
 }
 
@@ -714,7 +820,7 @@ fn a_target_whose_record_lost_its_proof_keeps_the_relay_unresolved() {
         &[claim_line("relay-1", None, 110)],
     );
     let mut target = session("target", TARGET, Status::Running, &[]);
-    target.record_gap = Some("record degraded: journal records were lost".to_owned());
+    target.record_gap = Some("record degraded: the meta is unreadable".to_owned());
     let report = evaluate(None, &[orch, target], Vec::new(), at(200));
     assert!(report.unboarded.is_empty(), "{:?}", report.unboarded);
     assert!(report.closed.is_empty());
@@ -726,7 +832,7 @@ fn a_target_whose_record_lost_its_proof_keeps_the_relay_unresolved() {
     assert!(
         relay
             .reason
-            .contains("the target's record: record degraded: journal records were lost"),
+            .contains("the target's record: record degraded: the meta is unreadable"),
         "{}",
         relay.reason
     );
@@ -785,13 +891,17 @@ fn a_degradation_costs_the_relay_proof_only_when_it_touches_the_proof() {
             format!("{id}session_id=aaaaaaaa-bbbb-4ccc-8ddd-000000000000\n"),
             complete_events(),
         ),
-        (id.to_owned(), None),
     ];
     for (meta, events) in lost_proof {
         let (reason, proof) = degradation(Some(&meta_snapshot(&meta, events)));
         assert!(proof, "{meta:?}: {reason}");
         assert!(!reason.is_empty());
     }
+    // Lost journal records leave the record's identity: the strict journal
+    // read decides what the journal still proves.
+    let (reason, proof) = degradation(Some(&meta_snapshot(id, None)));
+    assert!(!proof, "{reason}");
+    assert_eq!(reason, "journal records were lost");
     let (reason, proof) = degradation(Some(&meta_snapshot(
         &format!("{id}goal=a\ngoal=b\n"),
         complete_events(),
@@ -920,4 +1030,212 @@ fn the_board_error_line_cannot_be_altered_by_control_text() {
         line.ends_with("cannot be read: line one line two"),
         "{line}"
     );
+}
+
+fn declaration(ts: i64, actor: &str, value: &str, launch: Option<&str>) -> Event {
+    let body = crate::state::event_body(
+        at(ts),
+        actor,
+        &crate::state::Declaration {
+            value: value.to_owned(),
+            reason: "needs the owner for the next decision".to_owned(),
+            on: None,
+        },
+    );
+    let line = body.lines().next().expect("a record").to_owned();
+    let line = match launch {
+        Some(id) => format!(
+            "{},\"actor_launch_id\":\"{id}\"}}",
+            line.trim_end_matches('}')
+        ),
+        None => line,
+    };
+    Event::parse_line(&line).expect("a record")
+}
+
+#[test]
+fn the_declaration_row_names_its_launch_and_a_foreign_read_proves_nothing() {
+    let witness = |events: Option<&[Event]>, since: i64| {
+        witness_of(events, "alpha", "main", "lead", Some(at(since)))
+    };
+    let stamped = [declaration(100, "lead", "waiting-user", Some("tok-1"))];
+    assert_eq!(
+        witness(Some(&stamped), 100),
+        Witness::Launch("tok-1".to_owned())
+    );
+    let unstamped = [declaration(100, "lead", "waiting-user", None)];
+    assert_eq!(witness(Some(&unstamped), 100), Witness::Absent);
+    let unproved = |witness: Witness, phrase: &str| {
+        let Witness::Unproved(why) = witness else {
+            panic!("expected an unproved declaration, got {witness:?}");
+        };
+        assert!(why.contains(phrase), "{why}");
+    };
+    unproved(
+        witness(Some(&stamped), 101),
+        "not the one the fleet read named",
+    );
+    let superseded = [
+        declaration(100, "lead", "waiting-user", Some("tok-1")),
+        declaration(150, "lead", "working", Some("tok-1")),
+    ];
+    unproved(
+        witness(Some(&superseded), 100),
+        "not the one the fleet read named",
+    );
+    unproved(witness(Some(&[]), 100), "holds no declaration");
+    unproved(witness(None, 100), "cannot be read");
+    let empty = declaration(100, "lead", "waiting-user", Some(""));
+    unproved(witness(Some(&[empty]), 100), "present and empty");
+    assert_eq!(
+        witness_of(Some(&stamped), "alpha", "main", "lead", None),
+        Witness::Launch("tok-1".to_owned()),
+        "a missing fleet time leaves the row's own witness"
+    );
+}
+
+#[test]
+fn a_direct_launch_name_wins_and_a_mismatch_is_unresolved_even_when_the_baseline_would_pass() {
+    let bound = |witness: Witness, since: i64, epoch: i64| {
+        let wait = Wait {
+            witness,
+            ..wait(Some(since), Some(epoch))
+        };
+        evaluate(None, &[with_waits(vec![wait])], Vec::new(), at(200))
+    };
+    // The baseline alone would leave the same second unresolved: the name binds.
+    let same = bound(Witness::Launch("tok-1".to_owned()), 100, 100);
+    assert_eq!(rows(&same), ["alpha:lead"]);
+    assert!(same.unresolved.is_empty());
+    // The baseline alone would bind: the other launch's name does not.
+    let other = bound(Witness::Launch("tok-0".to_owned()), 100, 90);
+    assert!(other.unboarded.is_empty());
+    assert_eq!(other.unresolved.len(), 1);
+    assert_eq!(
+        other.unresolved[0].reason,
+        "waiting-user declared by launch tok-0, not the seat's current launch tok-1"
+    );
+    // The name needs no baseline: none is read when the row names its launch.
+    let wait = Wait {
+        witness: Witness::Launch("tok-1".to_owned()),
+        ..wait(Some(100), None)
+    };
+    let no_baseline = evaluate(None, &[with_waits(vec![wait])], Vec::new(), at(200));
+    assert_eq!(rows(&no_baseline), ["alpha:lead"]);
+    let unproved = bound(
+        Witness::Unproved("the journal holds no declaration of the seat".to_owned()),
+        100,
+        90,
+    );
+    assert!(unproved.unboarded.is_empty());
+    assert!(
+        unproved.unresolved[0]
+            .reason
+            .starts_with("waiting-user, but the journal holds no declaration")
+    );
+}
+
+fn relayed_ask(id: &str, ts: i64) -> String {
+    let fields = EventFields {
+        target_session_id: ORCH,
+        ..EventFields::new(
+            at(ts),
+            tracked::CONSOLE_SINK,
+            "ask",
+            "boss",
+            id,
+            "",
+            "",
+            "main",
+            "orch",
+            "",
+            "",
+        )
+    };
+    tracked::event_line_with(&fields, "launch-1", &[("relay_origin", TARGET)])
+}
+
+#[test]
+fn a_join_cites_one_owner_opening_even_when_it_was_answered_since() {
+    let reply = EventFields::new(
+        at(150),
+        "boss",
+        "reply",
+        tracked::CONSOLE_SINK,
+        "ask-1",
+        "main",
+        "orch",
+        "",
+        "",
+        "answered",
+        "",
+    );
+    let joined = |ask: Vec<String>| {
+        let mut lines = ask;
+        lines.push(claim_line("relay-1", Some("ask-1"), 110));
+        let orch = session("orch", ORCH, Status::Running, &lines);
+        let target = session("target", TARGET, Status::Running, &[]);
+        evaluate(None, &[orch, target], Vec::new(), at(200))
+    };
+    let unread = |report: &Report| {
+        report
+            .unresolved
+            .iter()
+            .filter(|gap| gap.reason.starts_with("owner join not read"))
+            .count()
+    };
+    let open = joined(vec![owner_ask("ask-1", 100)]);
+    assert_eq!(unread(&open), 0);
+    let answered = joined(vec![owner_ask("ask-1", 100), tracked::event_line(&reply)]);
+    assert_eq!(
+        unread(&answered),
+        0,
+        "a closed owner ask is still an owner ask"
+    );
+    let foreign = joined(vec![relayed_ask("ask-1", 100)]);
+    assert_eq!(unread(&foreign), 1, "a relayed opening is no owner ask");
+    let repeated = joined(vec![owner_ask("ask-1", 100), owner_ask("ask-1", 101)]);
+    assert_eq!(
+        unread(&repeated),
+        1,
+        "a repeated opening is no one owner ask"
+    );
+    let absent = joined(Vec::new());
+    assert_eq!(unread(&absent), 1);
+}
+
+#[test]
+fn the_request_index_reads_each_state_once_by_id() {
+    let reply = EventFields::new(
+        at(150),
+        "boss",
+        "reply",
+        tracked::CONSOLE_SINK,
+        "ask-1",
+        "main",
+        "orch",
+        "",
+        "",
+        "answered",
+        "",
+    );
+    let open = journal(
+        "orch",
+        ORCH,
+        &[owner_ask("ask-1", 100), owner_ask("ask-2", 101)],
+    );
+    assert_eq!(open.request_word("ask-1"), "pending");
+    assert_eq!(open.request_word("ask-2"), "pending");
+    assert_eq!(open.request_word("ask-3"), "absent");
+    let answered = journal(
+        "orch",
+        ORCH,
+        &[
+            owner_ask("ask-1", 100),
+            owner_ask("ask-2", 101),
+            tracked::event_line(&reply),
+        ],
+    );
+    assert_eq!(answered.request_word("ask-1"), "replied");
+    assert_eq!(answered.request_word("ask-2"), "pending");
 }
