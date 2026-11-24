@@ -42,6 +42,7 @@
 //! obligation in other words, so the orchestrator adjudicates each one.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -584,6 +585,41 @@ const fn origin_note(status: Status) -> &'static str {
     }
 }
 
+/// The open owner asks of a journal read whole, each with the relays that cite
+/// it through a read join and the state each one reads.
+fn owner_rows(
+    session: &SessionInput,
+    journal: &Journal,
+    uuid: &str,
+    by_ask: &HashMap<&str, Vec<&Relay>>,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for ask in owner_asks(journal, &session.name, uuid) {
+        let Some(id) = ask.reference.as_deref() else {
+            continue;
+        };
+        let cited: Vec<String> = by_ask
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|relay| format!("{} {}", relay.id, relay.fate.word()))
+            .collect();
+        let detail = if cited.is_empty() {
+            "reply owed, no relay".to_owned()
+        } else {
+            format!("reply owed, relays {}", cited.join(", "))
+        };
+        rows.push(Row {
+            kind: Kind::OwnerAsk,
+            key: id.to_owned(),
+            place: session.name.clone(),
+            at: Some(ask.ts),
+            detail: format!("{detail}{}", origin_note(session.status)),
+        });
+    }
+    rows
+}
+
 /// An obligation proven open, before the board is consulted. Every session
 /// whose journal reads claims its relays, whatever its liveness: a dispatcher
 /// that stopped leaves its relay owed. The liveness restriction sits on the
@@ -628,29 +664,7 @@ fn open_rows(
             }
         }
         if journal.lost.is_none() {
-            for ask in owner_asks(journal, &session.name, uuid) {
-                let Some(id) = ask.reference.as_deref() else {
-                    continue;
-                };
-                let cited: Vec<String> = by_ask
-                    .get(id)
-                    .into_iter()
-                    .flatten()
-                    .map(|relay| format!("{} {}", relay.id, relay.fate.word()))
-                    .collect();
-                let detail = if cited.is_empty() {
-                    "reply owed, no relay".to_owned()
-                } else {
-                    format!("reply owed, relays {}", cited.join(", "))
-                };
-                open.push(Row {
-                    kind: Kind::OwnerAsk,
-                    key: id.to_owned(),
-                    place: session.name.clone(),
-                    at: Some(ask.ts),
-                    detail: format!("{detail}{}", origin_note(session.status)),
-                });
-            }
+            open.extend(owner_rows(session, journal, uuid, &by_ask));
         }
         let claim_note = if journal.lost.is_some() {
             ", origin journal partly unreadable"
@@ -660,7 +674,6 @@ fn open_rows(
         for relay in &claimed {
             let subject = format!("relay {} ({})", relay.id, relay.place);
             match &relay.join {
-                Join::Absent => {}
                 Join::Malformed(why) => unresolved.push(Gap {
                     subject: subject.clone(),
                     reason: format!("owner join not read: {why}"),
@@ -673,7 +686,7 @@ fn open_rows(
                         ),
                     });
                 }
-                Join::Bound(_) => {}
+                Join::Absent | Join::Bound(_) => {}
             }
             let row = |detail: String| Row {
                 kind: Kind::Relay,
@@ -900,53 +913,47 @@ pub(crate) fn render(report: &Report, all: bool) -> String {
     match report.board {
         None => out.push_str("board: absent\n"),
         Some((items, updated)) => {
-            out.push_str(&format!("board: {items} items, updated {updated}\n"));
+            let _ = writeln!(out, "board: {items} items, updated {updated}");
         }
     }
-    out.push_str(&format!(
-        "desk check  as of {as_of}  sessions {} read, {} stopped, {} unreadable\n",
+    let _ = writeln!(
+        out,
+        "desk check  as of {as_of}  sessions {} read, {} stopped, {} unreadable",
         report.read, report.stopped, report.unreadable
-    ));
-    out.push_str(&format!("unboarded ({})\n", report.unboarded.len()));
+    );
+    let _ = writeln!(out, "unboarded ({})", report.unboarded.len());
     for row in &report.unboarded {
-        out.push_str(&row_line(row, as_of));
-        out.push('\n');
+        let _ = writeln!(out, "{}", row_line(row, as_of));
     }
-    out.push_str(&format!("boarded (hint) ({})\n", report.hinted.len()));
+    let _ = writeln!(out, "boarded (hint) ({})", report.hinted.len());
     for (row, hint) in &report.hinted {
-        out.push_str(&format!(
-            "{}  hint: {} via {}\n",
+        let _ = writeln!(
+            out,
+            "{}  hint: {} via {}",
             row_line(row, as_of),
             clean(&hint.item),
             hint.via
-        ));
+        );
     }
-    out.push_str(&format!("known closed ({})\n", report.closed.len()));
+    let _ = writeln!(out, "known closed ({})", report.closed.len());
     let shown = if all {
         report.closed.len()
     } else {
         report.closed.len().min(CLOSED_SHOWN)
     };
     for row in &report.closed[..shown] {
-        out.push_str(&row_line(row, as_of));
-        out.push('\n');
+        let _ = writeln!(out, "{}", row_line(row, as_of));
     }
     if shown < report.closed.len() {
-        out.push_str(&format!(
-            "  {} older omitted (--all lists them)\n",
+        let _ = writeln!(
+            out,
+            "  {} older omitted (--all lists them)",
             report.closed.len() - shown
-        ));
+        );
     }
-    out.push_str(&format!(
-        "unresolved coverage ({})\n",
-        report.unresolved.len()
-    ));
+    let _ = writeln!(out, "unresolved coverage ({})", report.unresolved.len());
     for gap in &report.unresolved {
-        out.push_str(&format!(
-            "  {}  {}\n",
-            clean(&gap.subject),
-            clean(&gap.reason)
-        ));
+        let _ = writeln!(out, "  {}  {}", clean(&gap.subject), clean(&gap.reason));
     }
     out
 }

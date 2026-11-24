@@ -21,6 +21,7 @@ use crate::relay::Claim;
 use crate::session::{MetaRead, RecordSnapshot, SessionRead};
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
+use std::fmt::Write as _;
 
 const ORCH: &str = "11111111-2222-4333-8444-555555555555";
 const TARGET: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -149,7 +150,7 @@ fn a_typed_id_matches_only_as_a_whole_token() {
         (format!("Waiting on ({id})"), true),
         (format!("Waiting on {id}."), true),
         (format!("see https://example.test/ask/{id}"), true),
-        (format!("{id}"), true),
+        (id.to_string(), true),
         (format!("{id}-backup"), false),
         (format!("prefix-{id}"), false),
         (format!("{id}x"), false),
@@ -867,24 +868,27 @@ fn meta_snapshot(meta: &str, events: Option<SessionRead>) -> RecordSnapshot {
     }
 }
 
-fn complete_events() -> Option<SessionRead> {
-    Some(SessionRead {
+fn complete_events() -> SessionRead {
+    SessionRead {
         events: Vec::new(),
         last_active: None,
         pending: Vec::new(),
         cursor: Cursor::default(),
         skipped: Vec::new(),
-    })
+    }
 }
 
 #[test]
 fn a_degradation_costs_the_relay_proof_only_when_it_touches_the_proof() {
     let id = "session_id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n";
     let lost_proof = [
-        (format!("{id}no equals sign here\n"), complete_events()),
+        (
+            format!("{id}no equals sign here\n"),
+            Some(complete_events()),
+        ),
         (
             format!("{id}session_id=aaaaaaaa-bbbb-4ccc-8ddd-000000000000\n"),
-            complete_events(),
+            Some(complete_events()),
         ),
     ];
     for (meta, events) in lost_proof {
@@ -899,11 +903,11 @@ fn a_degradation_costs_the_relay_proof_only_when_it_touches_the_proof() {
     assert_eq!(reason, "journal records were lost");
     let (reason, proof) = degradation(Some(&meta_snapshot(
         &format!("{id}goal=a\ngoal=b\n"),
-        complete_events(),
+        Some(complete_events()),
     )));
     assert!(!proof, "{reason}");
     assert!(reason.contains("duplicate meta key goal"), "{reason}");
-    let (reason, proof) = degradation(Some(&meta_snapshot(id, complete_events())));
+    let (reason, proof) = degradation(Some(&meta_snapshot(id, Some(complete_events()))));
     assert!(!proof);
     assert_eq!(reason, "an unusable idle-nudge pin");
     let (reason, proof) = degradation(None);
@@ -1059,10 +1063,10 @@ fn routed_declaration(
 ) -> Event {
     let mut tail = format!(",\"actor_slot\":\"main\",\"actor_session\":\"{session}\"");
     if let Some(id) = id {
-        tail.push_str(&format!(",\"actor_session_id\":\"{id}\""));
+        let _ = write!(tail, ",\"actor_session_id\":\"{id}\"");
     }
     if let Some(launch) = launch {
-        tail.push_str(&format!(",\"actor_launch_id\":\"{launch}\""));
+        let _ = write!(tail, ",\"actor_launch_id\":\"{launch}\"");
     }
     declaration_with(ts, "lead", value, &tail)
 }
