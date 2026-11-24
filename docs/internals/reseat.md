@@ -1068,7 +1068,12 @@ the orchestrator. It only narrows `auto_reseat = all`.
   records no launch or conversation is such a no-move for the verdict too: the
   stage guard refuses it whatever the policy says, and the detached leg keeps its
   own diagnostic. A standing observed choice is a reason too: the act that tells
-  it journals the `observed-choice` hold once per key. When a
+  it journals the `observed-choice` hold once per key. When the policy keeps the orchestrator's
+  running model unproven, that notice names the proof (`no launch record or live
+  pane proves its model`) and the pin the profile held when the observer first saw
+  the pane leave it, as a pin and never as proof: the observer retires the launch
+  record in that same cycle, so the observed pair's pin is the only durable word
+  of what the seat was set to run. When a
   move is due (a usage limit past its grace, or the account at the threshold)
   and the policy produces none (`off`, nothing configured, an unproven model,
   only other models, a same-model candidate with no room, a request in flight,
