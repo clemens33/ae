@@ -513,7 +513,10 @@ fn wait_for_quota_notice(seat: &SeatRig, reset: Timestamp, manual: bool) {
     assert!(notice.contains("reset"), "{notice}");
     assert!(notice.contains(&reset.to_string()[11..16]), "{notice}");
     if manual {
-        let command = format!("ae reseat {} main --using fake-claude-b", rig.session);
+        let command = format!(
+            "ae reseat {} {} --using fake-claude-b",
+            rig.session, seat.name
+        );
         assert!(notice.contains(&command), "{notice}");
     } else {
         assert!(
@@ -555,6 +558,28 @@ fn orchpin_quota_notice_also_reaches_the_owner_with_policy_off() {
     let reset = quota(&seat.rig.scratch.join("home-a"), 96);
     set_policy(&seat, "off");
     wait_for_quota_notice(&seat, reset, true);
+
+    // Execute the owner's printed command against the isolated session.
+    let rig = &seat.rig;
+    let notices = owner_quota_notices(&seat);
+    let (_, command) = notices[0]
+        .split_once("Move it by hand: ")
+        .expect("the owner notice has a manual command");
+    let output = super::super::cli::ae()
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env_remove("TMUX_PANE")
+        .env("AE_HOME", &rig.scratch)
+        .env("HOME", rig.scratch.join("home"))
+        .env("CONFIG_FILE", rig.scratch.join("config"))
+        .args(command.split_ascii_whitespace().skip(1))
+        .output()
+        .expect("the printed command runs through ae");
+    assert!(
+        output.status.success(),
+        "{command}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(rig.meta_row("profile.main"), "fake-claude-b");
 }
 
 #[test]
