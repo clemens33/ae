@@ -1166,3 +1166,6 @@ fn orchreseat_strict_resume_cannot_exec_a_fresh_tool_after_a_store_gap() {
         );
     }
 }
+
+#[path = "orchself_spec.rs"]
+mod orchself_spec;
