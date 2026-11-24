@@ -748,6 +748,7 @@ impl Rig {
         };
         fs::write(dir.join(ae::desk::RECORD_FILE), ae::desk::encode(&board))
             .expect("fixture board record");
+        #[allow(clippy::format_collect, reason = "a fixture: one formatted line per turn")]
         let history: String = (0..80)
             .map(|n| format!("{{\"ts\":\"2026-10-03T06:00:00Z\",\"actor\":\"orchestrator\",\"action\":\"chat\",\"summary\":\"DURABLE-TURN-{n:03}\"}}\n"))
             .collect();
