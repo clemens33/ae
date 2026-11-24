@@ -205,6 +205,42 @@ fn an_unmeasured_or_stale_row_stays_unclassified() {
     }
 }
 
+/// Lead ruling: a pane-height window must not book a quote. Another indent
+/// is the `four spaces` case above. These two are the other pins: the
+/// sentence inside tool output, and the measured row followed by a later
+/// assistant row. The wide measured row still books; its extra text is the
+/// sidebar at `L + 4`, not a quote.
+#[test]
+fn a_quote_or_a_later_assistant_row_is_not_an_account_block() {
+    let tool_output = OPENCODE_100.replace(
+        "     Error: You have exceeded your monthly quota",
+        "     stdout: Error: You have exceeded your monthly quota",
+    );
+    let later_assistant = OPENCODE_100.replace(
+        "\n     Error: You have exceeded your monthly quota\n\n     Build · GPT-6.1 Sol · 334ms\n",
+        "\n     Exit code 0.\n",
+    );
+    assert!(
+        later_assistant.contains("     Error: You have exceeded your monthly quota"),
+        "the first measured row remains"
+    );
+    assert!(
+        later_assistant.contains("     Exit code 0."),
+        "an assistant row follows it"
+    );
+    assert!(
+        !tool_output.contains("\n     Error: You have exceeded your monthly quota\n"),
+        "tool output is a longer row, not the measured one"
+    );
+    for (name, frame) in [
+        ("inside tool output", tool_output.as_str()),
+        ("a later assistant row", later_assistant.as_str()),
+    ] {
+        assert_eq!(class(frame, "opencode"), None, "{name}");
+        assert_eq!(notice(frame, "opencode"), None, "{name}");
+    }
+}
+
 /// The measured 140-column sidebar starts at `L + 4`. Shifting it is the
 /// negative above; this pins the fixture the positive uses.
 #[test]
