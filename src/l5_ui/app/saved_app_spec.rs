@@ -370,6 +370,22 @@ fn a_panel_the_file_left_closed_stays_closed_also_for_a_home_on_the_seat() {
     }
 }
 
+#[test]
+fn a_closed_panel_binds_only_while_the_saved_view_still_holds() {
+    // The human acted first: the file's closed panel is overtaken, so a home
+    // on the seat opens its full panel as it does with no file, and a start
+    // that is no home opens nothing.
+    let home = proving(Opening::Saved(None, true), OID, |app| app.touched = true);
+    let panel = home.orch.panel.as_ref().expect("the home opens its panel");
+    assert_eq!(
+        panel.handover().map(|view| view.mode),
+        Some(PanelMode::Full),
+        "the home's own default"
+    );
+    let bare = proving(Opening::Saved(None, false), OID, |app| app.touched = true);
+    assert!(bare.orch.panel.is_none(), "no home, nothing to open");
+}
+
 fn fleet_of(running: &str, stopped: &str) -> Fleet {
     let row = |(at, name, counts): (usize, &str, Counts)| Row {
         name: name.to_owned(),
