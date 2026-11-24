@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.115] - 2026-11-24
+- Accept copy = worktree and warn on an unknown copy value; document the layout default as vertical
+- Freeze durable app view acceptance tests
+- Stabilize the frozen app view fixtures
+- Save the app view in a private file and restore it on a fresh start
+- Make the save diagnostic best effort and keep the sentinel on the file's leg
+- Allow fixture history formatting in the frozen app view tests
+- Clear the merge gate's lints and pin the survivors of the mutation run
+- Pin that a closed saved panel yields to the human's first act
+- Read claude placeholders as an empty composer only when text and rendering both match
+- Let the watchdog's plain read pass a claude failure hint row as no draft
+
 ## [v2026.11.114] - 2026-11-23
 - Pin that an expected launch reads the record its lifecycle lock holds
 - Wait for the spawned group before the app open tests place a click
