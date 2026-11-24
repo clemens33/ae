@@ -3637,6 +3637,58 @@ fn client_switch_targets_exact_client_and_session_ids() {
 }
 
 #[test]
+fn the_client_jump_is_one_command_line_that_selects_the_pane_after_the_switch() {
+    use super::jump_client_args;
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
+    assert_eq!(
+        jump_client_args(&ServerId::Ambient, "/dev/ttys001", "next", "%7"),
+        Some(
+            [
+                "switch-client",
+                "-c",
+                "/dev/ttys001",
+                "-t",
+                "=next",
+                ";",
+                "select-window",
+                "-t",
+                "%7",
+                ";",
+                "select-pane",
+                "-t",
+                "%7",
+            ]
+            .map(ToOwned::to_owned)
+            .to_vec()
+        ),
+        "the switch, then the pane's window, then the pane, as one line"
+    );
+    let socket = ServerId::Selected(Selector::Socket("/tmp/s".into()));
+    let args = jump_client_args(&socket, "/dev/pts/3", "next", "%12").expect("a socket server");
+    assert_eq!(
+        args[..2],
+        ["-S", "/tmp/s"],
+        "the server's own selector leads"
+    );
+    assert_eq!(args.iter().filter(|word| *word == ";").count(), 2);
+    for client in ["", "a b", "x;y", "tty$1", "/dev/tty\n1"] {
+        assert_eq!(
+            jump_client_args(&ServerId::Ambient, client, "next", "%7"),
+            None,
+            "a client name is plain text tmux printed: {client:?}"
+        );
+    }
+    for pane in ["", "7", "%", "%x", "%7;kill-server", "@7", "%7 ", " %7"] {
+        assert_eq!(
+            jump_client_args(&ServerId::Ambient, "/dev/ttys001", "next", pane),
+            None,
+            "a pane id is % and digits: {pane:?}"
+        );
+    }
+}
+
+#[test]
 fn a_pane_tty_listing_is_a_list_and_a_failed_one_is_no_answer() {
     use super::{interpret_pane_ttys, pane_ttys_args};
     use crate::inventory::ServerId;
