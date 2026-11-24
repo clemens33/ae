@@ -8577,6 +8577,48 @@ tail line
         assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     }
 
+    #[test]
+    fn the_narrow_plain_home_block_remains_answerable() {
+        let frame = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-default-80x24.txt"
+        );
+        let prompt = super::human_prompt_class(frame, "claude").expect("named folder trust");
+        assert_eq!(prompt.kind, super::DialogKind::FolderTrust);
+        let sighting = prompt.trust.expect("the measured home block is answerable");
+        assert_eq!(sighting.variant, super::TrustVariant::Home);
+        assert_eq!(sighting.folder, "/tmp/claude-home-trust-probe");
+        assert!(prompt.warnings.is_empty(), "{:?}", prompt.warnings);
+    }
+
+    #[test]
+    fn a_split_security_guide_in_the_home_hooks_block_is_report_only() {
+        let captured = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-hooks-108x44.txt"
+        );
+        let measured = super::human_prompt_class(captured, "claude").expect("measured prompt");
+        assert!(
+            measured.trust.is_some(),
+            "control: the captured home hooks block is answerable"
+        );
+        let split = captured.replacen("\n Security guide\n", "\n Security\n guide\n", 1);
+        assert_ne!(split, captured, "setup: split the guide row");
+
+        let found = super::human_prompt_class(&split, "claude").expect("named folder trust");
+        assert_eq!(found.kind, super::DialogKind::FolderTrust);
+        assert_eq!(
+            found.trust, None,
+            "an unmeasured guide layout must not be answerable"
+        );
+        assert!(
+            found
+                .differs
+                .as_deref()
+                .is_some_and(|reason| reason.contains("dialog differs from the measured one")),
+            "named with a reason: {:?}",
+            found.differs
+        );
+    }
+
     /// trustfix survivors: the operator line of a differing block names its
     /// reason and where to answer it, then each warning; a measured block keeps
     /// the label and action line.
