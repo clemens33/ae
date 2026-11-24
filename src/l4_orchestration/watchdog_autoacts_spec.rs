@@ -70,6 +70,7 @@ fn seat(slot: &str, agent: &str) -> AutoSeat {
         room: Room::Unread,
         derives: false,
         stays: None,
+        held_tail: None,
         start: StartRead::default(),
         reset: None,
         wake_landed: None,

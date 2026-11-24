@@ -467,3 +467,54 @@ mod admission_check {
         );
     }
 }
+
+mod persistent {
+    //! A hold the leg finds alone and keeps finding is news once it keeps coming.
+
+    use super::*;
+    use crate::events::Event;
+    use crate::time::Timestamp;
+
+    #[test]
+    fn holds_become_news_at_the_third_and_the_count_outlives_the_cooldown() {
+        let at = |second: i64| Timestamp::from_epoch(1_700_000_000 + second);
+        let line = |second: i64, action: &str, summary: Option<&str>| {
+            let reference = format!(r#", "ref":"{}""#, at(0));
+            let summary = summary
+                .map(|text| format!(r#", "summary":"{text}""#))
+                .unwrap_or_default();
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"orchestrator"{reference}{summary}}}"#,
+                at(second)
+            ))
+            .expect("valid synthetic journal record")
+        };
+        let held = CauseClass::OrchestratorStays.lead("Error: the carry source is missing");
+        let mut journal = vec![
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"limit","target":"orchestrator"}}"#,
+                at(0)
+            ))
+            .expect("the limit record"),
+        ];
+        let mut told = Vec::new();
+        for turn in 0..3_i64 {
+            journal.push(line(10 + turn * 400, ATTEMPT_ACTION, None));
+            journal.push(line(15 + turn * 400, HELD_ACTION, Some(held.as_str())));
+            let state = episode(&journal, "s", "main", "orchestrator").expect("open");
+            told.push(state.persistent_hold().is_some());
+        }
+        assert_eq!(told, [false, false, true], "news at the third hold");
+        let state = episode(&journal, "s", "main", "orchestrator").expect("open");
+        let last = at(15 + 2 * 400).epoch();
+        assert_eq!(
+            state.persistent_hold(),
+            Some((3, "Error: the carry source is missing")),
+            "the count and the diagnostic, without the class word"
+        );
+        // The count is durable: it never ends with the cooldown, which gates the
+        // admission alone.
+        assert!(state.cooling_until(last + 1).is_some());
+        assert_eq!(state.cooling_until(last + POLICY_HOLD_WAIT_SECS), None);
+    }
+}

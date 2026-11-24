@@ -646,6 +646,7 @@ fn auto_reseat_waits_for_a_near_short_reset_and_moves_otherwise() {
         room,
         derives: false,
         stays: None,
+        held_tail: None,
         start: crate::autoreseat::StartRead::default(),
         reset: seat_reset,
         wake_landed,

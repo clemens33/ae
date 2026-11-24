@@ -48,6 +48,8 @@ fn wanted(key: i64, trigger: Trigger) -> Episode {
         last_hold: None,
         choice_held: false,
         policy_hold_at: None,
+        policy_holds: 0,
+        policy_hold_why: None,
     }
 }
 

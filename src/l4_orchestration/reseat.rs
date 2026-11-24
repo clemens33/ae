@@ -2323,7 +2323,7 @@ fn orchestrator_gate(
             crate::autoreseat::leg::NO_KEEPER,
             seat.to
         )?;
-        return Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)));
+        return Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)));
     }
     stage_guard(seat, locked, (prior, &guard.successor), err)?;
     Ok(Some(guard))
@@ -2367,7 +2367,7 @@ fn orchestrator_guard(
                 err,
                 "Error: {flying} ({what}) — nothing was stopped or reseated."
             )?;
-            return Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)));
+            return Err(Halt::End(Ended::Refused(CauseClass::Busy)));
         }
     };
     if let Some(what) = crate::autoreseat::leg::orchestrator_exchange(
@@ -2378,7 +2378,7 @@ fn orchestrator_guard(
             err,
             "Error: {flying} ({what}) — nothing was stopped or reseated."
         )?;
-        return Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)));
+        return Err(Halt::End(Ended::Refused(CauseClass::Busy)));
     }
     match travels(&seat.dir, locked, &target.slot, &seat.to) {
         Ok(travel) => Ok(OrchestratorGuard {
@@ -2392,7 +2392,7 @@ fn orchestrator_guard(
                 "Error: {} ({why}) — nothing was stopped or reseated.",
                 crate::autoreseat::leg::NO_KEEPER
             )?;
-            Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)))
+            Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)))
         }
     }
 }

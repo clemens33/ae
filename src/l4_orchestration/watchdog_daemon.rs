@@ -2937,6 +2937,21 @@ impl Cycle<'_> {
             }
             {
                 let frame = seen.harness.frame;
+                // ORCHESTRATOR MODEL GUARD: this cycle's read of its due move.
+                let read = self.orchestrator_stays(
+                    &carry.quota,
+                    &events,
+                    (&slot, agent),
+                    (
+                        &capture,
+                        (
+                            &own_room,
+                            carried.limit_reset,
+                            carried.limit_since.is_some() || resume.exhausted.is_some(),
+                        ),
+                    ),
+                    now,
+                );
                 auto_seats.push(AutoSeat {
                     slot: slot.clone(),
                     agent: agent.to_owned(),
@@ -2963,20 +2978,8 @@ impl Cycle<'_> {
                                 crate::autoreseat::Room::Crossed(_) | crate::autoreseat::Room::Near
                             ),
                     ),
-                    stays: self.orchestrator_stays(
-                        &carry.quota,
-                        &events,
-                        (&slot, agent),
-                        (
-                            &capture,
-                            (
-                                &own_room,
-                                carried.limit_reset,
-                                carried.limit_since.is_some() || resume.exhausted.is_some(),
-                            ),
-                        ),
-                        now,
-                    ),
+                    stays: read.as_ref().and_then(|read| read.stays.clone()),
+                    held_tail: read.map(|read| read.tail),
                     room: own_room,
                     start: resume,
                     reset: carried.limit_reset,

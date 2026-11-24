@@ -218,6 +218,11 @@ pub const MAX_ROUNDS: u8 = 3;
 /// alone bounds a daemon whose inputs keep disagreeing with the leg, and a policy
 /// that clears is followed by the move once it has passed.
 pub const POLICY_HOLD_WAIT_SECS: i64 = 300;
+/// How many holds of the orchestrator's own rules one episode takes before the
+/// owner is told why its move keeps being held, however long the cooldowns run: a
+/// hold the leg finds alone (a carry, a lock, a changed floor) is no reason the
+/// daemon can foresee, so a persistent one is told by its count.
+pub const POLICY_HOLDS_TOLD: u8 = 3;
 /// The hold the daemon journals, once, when the last round was refused or
 /// failed: no further attempt, and the seat is told.
 pub const GAVE_UP_SUMMARY: &str = "other: held: gave up after repeated refused or failed moves";
@@ -1675,6 +1680,10 @@ pub struct Episode {
     /// When the newest hold of the orchestrator's own rules was recorded: the
     /// next attempt waits [`POLICY_HOLD_WAIT_SECS`] after it.
     policy_hold_at: Option<Timestamp>,
+    /// How often the orchestrator's own rules held this episode, and the diagnostic
+    /// of the newest hold: a hold that keeps coming is news ([`POLICY_HOLDS_TOLD`]).
+    policy_holds: u8,
+    policy_hold_why: Option<String>,
 }
 
 impl Episode {
@@ -1696,6 +1705,22 @@ impl Episode {
     #[must_use]
     pub fn holds_with(&self, summary: &str) -> bool {
         self.held && self.last_hold.as_deref() == Some(summary)
+    }
+
+    /// The count and the newest diagnostic of the orchestrator's holds once they
+    /// keep coming ([`POLICY_HOLDS_TOLD`]): the durable count of this key's own
+    /// journal, told once whatever the key's cooldown says, so telling it never
+    /// waits on, or blocks, the retry ([`admission`]).
+    #[must_use]
+    pub fn persistent_hold(&self) -> Option<(u8, &str)> {
+        (self.policy_holds >= POLICY_HOLDS_TOLD).then(|| {
+            (
+                self.policy_holds,
+                self.policy_hold_why
+                    .as_deref()
+                    .map_or("", |why| CauseClass::OrchestratorStays.details(why)),
+            )
+        })
     }
 
     /// The epoch before which a hold of the orchestrator's own rules keeps this
@@ -1755,6 +1780,8 @@ impl Episode {
             last_hold: None,
             choice_held: false,
             policy_hold_at: None,
+            policy_holds: 0,
+            policy_hold_why: None,
         }
     }
 
@@ -1793,6 +1820,8 @@ impl Episode {
                     .is_some_and(|s| policy.iter().any(|lead| s.starts_with(lead.as_str())))
                 {
                     self.policy_hold_at = Some(event.ts);
+                    self.policy_holds = self.policy_holds.saturating_add(1);
+                    self.policy_hold_why.clone_from(&event.summary);
                     if was_open {
                         self.attempts = self.attempts.saturating_sub(1);
                     }
@@ -6504,6 +6533,8 @@ mod tests {
             last_hold: None,
             choice_held: false,
             policy_hold_at: None,
+            policy_holds: 0,
+            policy_hold_why: None,
         }
     }
 

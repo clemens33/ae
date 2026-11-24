@@ -1953,7 +1953,14 @@ pub(crate) fn run(
     let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
         if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
-            let code = close(&argv, &agent, now, (HELD_ACTION, &why), err)?;
+            // The orchestrator's hold gives its attempt back and keeps the observed
+            // choice as its diagnostic; the daemon's keyed notice still tells it.
+            let held = if orchestrator {
+                CauseClass::OrchestratorStays.lead(CauseClass::ObservedChoice.details(&why))
+            } else {
+                why.clone()
+            };
+            let code = close(&argv, &agent, now, (HELD_ACTION, &held), err)?;
             // The orchestrator's observed hold is told by the daemon's one keyed
             // notice, with its scope and the manual move.
             if !found.choice_held && !orchestrator {
@@ -2030,13 +2037,13 @@ pub(crate) fn run(
         &mut said,
     )?;
     err.write_all(&said)?;
-    // A refusal that stopped nothing and may pass (a lock, a changed pair or floor,
-    // a request, a keeper that vanished) is a recoverable hold of the orchestrator's
-    // own rules, its diagnostic kept: it gives its attempt back and the key cools.
+    // THE RESULT BOUNDARY, once: a refusal leaves the seat exactly as it was (a
+    // move that stopped the tool ends as a failure), so for the orchestrator's
+    // move it is a recoverable hold of its own rules, its diagnostic kept: it gives its
+    // attempt back and the key cools. `orchestrator-changed` keeps its word, and a
+    // real failure stays a failure.
     let ended = match ended {
-        Ended::Refused(class)
-            if orchestrator && class.transient() && class != CauseClass::OrchestratorChanged =>
-        {
+        Ended::Refused(class) if orchestrator && class != CauseClass::OrchestratorChanged => {
             Ended::Refused(CauseClass::OrchestratorStays)
         }
         other => other,

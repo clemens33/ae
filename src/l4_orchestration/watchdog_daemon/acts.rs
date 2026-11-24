@@ -2,6 +2,14 @@
 
 use super::{Event, Throttle, Timestamp};
 
+/// The daemon's read of the orchestrator's due move: its notice when the rules produce
+/// no move, and the tail (scope and manual move) every notice of the seat ends with.
+#[derive(Debug, Clone)]
+pub(super) struct StaysRead {
+    pub(super) stays: Option<String>,
+    pub(super) tail: String,
+}
+
 /// One seat after this cycle's accounting, as the auto reseat step reads it.
 #[derive(Debug, Clone)]
 pub(super) struct AutoSeat {
@@ -19,6 +27,9 @@ pub(super) struct AutoSeat {
     /// ORCHESTRATOR MODEL GUARD: this cycle's due move of the orchestrator's main
     /// seat yields no move whatever the cause; the words of the one owner notice.
     pub(super) stays: Option<String>,
+    /// The scope and the manual move of that notice, when a move is due: what a hold
+    /// only the leg finds, and keeps finding, is told with ([`StaysRead`]).
+    pub(super) held_tail: Option<String>,
     /// This cycle's read of it against the session's resume.
     pub(super) start: crate::autoreseat::StartRead,
     /// Its latched episode's carried binding reset: a near short one waits
@@ -238,6 +249,22 @@ pub(super) fn auto_acts_with(
         // A return takes the plain grace and the plain frame: a resume's
         // waivers are for an exhausted start, never for going home.
         let homeward = trigger == Trigger::Return;
+        // A hold only the leg can find, and keeps finding, is told once by its
+        // durable count, on the key this cycle actually selects. Its notice and the
+        // key's retry are independent: the admission below still waits on the
+        // cooldown alone, so telling it never blocks recovery.
+        if !homeward
+            && seat.stays.is_none()
+            && let (Some(tail), Some((count, why))) =
+                (seat.held_tail.as_deref(), found.persistent_hold())
+        {
+            acts.push(AutoAct::Stays {
+                slot: slot.clone(),
+                agent: agent.clone(),
+                key,
+                body: format!("the move was held {count} times: {why}{tail}"),
+            });
+        }
         let waits = if homeward {
             crate::autoreseat::Waits::plain(settings.grace_secs)
         } else {

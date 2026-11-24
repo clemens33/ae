@@ -1054,8 +1054,17 @@ the orchestrator. It only narrows `auto_reseat = all`.
   diagnostic kept: the leg's early holds (a request in flight, no candidate, a
   standing choice), the gate's refusals under the lock (a request that began after
   the early check, a candidate that no longer keeps the conversation) and the
-  move's own transient refusals (a lock, a changed pair or floor). Real failures
-  and non-transient refusals keep their per-attempt record. A seat that
+  move's own refusals before the stop (everything `prepare` refuses, a carry
+  Check included). Real failures after the stop keep their per-attempt record.
+  The leg normalizes every `refused` of the orchestrator's move ONCE, at the
+  result boundary after `reseat::run_as_watchdog` (`orchestrator-changed` keeps
+  its word, a real failure stays `failed`); the legacy return pair veto (#296)
+  keeps its one `refused` record, a named exception. A hold only the leg can
+  find, and keeps finding, is news by its durable count: from the third
+  (`POLICY_HOLDS_TOLD`) the daemon tells it ("the move was held N times:
+  <diagnostic>", ending with the scope and the manual move) on the key it selects,
+  once, whatever the cooldown says. The retry admission waits on the cooldown
+  alone (`admission`), so telling never blocks recovery. A seat that
   records no launch or conversation is such a no-move for the verdict too: the
   stage guard refuses it whatever the policy says, and the detached leg keeps its
   own diagnostic. A standing observed choice is a reason too: the act that tells

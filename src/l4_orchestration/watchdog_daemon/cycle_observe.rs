@@ -1,5 +1,6 @@
 //! The cycle's observation, quota and identity steps: the methods of Cycle that read the world and book what it said.
 
+use super::acts::StaysRead;
 use super::{
     Acting, Cycle, Effect, Event, GO_USAGE_FLYING, HOLD_MAX_CYCLES, HarnessObservation,
     IdentityHold, Ordering, OverviewReading, PaneState, Path, PathBuf, QuotaAction, QuotaCarry,
@@ -649,7 +650,7 @@ impl Cycle<'_> {
             ),
         ),
         now: i64,
-    ) -> Option<String> {
+    ) -> Option<StaysRead> {
         use crate::autoreseat::{Ineligible, Room, Stance};
         let (room, reset, limited) = due;
         if !self.meta_agent
@@ -693,14 +694,18 @@ impl Cycle<'_> {
         // launch or conversation, whatever the policy and the candidates say.
         let guarded = crate::autoreseat::leg::records_launch(&bytes, slot)
             && !crate::lifecycle::meta_value(&bytes, &format!("harness_session.{slot}")).is_empty();
-        let reason = if let Some(hold) = &observed {
-            crate::autoreseat::observed_summary(hold)
+        // `None` when a move is permitted: only the tail is then kept, for a hold the
+        // leg alone finds.
+        let reason: Option<String> = if let Some(hold) = &observed {
+            Some(crate::autoreseat::observed_summary(hold))
         } else if list.is_empty() {
-            format!("nothing is configured to take it ({profile} has no candidate)")
+            Some(format!(
+                "nothing is configured to take it ({profile} has no candidate)"
+            ))
         } else if off {
-            "auto_reseat_orchestrator = off".to_owned()
+            Some("auto_reseat_orchestrator = off".to_owned())
         } else if !guarded {
-            "it records no launch or conversation to guard".to_owned()
+            Some("it records no launch or conversation to guard".to_owned())
         } else {
             let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
             let left_on_headroom =
@@ -737,22 +742,25 @@ impl Cycle<'_> {
             ) {
                 Ok(kept) => {
                     let choice = choose(&kept);
-                    if choice.pick.is_some() {
-                        return None;
-                    }
-                    crate::autoreseat::leg::passed_over_words(&choice)
+                    // A move the chooser allows has no reason of its own.
+                    choice
+                        .pick
+                        .is_none()
+                        .then(|| crate::autoreseat::leg::passed_over_words(&choice))
                 }
                 // No candidate keeps the conversation: the model refusal of the
                 // whole list, where there is one, says more than the travel one.
                 Err((class, why)) => {
                     let choice = choose(&list);
-                    if class == crate::autoreseat::CauseClass::NoCandidate
-                        && crate::autoreseat::leg::guard_refused(&choice)
-                    {
-                        crate::autoreseat::leg::passed_over_words(&choice)
-                    } else {
-                        class.details(&why).trim_start_matches("held: ").to_owned()
-                    }
+                    Some(
+                        if class == crate::autoreseat::CauseClass::NoCandidate
+                            && crate::autoreseat::leg::guard_refused(&choice)
+                        {
+                            crate::autoreseat::leg::passed_over_words(&choice)
+                        } else {
+                            class.details(&why).trim_start_matches("held: ").to_owned()
+                        },
+                    )
                 }
             }
         };
@@ -785,7 +793,11 @@ impl Cycle<'_> {
             ),
             None => format!("No candidate is configured: add an [auto_reseat] row for {profile}."),
         };
-        Some(format!("{reason}. {scope}. {action}"))
+        let tail = format!(". {scope}. {action}");
+        Some(StaysRead {
+            stays: reason.map(|reason| format!("{reason}{tail}")),
+            tail,
+        })
     }
 
     /// The line the first-sight notice of `agent`'s limit gains when auto
