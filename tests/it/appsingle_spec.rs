@@ -676,7 +676,6 @@ fn start(words: &[&str]) -> Option<Start> {
 }
 
 #[test]
-#[test]
 fn an_exec_restart_keeps_its_own_record_and_yields_only_to_another_holder() {
     let own = Record::Parsed(placed());
     assert_eq!(
@@ -719,6 +718,7 @@ fn an_exec_restart_keeps_its_own_record_and_yields_only_to_another_holder() {
     );
 }
 
+#[test]
 fn the_second_instance_flag_is_optional_and_does_not_combine_with_a_handover() {
     assert_eq!(
         start(&[]),
