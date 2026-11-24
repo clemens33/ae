@@ -10,18 +10,19 @@
 
 #![allow(
     clippy::disallowed_methods,
+    clippy::disallowed_types,
     clippy::expect_used,
-    reason = "the addendum owns a private tmux socket, a pty and scratch state"
+    reason = "the take-over pty is script(1) and its kill, the test door, not a product Command"
 )]
 
 use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::cli::OwnedScratch;
+use super::cli::{Command, OwnedScratch};
 use super::phase2::run_tmux;
 use ae::app::handover;
 use ae::app::instance;
@@ -366,13 +367,15 @@ fn an_app_outside_tmux_takes_over_and_the_first_saves_and_quits() {
                 && fields.next() == Some("1")
                 && fields.next() == Some("0")
         });
-        if quit && saved.is_some() && noted.is_some() {
-            let bytes = saved.expect("view");
+        if quit
+            && let Some(bytes) = saved
+            && let Some(ack_bytes) = noted
+        {
             assert!(
                 handover::parse_file(&bytes).is_some(),
                 "app-view is the durable view: {bytes:?}"
             );
-            let parsed = instance::parse_ack(&noted.expect("ack")).expect("the acknowledgement");
+            let parsed = instance::parse_ack(&ack_bytes).expect("the acknowledgement");
             assert_eq!(parsed.nonce.len(), instance::NONCE_LEN);
             assert!(
                 absent(&server, instance::REQUEST),

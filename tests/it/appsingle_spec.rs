@@ -213,9 +213,10 @@ fn a_placed_record_an_outside_record_and_an_ambient_record_round_trip() {
 }
 
 fn socket_token(path: &str) -> String {
+    use std::fmt::Write;
     let mut token = String::from("S:");
     for byte in path.as_bytes() {
-        token.push_str(&format!("{byte:02x}"));
+        write!(token, "{byte:02x}").expect("hex");
     }
     token
 }
@@ -232,7 +233,7 @@ fn a_socket_path_is_lowercase_hex_and_round_trips_including_a_space() {
             Some(bytes.as_slice()),
             "{path}"
         );
-        assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert!(bytes.ends_with(b"\n") && !bytes[..bytes.len() - 1].contains(&b"\n"));
     }
 }
 
@@ -266,7 +267,7 @@ fn the_longest_legal_record_fits_the_cap_and_one_byte_over_the_cap_does_not() {
         over.push(b'x');
     }
     assert!(instance::parse_instance(&over).is_none(), "over the cap");
-    assert!(instance::parse_instance(&vec![b'x'; instance::INSTANCE_CAP + 1]).is_none());
+    assert!(instance::parse_instance(&[b'x'; instance::INSTANCE_CAP + 1]).is_none());
 }
 
 #[test]
@@ -406,8 +407,8 @@ fn a_request_and_an_acknowledgement_round_trip_and_refuse_the_rest() {
     }
     assert!(instance::parse_ack(b"1 0123456789abcdef0123456789abcdef").is_none());
     assert!(instance::parse_ack(b"1 0123456789abcdef0123456789abcdef extra\n").is_none());
-    assert!(instance::parse_request(&vec![b'x'; instance::REQUEST_CAP + 1]).is_none());
-    assert!(instance::parse_ack(&vec![b'x'; instance::ACK_CAP + 1]).is_none());
+    assert!(instance::parse_request(&[b'x'; instance::REQUEST_CAP + 1]).is_none());
+    assert!(instance::parse_ack(&[b'x'; instance::ACK_CAP + 1]).is_none());
     let mut upper = ack.clone();
     upper.nonce.make_ascii_uppercase();
     assert!(instance::render_ack(&upper).is_none(), "upper nonce");
@@ -445,7 +446,9 @@ fn the_wait_prefers_a_matching_acknowledgement_and_then_the_deadline() {
         nonce: NONCE.to_owned(),
     };
     let wait = instance::TAKEOVER_WAIT;
-    let under = wait - Duration::from_nanos(1);
+    let under = wait
+        .checked_sub(Duration::from_nanos(1))
+        .expect("the wait is longer than a nanosecond");
     let wrong = Ack {
         nonce: "f".repeat(instance::NONCE_LEN),
     };
