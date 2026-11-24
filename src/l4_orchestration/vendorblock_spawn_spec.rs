@@ -6,7 +6,9 @@
 //! `provider-<provider>.rec`. Those names never collide: a provider literally
 //! named `opencode` is not the client `opencode`. `--model` and `-m` still
 //! carry `provider/model`. A model id with no `/` uses `client-<label>`.
-//! `ae quota clear` takes that same stem.
+//! A refusal names the shortest clear word: `ae quota clear muse`,
+//! `ae quota clear github-copilot`, `ae quota clear opencode` for a slash-free
+//! model, and `ae quota clear provider:opencode` for the Zen provider.
 //!
 //! `--lead`, `--colead` and `--seat` must call this same refusal before any
 //! server effect. Launch has no pure seam that fails before tmux, so this
@@ -175,7 +177,7 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear client-muse"), "{err}");
+    assert!(err.contains("ae quota clear muse"), "{err}");
     let (rc, err) = spawn(&scratch.root, "cpsol61h");
     assert_ne!(rc, 0, "{err}");
     assert!(
@@ -184,16 +186,10 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
         )),
         "{err}"
     );
-    assert!(
-        err.contains("ae quota clear provider-github-copilot"),
-        "{err}"
-    );
+    assert!(err.contains("ae quota clear github-copilot"), "{err}");
     let (rc, err) = spawn(&scratch.root, "short");
     assert_ne!(rc, 0, "{err}");
-    assert!(
-        err.contains("ae quota clear provider-github-copilot"),
-        "{err}"
-    );
+    assert!(err.contains("ae quota clear github-copilot"), "{err}");
 }
 
 /// One opencode client carries every provider. A github-copilot block admits
@@ -225,7 +221,7 @@ fn a_copilot_block_does_not_stop_another_opencode_provider() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear client-opencode"), "{err}");
+    assert!(err.contains("ae quota clear opencode"), "{err}");
     let (_, err) = spawn(&fallback.root, "cpsol61h");
     assert!(
         !err.contains("blocked ("),
@@ -251,7 +247,31 @@ fn a_copilot_block_does_not_stop_another_opencode_provider() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear provider-opencode"), "{err}");
+    assert!(err.contains("ae quota clear provider:opencode"), "{err}");
+}
+
+/// A record in the wrong namespace, or whose provider row disagrees with
+/// the file name, is not a block.
+#[test]
+fn a_misfiled_record_is_not_a_block() {
+    let wrong_ns = Scratch::new("wrong-ns");
+    wrong_ns.record("client-opencode", &copilot_record());
+    for using in ["cpsol61h", "bare", "zen"] {
+        let (_, err) = spawn(&wrong_ns.root, using);
+        assert!(
+            !err.contains("blocked ("),
+            "{using} must not honor a provider row in a client file: {err}"
+        );
+    }
+    let wrong_row = Scratch::new("wrong-row");
+    wrong_row.record("provider-github-copilot", &zen_record());
+    for using in ["cpsol61h", "zen", "bare"] {
+        let (_, err) = spawn(&wrong_row.root, using);
+        assert!(
+            !err.contains("blocked ("),
+            "{using} must not honor a provider row that disagrees with the file: {err}"
+        );
+    }
 }
 
 const MUSE_402: &str = include_str!("../../tests/fixtures/vendorblock/muse-402.reconstructed.txt");
@@ -285,7 +305,7 @@ fn a_released_latch_does_not_clear_the_block_record() {
     );
     let (rc, err) = spawn(&scratch.root, "emberm");
     assert_ne!(rc, 0, "{err}");
-    assert!(err.contains("ae quota clear client-muse"), "{err}");
+    assert!(err.contains("ae quota clear muse"), "{err}");
     assert_eq!(
         std::fs::read(&record).expect("spawn leaves the record"),
         kept
