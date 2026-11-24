@@ -3028,3 +3028,52 @@ fn trustfix_folder_splits_without_a_measured_wrap_are_named_without_keys() {
         );
     }
 }
+
+/// Owner incident 2026-11-24 16:52Z: a carried reseat of a seat in HOME from
+/// one claude config home to another. The successor is a new tool start under
+/// a new launch, with the same seat folder and conversation and no seed wait,
+/// so only the watchdog can answer its HOME trust dialog (R1).
+#[test]
+fn trustfix_home_answers_again_after_a_carried_reseat_into_another_config_home() {
+    let mut rig = Rig::new("home-carried-reseat", "claude", "normal");
+    let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
+    for account in [".claude", ".claude-mic", ".claude-p"] {
+        fs::create_dir(home.join(account)).unwrap_or_else(|why| panic!("{account}: {why}"));
+    }
+    rig.replace_meta("profile.main", "claude-mic");
+    rig.replace_meta(
+        "config_home.main",
+        &home.join(".claude-mic").display().to_string(),
+    );
+    let predecessor = HOME_TRUST_HOOKS.replace(HOME_TRUST_FOLDER, &home.display().to_string());
+    write(rig.root.join("frame"), &predecessor);
+    rig.repaint(&predecessor);
+    rig.start_stepped();
+    let keys = b"\x1b[B\r";
+    rig.trusted(keys);
+    rig.stop();
+
+    // The carried reseat: another profile, config home and launch for the same
+    // seat, then a new tool process that draws the HOME dialog again.
+    rig.replace_meta("profile.main", "claude-p");
+    rig.replace_meta(
+        "config_home.main",
+        &home.join(".claude-p").display().to_string(),
+    );
+    rig.replace_meta("launch_id.main", "start-two");
+    let successor = HOME_TRUST.replace(HOME_TRUST_FOLDER, &home.display().to_string());
+    write(rig.root.join("frame"), &successor);
+    let old_pid = text(rig.root.join("ready"));
+    fs::remove_file(rig.root.join("ready"))
+        .unwrap_or_else(|why| panic!("predecessor start receipt: {why}"));
+    let command = format!("exec {0}/bin/claude {0}/vendor.pl {0}", rig.root.display());
+    rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, &command]);
+    wait_for("successor tool start", || rig.root.join("ready").is_file());
+    assert_ne!(text(rig.root.join("ready")), old_pid);
+    rig.repaint(&successor);
+    rig.start_stepped();
+    rig.until("carried reseat answer", || rig.count("auto-trust") == 2);
+    assert_eq!(rig.count("auto-trust-reserved"), 2);
+    assert_eq!(rig.wire(), [keys.as_slice(), keys.as_slice()].concat());
+    assert_eq!(rig.count("human-prompt"), 0, "the successor needs no human");
+}
