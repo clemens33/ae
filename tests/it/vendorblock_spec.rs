@@ -158,7 +158,14 @@ fn the_measured_opencode_quota_rows_are_an_account_block() {
 #[test]
 fn an_unmeasured_or_stale_row_stays_unclassified() {
     let indented = MUSE_402.replace("\n◆ model failed:", "\n ◆ model failed:");
-    let quoted = format!("  the pane said:\n  {MUSE_402}");
+    let quoted = format!(
+        "  the pane said:\n{}",
+        MUSE_402
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let five_hundred = MUSE_402.replace("API error 402", "API error 500");
     let four_spaces = OPENCODE_100.replace("     Error:", "    Error:");
     let glued = OPENCODE_100.replace("monthly quota", "monthly quota.");
