@@ -8750,4 +8750,36 @@ tail line
         let found = super::human_prompt_class(&spaced, "claude");
         assert_eq!(found.and_then(|found| found.trust), None);
     }
+
+    /// trustfix survivors: an arbitrary split of a folder at a width with no
+    /// measured wrap is never joined, and a permission list off the measured
+    /// grammar (an extra entry, a leading "and") is never answered.
+    #[test]
+    fn unmeasured_wraps_and_lists_are_never_settings_sightings() {
+        let frame =
+            include_str!("../../tests/fixtures/dialogseat/claude-2.1.330-settings-80x24.txt");
+        let sighted =
+            |text: &str| super::human_prompt_class(text, "claude").and_then(|found| found.trust);
+        assert!(
+            sighted(frame).is_some(),
+            "control: the measured block is a sighting"
+        );
+        for (label, from, to) in [
+            (
+                "split",
+                " /tmp/claude-trust-probe\n",
+                " /tmp/claude-\n trust-probe\n",
+            ),
+            (
+                "extra entry",
+                "   Bash(ls:*)\n",
+                "   Bash(ls:*), Bash(pwd)\n",
+            ),
+            ("leading and", "   Bash(ls:*)\n", "   and Bash(ls:*)\n"),
+        ] {
+            let changed = frame.replace(from, to);
+            assert_ne!(changed, frame, "setup: {label}");
+            assert_eq!(sighted(&changed), None, "{label}");
+        }
+    }
 }
