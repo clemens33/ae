@@ -39,6 +39,20 @@ impl Server {
         let sock = root.path().join("sock");
         let server = Self { root, sock };
         fs::write(server.root.path().join("config"), "[workspace]\n").expect("config");
+        // The tmux session is named `app`. `ae app` with no operand takes that
+        // name as its home and refuses an unrecorded one before the singleton
+        // (`ae app: no session named app`). The directory name is what
+        // `console::locate` matches. This does not change that refusal.
+        let session = server.path().join("sessions").join("app");
+        fs::create_dir_all(&session).expect("recorded home");
+        fs::write(
+            session.join("meta"),
+            format!(
+                "session=app\nmode=local\nsession_id={STAMP}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\n",
+                server.sock.display()
+            ),
+        )
+        .expect("recorded home meta");
         server
     }
 
