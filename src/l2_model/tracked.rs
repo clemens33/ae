@@ -2357,6 +2357,42 @@ pub fn event_line(fields: &EventFields<'_>) -> String {
     render_event_line(fields, false, None, None, &[])
 }
 
+/// The ONE `chat` record: a line the Telegram bridge forwards, written by
+/// `actor`, addressed to no seat. It carries `reference` when nonempty, so a later
+/// reader finds the line it owes by what it refers to: one append is then record
+/// and delivery at once.
+#[must_use]
+pub fn chat_line_for(
+    ts: crate::time::Timestamp,
+    actor: &str,
+    actor_slot: &str,
+    reference: &str,
+    text: &str,
+) -> String {
+    event_line(&EventFields {
+        ts,
+        actor,
+        action: "chat",
+        target: "",
+        reference,
+        actor_slot,
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        actor_session_id: "",
+        target_session_id: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
+        summary: text,
+        body_file: "",
+    })
+}
+
 /// [`event_line`] plus the sender's launch binding and `extra` string members,
 /// each written only when nonempty: the relay audit's own records.
 #[must_use]

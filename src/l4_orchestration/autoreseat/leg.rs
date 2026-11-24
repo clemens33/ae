@@ -2715,7 +2715,7 @@ pub(crate) fn tell_stays(
         return;
     }
     let text = format!("{STAYS_HEAD}{agent} not moved: {body}");
-    let line = crate::chat_line_for(now, WATCHDOG_ACTOR, "", &reference, &text);
+    let line = crate::tracked::chat_line_for(now, WATCHDOG_ACTOR, "", &reference, &text);
     if crate::store::open(dir).append_event(&line).is_err() {
         return;
     }
