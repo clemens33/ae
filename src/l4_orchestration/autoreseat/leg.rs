@@ -1901,9 +1901,11 @@ pub(crate) fn run(
     let list = match eligible {
         Ok(list) => list,
         Err((class, summary)) => {
-            // A request in flight is no failed move of the orchestrator: its hold
-            // gives its attempt back and the key waits before trying again.
-            let summary = if orchestrator && class == CauseClass::Busy {
+            // Whatever stops the orchestrator's move before it is chosen (a request in
+            // flight, no candidate, a standing choice) is no failed move: its hold
+            // gives its attempt back and the key waits before trying again, the
+            // diagnostic kept.
+            let summary = if orchestrator {
                 CauseClass::OrchestratorStays.lead(class.details(&summary))
             } else {
                 summary
@@ -2028,6 +2030,17 @@ pub(crate) fn run(
         &mut said,
     )?;
     err.write_all(&said)?;
+    // A refusal that stopped nothing and may pass (a lock, a changed pair or floor,
+    // a request, a keeper that vanished) is a recoverable hold of the orchestrator's
+    // own rules, its diagnostic kept: it gives its attempt back and the key cools.
+    let ended = match ended {
+        Ended::Refused(class)
+            if orchestrator && class.transient() && class != CauseClass::OrchestratorChanged =>
+        {
+            Ended::Refused(CauseClass::OrchestratorStays)
+        }
+        other => other,
+    };
     // The seat this move LEFT, spelled with the client it recorded: the ref a
     // chain's first `done` gives its root (#296 follow-up 4).
     let (action, reference, summary) = outcome(
@@ -2238,13 +2251,11 @@ pub(crate) fn plan_paired(
     let waits = start.waits(key, settings.grace_secs);
     let mut pane = sight.pane;
     pane.frame = start.frame(key, pane.frame);
-    let mut decision = super::decide_with_waits(found.as_ref(), waits, &pane, now.epoch());
-    // A hold of the orchestrator's own rules delays the next admission only.
-    if let (Some(found), super::Decision::Attempt) = (&found, decision) {
-        if let Some(due_at) = found.cooling_until(now.epoch()) {
-            decision = super::Decision::Wait { due_at };
-        }
-    }
+    let decision = super::admission(
+        found.as_ref(),
+        super::decide_with_waits(found.as_ref(), waits, &pane, now.epoch()),
+        now.epoch(),
+    );
     let (Some(found), super::Decision::Attempt) = (found, decision) else {
         return Plan::Decline(format!("not due ({decision:?})"));
     };
@@ -2381,7 +2392,11 @@ fn return_undue(
     open: &super::Episode,
     now: Timestamp,
 ) -> Option<Plan> {
-    let decision = super::decide(Some(open), settings.grace_secs, &sight.pane, now.epoch());
+    let decision = super::admission(
+        Some(open),
+        super::decide(Some(open), settings.grace_secs, &sight.pane, now.epoch()),
+        now.epoch(),
+    );
     (decision != super::Decision::Attempt).then(|| Plan::Decline(format!("not due ({decision:?})")))
 }
 

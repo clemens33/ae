@@ -2361,6 +2361,19 @@ pub enum Decision {
     Overdue,
 }
 
+/// `decision` with the ADMISSION of a key that cools after a hold of the
+/// orchestrator's own rules ([`Episode::cooling_until`]) turned into a wait. The
+/// due time and every other decision are untouched, so the daemon's verdict is
+/// told whatever the cooldown says; both trigger routes and the watchdog share
+/// this one check.
+#[must_use]
+pub fn admission(episode: Option<&Episode>, decision: Decision, now: i64) -> Decision {
+    match (decision, episode.and_then(|found| found.cooling_until(now))) {
+        (Decision::Attempt, Some(due_at)) => Decision::Wait { due_at },
+        _ => decision,
+    }
+}
+
 /// Decide for one seat whose limit latch stands, or whose headroom episode is
 /// still due.
 ///

@@ -40,11 +40,11 @@ fn stanced(stance: Option<Stance>) -> Settings {
     settings
 }
 
-fn keep(id: &str, tool: ToolKind) -> Option<Stance> {
-    Some(Stance::Keep(Origin::Proven {
+fn keep(id: &str, tool: ToolKind) -> Stance {
+    Stance::Keep(Origin::Proven {
         id: id.to_owned(),
         tool,
-    }))
+    })
 }
 
 fn picked(settings: &Settings, route: Route<'_>, among: &[Candidate]) -> Option<String> {
@@ -168,11 +168,15 @@ fn only_a_candidate_pinning_the_same_exact_model_passes_under_same_model() {
     ];
     let route = Route::Move { seat_profile: "a" };
     assert_eq!(
-        picked(&stanced(keep(OPUS_A, ToolKind::Claude)), route, &among),
+        picked(
+            &stanced(Some(keep(OPUS_A, ToolKind::Claude))),
+            route,
+            &among
+        ),
         Some("same".to_owned())
     );
     let refused = choose_seat(
-        &stanced(keep(OPUS_A, ToolKind::Claude)),
+        &stanced(Some(keep(OPUS_A, ToolKind::Claude))),
         route,
         &among[..3],
         NOW,
@@ -225,7 +229,7 @@ fn a_refusal_names_the_model_and_the_declared_row_it_comes_from() {
     )];
     let route = Route::Move { seat_profile: "a" };
     let choice = choose_seat(
-        &stanced(keep(OPUS_A, ToolKind::Claude)),
+        &stanced(Some(keep(OPUS_A, ToolKind::Claude))),
         route,
         &among,
         NOW,
@@ -251,7 +255,7 @@ fn a_return_to_the_origin_follows_the_same_rule() {
     )];
     assert_eq!(
         picked(
-            &stanced(keep(OPUS_A, ToolKind::Claude)),
+            &stanced(Some(keep(OPUS_A, ToolKind::Claude))),
             Route::Return { origin: "origin" },
             &among
         ),
@@ -260,7 +264,7 @@ fn a_return_to_the_origin_follows_the_same_rule() {
     );
     assert_eq!(
         picked(
-            &stanced(keep(OPUS_B, ToolKind::Claude)),
+            &stanced(Some(keep(OPUS_B, ToolKind::Claude))),
             Route::Return { origin: "origin" },
             &among
         ),
@@ -402,6 +406,64 @@ mod pre_admission {
         assert_eq!(
             state.attempts, 1,
             "the busy hold spent its attempt; the later pre-admission hold gave none back"
+        );
+    }
+}
+
+mod admission_check {
+    //! The one admission check of both trigger routes and the watchdog.
+
+    use super::*;
+    use crate::events::Event;
+    use crate::time::Timestamp;
+
+    #[test]
+    fn a_cooling_key_waits_for_its_admission_and_nothing_else_moves() {
+        let at = |second: i64| Timestamp::from_epoch(1_700_000_000 + second);
+        let line = |second: i64, action: &str, summary: Option<&str>| {
+            let reference = format!(r#", "ref":"{}""#, at(0));
+            let summary = summary
+                .map(|text| format!(r#", "summary":"{text}""#))
+                .unwrap_or_default();
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"orchestrator"{reference}{summary}}}"#,
+                at(second)
+            ))
+            .expect("valid synthetic journal record")
+        };
+        let stays = CauseClass::OrchestratorStays.lead("no usable candidate");
+        let journal = [
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"limit","target":"orchestrator"}}"#,
+                at(0)
+            ))
+            .expect("the limit record"),
+            line(10, ATTEMPT_ACTION, None),
+            line(15, HELD_ACTION, Some(stays.as_str())),
+        ];
+        let state = episode(&journal, "s", "main", "orchestrator").expect("an open episode");
+        let until = at(15).epoch() + POLICY_HOLD_WAIT_SECS;
+        let cooling = at(16).epoch();
+        assert_eq!(
+            admission(Some(&state), Decision::Attempt, cooling),
+            Decision::Wait { due_at: until }
+        );
+        assert_eq!(
+            admission(Some(&state), Decision::Attempt, until),
+            Decision::Attempt
+        );
+        for other in [
+            Decision::Rest,
+            Decision::InFlight,
+            Decision::Overdue,
+            Decision::Hold(HoldReason::Busy),
+            Decision::Wait { due_at: 7 },
+        ] {
+            assert_eq!(admission(Some(&state), other, cooling), other, "{other:?}");
+        }
+        assert_eq!(
+            admission(None, Decision::Attempt, cooling),
+            Decision::Attempt
         );
     }
 }

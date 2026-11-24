@@ -2323,7 +2323,7 @@ fn orchestrator_gate(
             crate::autoreseat::leg::NO_KEEPER,
             seat.to
         )?;
-        return Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)));
+        return Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)));
     }
     stage_guard(seat, locked, (prior, &guard.successor), err)?;
     Ok(Some(guard))
@@ -2392,7 +2392,7 @@ fn orchestrator_guard(
                 "Error: {} ({why}) — nothing was stopped or reseated.",
                 crate::autoreseat::leg::NO_KEEPER
             )?;
-            Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)))
+            Err(Halt::End(Ended::Refused(CauseClass::OrchestratorStays)))
         }
     }
 }
