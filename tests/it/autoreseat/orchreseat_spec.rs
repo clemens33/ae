@@ -358,6 +358,40 @@ fn orchpin_a_profile_edit_does_not_change_the_running_model() {
 }
 
 #[test]
+fn orchpin_a_live_model_contradiction_blocks_a_matching_candidate() {
+    let model = "claude-sonnet-5";
+    let rig = Rig::new("opcontradiction");
+    // Draw the vendor's model and working-directory footer.
+    let script = rig.scratch.join("claude.pl");
+    assert!(
+        fs::symlink_metadata(&script)
+            .expect("private Claude fixture")
+            .is_file()
+    );
+    let body = fs::read_to_string(&script).expect("Claude fixture");
+    fs::write(
+        &script,
+        body.replacen("Opus 5 $dot fake", "Opus 5  📁 fake", 1),
+    )
+    .expect("draw the model footer");
+    pin_profile(&rig, "fake-claude-a", model);
+    pin_profile(&rig, "fake-claude-b", model);
+    let seat = SeatRig::with_rig(rig, true, "fake-claude-b");
+    remove_unused_profiles(&seat.rig, &["fake-claude"]);
+    assert_eq!(seat.rig.meta_row("launched_model.main"), model);
+    let frame = seat.rig.capture(&seat.rig.main_pane);
+    assert!(frame.contains("🧠 Opus 5  📁"), "{frame}");
+    seat.assert_held(&seat.attempt(), "orchestrator-stays");
+    seat.assert_reason(&[HELD_ACTION], model);
+
+    let reset = quota(&seat.rig.scratch.join("home-a"), 96);
+    wait_for_quota_notice(&seat, reset, true);
+    let notices = owner_quota_notices(&seat);
+    assert!(notices[0].contains("Opus 5"), "{notices:?}");
+    assert!(notices[0].contains(model), "{notices:?}");
+}
+
+#[test]
 fn orchpin_vendor_limit_can_only_take_the_same_model() {
     for (tag, model, moves) in [
         ("oplimitsame", "claude-opus-5", true),
