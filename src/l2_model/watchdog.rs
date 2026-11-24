@@ -457,15 +457,9 @@ fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanP
                 Some(Ok(sighting)) => (Some(sighting), None),
                 Some(Err(why)) => (None, Some(why)),
             };
-            let warnings = match (&trust, spec.trust.and_then(|spec| spec.home)) {
-                (Some(sighting), Some(home)) if sighting.variant == TrustVariant::HomeSettings => {
-                    vec![home.hooks.to_owned(), home.loads.to_owned()]
-                }
-                _ => Vec::new(),
-            };
             Some(HumanPrompt {
                 kind: DialogKind::FolderTrust,
-                warnings,
+                warnings: Vec::new(),
                 question: reported(spec.question, window[question]),
                 keys: after[keys].trim().to_owned(),
                 trust,
@@ -659,8 +653,11 @@ fn trust_variant(drawn: &[String], spec: crate::tool::TrustSpec) -> Result<Trust
         settings.push(home.hooks.to_owned());
         settings.push(format!("{} {last}", home.loads));
     }
+    // The settings reader owns every answerable home settings block, in its
+    // measured rows only. The same paragraphs reaching this reader were drawn
+    // in another layout, so they are named, never answered.
     if drawn == settings.as_slice() {
-        return Ok(TrustVariant::HomeSettings);
+        return Err("the home settings rows are not in their measured layout".to_owned());
     }
     let closest = if drawn.get(home.at).map(String::as_str) != Some(home.access) {
         &plain
