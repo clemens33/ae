@@ -2922,6 +2922,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A node that is not there reads `Absent`, whether it was never there or
+    /// went between the classification and the open; a node that cannot even be
+    /// looked at is `Unreadable`: damage is never read as an empty container.
+    #[test]
+    fn a_nofollow_read_tells_a_vanished_file_from_one_that_cannot_be_looked_at() {
+        use super::{SourceRead, classified_hook, read_nofollow_capped};
+        if super::HOLD_FLAGS.is_none() {
+            return;
+        }
+        let dir = scratch("nofollow-gone");
+        let path = dir.join("view");
+        std::fs::write(dir.join("plain"), b"x").unwrap();
+        let below = dir.join("plain").join("view");
+        assert!(
+            matches!(
+                read_nofollow_capped(&below, 4),
+                Ok(SourceRead::Unreadable(_))
+            ),
+            "a path below a file cannot be looked at: not absent"
+        );
+        std::fs::write(&path, b"abcd").unwrap();
+        let victim = path.clone();
+        classified_hook::arm(&path, move || std::fs::remove_file(&victim).unwrap());
+        assert_eq!(
+            read_nofollow_capped(&path, 4),
+            Ok(SourceRead::Absent),
+            "gone between the classification and the open"
+        );
+        assert_eq!(read_nofollow_capped(&path, 4), Ok(SourceRead::Absent));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A decided append is one transaction: another holder of the journal lock
     /// is refused while the decision runs, an append racing it lands after the
     /// decided line, and a refusal writes nothing.

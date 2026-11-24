@@ -10,15 +10,18 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::fleet::{Counts, Fleet, Line2, Row};
 use super::handover;
-use super::loader::{Answer, FleetRead, Reader, Wake};
+use super::handover::{OrchestratorView, PanelMode};
+use super::loader::{Answer, FleetRead, Proof, Reader, Wake};
+use super::panel::Opening;
 use super::saved::Saver;
 use super::tests::{Root, entry, session};
-use super::{App, drain};
+use super::{App, Keep, drain};
 use crate::console::input::{Key, Keys};
 use crate::digest::Status;
 use crate::listing::World;
-use crate::theme::FleetOrder;
+use crate::theme::{FleetOrder, Mark};
 use crate::time::Timestamp;
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -254,4 +257,262 @@ fn a_saved_leave_says_nothing() {
     super::run::leave_the_view(&mut app, &mut said);
     assert!(said.is_empty(), "nothing failed, so nothing is said");
     assert_eq!(newest(&log).view.session, "web");
+}
+
+const WEB_ID: &str = "6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11";
+const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+const OTHER: &str = "0199c0de-3333-4890-abcd-ef0123456789";
+
+fn plain_view(session: &str, id: &str) -> handover::View {
+    handover::View {
+        session: session.to_owned(),
+        id: id.to_owned(),
+        focus: None,
+        sidebar: None,
+        list: None,
+        pages: 0,
+        rows: 0,
+        list_top: None,
+        body_top: 0,
+        panel: None,
+        desk: None,
+        desk_hidden: false,
+        desk_tab: crate::desk::Section::Decide,
+        zoom: false,
+        orchestrator: None,
+    }
+}
+
+fn panel_view(id: &str, mode: PanelMode) -> OrchestratorView {
+    OrchestratorView {
+        id: id.to_owned(),
+        mode,
+        pages: 3,
+        rows: 2,
+    }
+}
+
+/// A bare app that has just proved the orchestrator `proof`, with `opening`
+/// waiting for it and `before` having set the stage.
+fn proving(opening: Opening, proof: &str, before: impl FnOnce(&mut App)) -> App {
+    let mut app = App::new(None, None, None, None);
+    before(&mut app);
+    app.orch.opening = opening;
+    app.proved(Proof::Proven(proof.to_owned()), Timestamp::now().epoch());
+    app
+}
+
+#[test]
+fn a_saved_panel_opens_in_its_mode_and_scrolls_only_on_its_own_incarnation() {
+    for mode in [PanelMode::Side, PanelMode::SideMain, PanelMode::Full] {
+        let own = proving(
+            Opening::Saved(Some(panel_view(OID, mode)), false),
+            OID,
+            |_| {},
+        );
+        let panel = own.orch.panel.as_ref().expect("the saved panel opens");
+        assert_eq!(
+            panel.handover(),
+            Some(panel_view(OID, mode)),
+            "{mode:?}: its mode and its scroll"
+        );
+
+        let other = proving(
+            Opening::Saved(Some(panel_view(OTHER, mode)), false),
+            OID,
+            |_| {},
+        );
+        let panel = other
+            .orch
+            .panel
+            .as_ref()
+            .expect("another incarnation opens");
+        let mut newest = panel_view(OID, mode);
+        (newest.pages, newest.rows) = (0, 0);
+        assert_eq!(panel.handover(), Some(newest), "{mode:?}: its newest turn");
+    }
+}
+
+#[test]
+fn a_saved_panel_yields_to_a_human_who_acted_and_to_another_incarnations_panel() {
+    let saved = || Opening::Saved(Some(panel_view(OID, PanelMode::Full)), false);
+    let acted = proving(saved(), OID, |app| app.touched = true);
+    assert!(acted.orch.panel.is_none(), "the human's first act wins");
+
+    let held = proving(saved(), OID, |app| {
+        app.orch.proof = Proof::Proven(OTHER.to_owned());
+        app.open_panel(false);
+    });
+    let panel = held.orch.panel.as_ref().expect("their panel stays");
+    assert_eq!(panel.pin(), Some(OTHER));
+    assert_eq!(
+        panel.handover().map(|view| view.mode),
+        Some(PanelMode::Side)
+    );
+
+    let ours = proving(saved(), OID, |app| {
+        app.orch.proof = Proof::Proven(OID.to_owned());
+        app.open_panel(false);
+    });
+    let panel = ours.orch.panel.as_ref().expect("open");
+    assert_eq!(
+        panel.handover().map(|view| view.mode),
+        Some(PanelMode::Full),
+        "the saved mode applies to a panel of its own seat"
+    );
+}
+
+#[test]
+fn a_panel_the_file_left_closed_stays_closed_also_for_a_home_on_the_seat() {
+    for homed in [false, true] {
+        let app = proving(Opening::Saved(None, homed), OID, |_| {});
+        assert!(app.orch.panel.is_none(), "homed {homed}");
+    }
+}
+
+fn fleet_of(running: &str, stopped: &str) -> Fleet {
+    let row = |(at, name, counts): (usize, &str, Counts)| Row {
+        name: name.to_owned(),
+        index: at + 1,
+        mark: Mark::Working,
+        needy: false,
+        unanswered: None,
+        counts,
+        line2: Line2::NoGoal,
+        home: name == running,
+    };
+    Fleet {
+        rows: vec![
+            row((0, running, Counts::Unknown)),
+            row((1, stopped, Counts::Stopped)),
+        ],
+        home: Some(running.to_owned()),
+    }
+}
+
+/// Whether a kept view of `kept` (written by the file or handed over) opens
+/// the stopped group of an app homed on `home`, in a fleet of the running
+/// `api` and the stopped `web`, where `web` has the uuid `web_id`.
+fn opens_the_stopped_group(kept: &str, saved: bool, home: Option<&str>, web_id: &str) -> bool {
+    let mut app = App::new(home.map(str::to_owned), None, None, None);
+    app.fleet = fleet_of("api", "web");
+    app.ids.insert("api".to_owned(), WEB_ID.to_owned());
+    app.ids.insert("web".to_owned(), web_id.to_owned());
+    app.keep = Some(Keep {
+        view: plain_view(kept, WEB_ID),
+        at: Timestamp::now().epoch(),
+        saved,
+    });
+    app.fold_stopped(false, true);
+    app.stopped_open
+}
+
+#[test]
+fn a_kept_view_of_a_stopped_session_opens_the_stopped_group_only_when_it_will_apply() {
+    assert!(
+        opens_the_stopped_group("web", true, None, WEB_ID),
+        "no home"
+    );
+    assert!(
+        opens_the_stopped_group("web", true, Some("web"), WEB_ID),
+        "its home"
+    );
+    assert!(
+        !opens_the_stopped_group("web", true, Some("api"), WEB_ID),
+        "the file's selection never overrides another home"
+    );
+    assert!(
+        opens_the_stopped_group("web", false, Some("api"), WEB_ID),
+        "a handed view applies whatever the home"
+    );
+    assert!(
+        !opens_the_stopped_group("web", true, None, OTHER),
+        "another incarnation is never applied"
+    );
+    assert!(
+        !opens_the_stopped_group("api", true, None, WEB_ID),
+        "a running session opens nothing"
+    );
+}
+
+#[test]
+fn the_saved_layout_is_taken_in_only_before_the_human_or_a_handover_has_acted() {
+    let mut view = plain_view("web", WEB_ID);
+    view.zoom = true;
+    view.orchestrator = Some(panel_view(OID, PanelMode::Full));
+    let fresh = || App::new(None, None, None, None);
+
+    let mut app = fresh();
+    app.saved_in(view.clone());
+    assert!(app.model.zoom(), "the layout applies at once");
+    assert_eq!(
+        app.orch.opening,
+        Opening::Saved(view.orchestrator.clone(), false)
+    );
+    let kept = app
+        .keep
+        .as_ref()
+        .expect("the selection waits for the fleet");
+    assert!(kept.saved);
+    assert_eq!(kept.view, view);
+
+    let mut app = fresh();
+    app.orch.opening = Opening::Home;
+    app.saved_in(view.clone());
+    assert_eq!(
+        app.orch.opening,
+        Opening::Saved(view.orchestrator.clone(), true),
+        "a home on the seat is remembered"
+    );
+
+    let mut app = fresh();
+    app.touched = true;
+    app.saved_in(view.clone());
+    assert!(!app.model.zoom(), "after a first act nothing is taken in");
+    assert!(app.keep.is_none());
+    assert_eq!(app.orch.opening, Opening::No);
+
+    let mut app = fresh();
+    app.keep = Some(Keep {
+        view: plain_view("api", WEB_ID),
+        at: Timestamp::now().epoch(),
+        saved: false,
+    });
+    app.saved_in(view);
+    assert!(!app.model.zoom(), "a handed view is never read over");
+    assert_eq!(
+        app.keep.as_ref().map(|keep| keep.view.session.as_str()),
+        Some("api")
+    );
+}
+
+#[test]
+fn an_exec_handover_is_kept_for_its_own_process_and_a_landing_names_the_core() {
+    let now = Timestamp::now().epoch();
+    let view = plain_view("web", WEB_ID);
+    let carrier = |pane: String, version: &str| {
+        let held = handover::Handover {
+            pane,
+            version: version.to_owned(),
+            at: now,
+            view: view.clone(),
+        };
+        Some(held.render())
+    };
+    let mine = format!("%{}", std::process::id());
+    let (keep, landed) = super::run::handed_on(carrier(mine.clone(), crate::shape::VERSION));
+    let keep = keep.expect("the view of this process and core is kept");
+    assert_eq!((keep.saved, keep.at, &keep.view), (false, now, &view));
+    assert_eq!(landed, None);
+    let (keep, landed) = super::run::handed_on(carrier(mine, "2099.1.1"));
+    assert!(keep.is_none(), "another core landed: no view");
+    assert_eq!(landed.as_deref(), Some("2099.1.1"), "only its version");
+    assert!(
+        matches!(
+            super::run::handed_on(carrier("%1".to_owned(), crate::shape::VERSION)),
+            (None, None)
+        ),
+        "another process's view is ignored"
+    );
+    assert!(matches!(super::run::handed_on(None), (None, None)));
 }

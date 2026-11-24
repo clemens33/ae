@@ -1011,6 +1011,10 @@ impl App {
             Opening::Home | Opening::Restore(_, _, true) | Opening::Saved(_, true)
         );
         let current = self.orch.panel.as_ref();
+        // The saved view is still the one the human's first act has not
+        // overtaken, and no other incarnation holds the panel.
+        let kept =
+            |uuid: &String| !self.touched && current.is_none_or(|open| open.pin() == Some(uuid));
         // A home that runs no seat opens nothing: O asks for it.
         match (opening, &self.orch.proof) {
             (Opening::Restore(view, at, _), loader::Proof::Proven(uuid))
@@ -1028,25 +1032,23 @@ impl App {
                     panel.column.restored = true;
                 }
             }
-            (Opening::Saved(panel, _), loader::Proof::Proven(uuid))
-                if !self.touched && current.is_none_or(|open| open.pin() == Some(uuid)) =>
-            {
-                if let Some(view) = panel {
-                    let same = view.id == *uuid;
-                    self.open_panel(view.mode == PanelMode::Full);
-                    if let Some(open) = self.orch.panel.as_mut() {
-                        open.full = view.mode == PanelMode::Full;
-                        open.focused = view.mode != PanelMode::SideMain;
-                        // The scroll is a hint for the incarnation it was
-                        // made on: another incarnation starts at its newest turn.
-                        if same {
-                            open.column.chat.pages = view.pages;
-                            open.column.chat.rows = view.rows;
-                            open.column.restored = true;
-                        }
+            (Opening::Saved(Some(view), _), loader::Proof::Proven(uuid)) if kept(uuid) => {
+                let same = view.id == *uuid;
+                self.open_panel(view.mode == PanelMode::Full);
+                if let Some(open) = self.orch.panel.as_mut() {
+                    open.full = view.mode == PanelMode::Full;
+                    open.focused = view.mode != PanelMode::SideMain;
+                    // The scroll is a hint for the incarnation it was made on:
+                    // another incarnation starts at its newest turn.
+                    if same {
+                        open.column.chat.pages = view.pages;
+                        open.column.chat.rows = view.rows;
+                        open.column.restored = true;
                     }
                 }
             }
+            // A panel left closed stays closed, also for a home on the seat.
+            (Opening::Saved(None, _), loader::Proof::Proven(uuid)) if kept(uuid) => {}
             (_, proof) if homed && *proof != loader::Proof::Absent => self.open_panel(true),
             (Opening::Handed(id), loader::Proof::Proven(uuid)) if id == *uuid => {
                 self.open_panel(true);

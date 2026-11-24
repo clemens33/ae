@@ -58,9 +58,11 @@ pub const FILE_CAP: usize = CAP + 1;
 /// is the smallest id the one grammar accepts.
 pub const FILE_PANE: &str = "%0";
 /// The session a durable line names when no session is selected (an
-/// orchestrator-only fleet draws none): the orchestrator role's own name,
-/// which is never an ordinary session's. With [`NO_ID`] it is the one
-/// spelling of "no selection", so the board, widths, zoom and panel still ride.
+/// orchestrator-only fleet draws none): the orchestrator role's own name. Only
+/// the pair with [`NO_ID`] is the one spelling of "no selection", so the board,
+/// widths, zoom and panel still ride. A session called `orchestrator` is legal
+/// and may carry the nil uuid too, so only the durable file reads the pair as
+/// no selection ([`decide_saved`]), never a live carrier ([`decide`]).
 pub const NO_SESSION: &str = "orchestrator";
 /// The nil uuid, the id of [`NO_SESSION`] in a durable line with no selection.
 pub const NO_ID: &str = "00000000-0000-0000-0000-000000000000";
@@ -544,6 +546,79 @@ mod tests {
             Verdict::Discard,
             "the durable file's sentinel selects nothing"
         );
+    }
+
+    /// Only the whole pair is the sentinel: an orchestrator namesake with a real
+    /// uuid, or a session with the nil uuid, is a selection.
+    #[test]
+    fn only_both_halves_of_the_pair_are_the_sentinel() {
+        let real = "6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11";
+        let view = |session: &str, id: &str| {
+            let line = WIRE.replacen(
+                "|web|6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11|",
+                &format!("|{session}|{id}|"),
+                1,
+            );
+            parse(&line).expect("a canonical line").view
+        };
+        assert!(view(NO_SESSION, NO_ID).unselected());
+        assert!(
+            !view(NO_SESSION, real).unselected(),
+            "a namesake with its own uuid"
+        );
+        assert!(
+            !view("web", NO_ID).unselected(),
+            "a session with the nil uuid"
+        );
+        for (session, id) in [(NO_SESSION, real), ("web", NO_ID)] {
+            let view = view(session, id);
+            assert_eq!(
+                decide_saved(&view, true, Some(&view.id), true),
+                Verdict::Apply
+            );
+        }
+    }
+
+    /// The explicit byte caps bound hostile input, and no canonical line is
+    /// near them: the longest one the grammar writes leaves room under the
+    /// file's cap, so the cap is never what refuses a valid file.
+    #[test]
+    fn the_longest_canonical_line_stays_well_inside_the_file_cap() {
+        let tab = Section::ALL
+            .into_iter()
+            .max_by_key(|section| tab_name(*section).map_or(0, str::len))
+            .expect("a tab");
+        let view = View {
+            session: "a".repeat(128),
+            id: ORCH_ID.to_owned(),
+            focus: Some("b".repeat(64)),
+            sidebar: Some(u16::MAX),
+            list: Some(u16::MAX),
+            pages: PAGES_MAX,
+            rows: ROWS_MAX,
+            list_top: Some(ROWS_MAX),
+            body_top: PAGES_MAX,
+            panel: Some(u16::MAX),
+            desk: Some(u16::MAX),
+            desk_hidden: true,
+            desk_tab: tab,
+            zoom: true,
+            orchestrator: Some(OrchestratorView {
+                id: ORCH_ID.to_owned(),
+                mode: PanelMode::SideMain,
+                pages: PAGES_MAX,
+                rows: ROWS_MAX,
+            }),
+        };
+        let held = Handover {
+            pane: "%9999999999".to_owned(),
+            version: "9".repeat(VERSION_MAX),
+            at: i64::try_from(AT_MAX).expect("small"),
+            view,
+        };
+        let text = render_file(&held);
+        assert_eq!(parse_file(text.as_bytes()), Some(held), "still canonical");
+        assert!(text.len() + 32 < FILE_CAP, "{} bytes", text.len());
     }
 
     #[test]

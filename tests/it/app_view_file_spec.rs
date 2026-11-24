@@ -2,6 +2,12 @@
 //! link and never waits on a FIFO, and the writer never replaces or writes
 //! through a node that is not a regular file. The restore itself is pinned by
 //! `app_view_spec`; this is the file door alone.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "the spec reads and writes only its private scratch directory"
+)]
+
 use std::os::unix::fs::{FileTypeExt as _, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

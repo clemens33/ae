@@ -168,7 +168,7 @@ impl App {
         let row = self.fleet.rows.iter().any(|row| row.name == name);
         let id = self.ids.get(name).map(String::as_str);
         let now = Timestamp::now().epoch();
-        match self.verdict_on(&keep, row, id, scanned, now) {
+        match Self::verdict_on(&keep, row, id, scanned, now) {
             handover::Verdict::Apply if keep.saved => {
                 // The layout and the panel were taken at the answer. The
                 // selection comes along only for an app that named no home
@@ -199,7 +199,6 @@ impl App {
     /// [`handover::decide`], with its age; one from the durable file by
     /// [`handover::decide_saved`], whatever its age.
     fn verdict_on(
-        &self,
         keep: &Keep,
         row: bool,
         id: Option<&str>,
@@ -222,7 +221,7 @@ impl App {
         scanned: bool,
         now: i64,
     ) -> bool {
-        self.verdict_on(keep, row, id, scanned, now) == handover::Verdict::Apply
+        Self::verdict_on(keep, row, id, scanned, now) == handover::Verdict::Apply
             && (!keep.saved
                 || self
                     .home
@@ -281,7 +280,7 @@ impl App {
         }
         let before = self.settled_view();
         let taken = take_keys(self, keyed);
-        self.viewed_by_the_human(before);
+        self.viewed_by_the_human(before.as_ref());
         taken
     }
 
@@ -290,8 +289,8 @@ impl App {
     /// changed the view, and the next debounced write and the final one are
     /// due. A change an answer made (a fleet read, a proof, a vanished session)
     /// never comes through here, even in a turn that also read a key.
-    pub(super) fn viewed_by_the_human(&mut self, before: Option<handover::View>) {
-        if before.is_some() && self.settled_view() != before {
+    pub(super) fn viewed_by_the_human(&mut self, before: Option<&handover::View>) {
+        if before.is_some() && self.settled_view().as_ref() != before {
             self.view_dirty = true;
             self.view_owed = true;
         }
@@ -339,7 +338,7 @@ impl App {
             return Ok(());
         };
         (self.view_dirty, self.view_owed) = (false, false);
-        saver.finish(text)
+        saver.finish(&text)
     }
 
     /// What this app hands to the one that replaces it in `pane`, at `now`:

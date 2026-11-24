@@ -1373,6 +1373,36 @@ mod tests {
         }
     }
 
+    /// What the durable file keeps with no session selected is the layout
+    /// alone: the focus and the scroll belong to the session they were made on.
+    #[test]
+    fn a_durable_view_with_no_selection_carries_no_focus_or_scroll() {
+        use crate::app::handover::{NO_ID, NO_SESSION};
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        model.set_focus(Some("scout".to_owned()));
+        (model.pages, model.rows, model.list_top, model.body_top) = (3, 2, Some(4), 5);
+        model.zoom = true;
+        let bare = model.saved(None);
+        assert_eq!(
+            (bare.session.as_str(), bare.id.as_str()),
+            (NO_SESSION, NO_ID)
+        );
+        assert_eq!(bare.focus, None);
+        assert_eq!(
+            (bare.pages, bare.rows, bare.list_top, bare.body_top),
+            (0, 0, None, 0)
+        );
+        assert!(bare.zoom, "the layout still rides");
+        let named = model.saved(Some("6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11"));
+        assert_eq!(named.session, "api");
+        assert_eq!(named.focus.as_deref(), Some("scout"));
+        assert_eq!(
+            (named.pages, named.rows, named.list_top, named.body_top),
+            (3, 2, Some(4), 5)
+        );
+    }
+
     /// R5: Tab frees up in browse: there is no tab to switch, so nothing moves.
     #[test]
     fn tab_in_browse_changes_nothing() {

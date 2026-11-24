@@ -220,7 +220,7 @@ fn reader_of(
 
 /// What the view an exec restart handed on behind [`handover::FLAG`] gives
 /// this process: the view it keeps, or the version it was meant to be.
-fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
+pub(super) fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
     let now = Timestamp::now().epoch();
     match text.map(|text| upgrade::carried(&text, std::process::id(), crate::shape::VERSION, now)) {
         Some(upgrade::Carried::View(view, at)) => (
@@ -423,9 +423,6 @@ pub(super) fn says_hint(in_pane: bool, stamp: Option<&str>) -> bool {
     !in_pane || stamp == Some("")
 }
 
-/// How `ae app` ends, its terminal put back first: restarted into the core
-/// the command link names when that was due, else with the line that says
-/// how to start it again.
 /// The last word of the durable view, at a quit and before a restart replaces
 /// the process: a change the human made in this run is written and waited for,
 /// and a failure is said once. The saying is best effort: a diagnostic that a
@@ -441,6 +438,9 @@ pub(super) fn leave_the_view(app: &mut App, err: &mut impl Write) {
     }
 }
 
+/// How `ae app` ends, its terminal put back first: restarted into the core
+/// the command link names when that was due, else with the line that says
+/// how to start it again.
 fn end(
     tty: tty::Tty,
     mut app: App,

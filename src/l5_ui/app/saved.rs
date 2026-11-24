@@ -65,6 +65,9 @@ pub fn write_file(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|why| format!("could not write {}: {why}", path.display()))
 }
 
+/// The publish of one text: the file door, or a recorder in a test.
+type Sink = dyn Fn(&str) -> Result<(), String> + Send + Sync;
+
 /// What one write is handed to the thread as: the text and, for the final one,
 /// where its outcome goes.
 struct Job {
@@ -90,7 +93,7 @@ struct Pace {
 /// never block the app.
 pub(super) struct Saver {
     jobs: Option<Sender<Job>>,
-    sink: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    sink: Arc<Sink>,
     pace: Arc<Mutex<Pace>>,
     /// The least time from the end of one debounced write to the next.
     gap: Duration,
@@ -113,7 +116,7 @@ impl Saver {
         sink: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static,
         say: impl FnMut(String) + Send + 'static,
     ) -> Self {
-        let sink: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync> = Arc::new(sink);
+        let sink: Arc<Sink> = Arc::new(sink);
         let pace = Arc::new(Mutex::new(Pace::default()));
         let (jobs, queue) = mpsc::channel();
         let (worker, shared) = (Arc::clone(&sink), Arc::clone(&pace));
@@ -169,11 +172,11 @@ impl Saver {
     /// # Errors
     ///
     /// Why the write failed.
-    pub(super) fn finish(&mut self, text: String) -> Result<(), String> {
+    pub(super) fn finish(&mut self, text: &str) -> Result<(), String> {
         if let Some(jobs) = self.jobs.as_ref() {
             let (ack, answer) = mpsc::channel();
             let job = Job {
-                text: text.clone(),
+                text: text.to_owned(),
                 ack: Some(ack),
             };
             self.pace
@@ -186,19 +189,14 @@ impl Saver {
                 return outcome;
             }
         }
-        (self.sink)(&text)
+        (self.sink)(text)
     }
 }
 
 /// The thread: take a job, fold in every job already waiting, write the newest
 /// text, record that the write ended, answer every final write that was folded
 /// in. A failure nobody waits for goes to `say` once.
-fn work(
-    queue: &Receiver<Job>,
-    sink: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
-    pace: &Mutex<Pace>,
-    mut say: impl FnMut(String),
-) {
+fn work(queue: &Receiver<Job>, sink: &Sink, pace: &Mutex<Pace>, mut say: impl FnMut(String)) {
     let mut said = false;
     while let Ok(mut job) = queue.recv() {
         let mut acks: Vec<_> = job.ack.take().into_iter().collect();
@@ -214,12 +212,11 @@ fn work(
             pace.waiting = pace.waiting.saturating_sub(taken);
             pace.done = Some(Instant::now());
         }
-        if acks.is_empty() {
-            if let Err(why) = &outcome
-                && !std::mem::replace(&mut said, true)
-            {
-                say(why.clone());
-            }
+        if acks.is_empty()
+            && let Err(why) = &outcome
+            && !std::mem::replace(&mut said, true)
+        {
+            say(why.clone());
         }
         for ack in acks {
             let _ = ack.send(outcome.clone());
@@ -235,8 +232,10 @@ mod tests {
     /// slip a whole cadence between two statements.
     const GAP: Duration = Duration::from_millis(600);
 
+    type Log = Arc<Mutex<Vec<String>>>;
+
     fn recorder() -> (
-        Arc<Mutex<Vec<String>>>,
+        Log,
         impl Fn(&str) -> Result<(), String> + Send + Sync + 'static,
     ) {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -264,7 +263,7 @@ mod tests {
             !saver.submit("again".into(), Instant::now()),
             "a second background write inside the cadence is refused"
         );
-        assert_eq!(saver.finish("final".into()), Ok(()));
+        assert_eq!(saver.finish("final"), Ok(()));
         let written = log.lock().expect("log").clone();
         assert_eq!(written.last().map(String::as_str), Some("final"));
         assert!(
@@ -302,7 +301,7 @@ mod tests {
         assert!(saver.ready(Instant::now()));
         assert!(saver.submit("c".into(), Instant::now()));
         assert_eq!(
-            saver.finish("final".into()),
+            saver.finish("final"),
             Ok(()),
             "the final write bypasses the cadence"
         );
@@ -332,7 +331,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
             let _ = release.send(());
         });
-        assert_eq!(saver.finish("final".into()), Ok(()));
+        assert_eq!(saver.finish("final"), Ok(()));
         releaser.join().expect("releaser");
         let written = log.lock().expect("log").clone();
         assert_eq!(written, ["slow", "final"], "in the order handed in");
@@ -353,7 +352,7 @@ mod tests {
             });
             assert!(saver.submit(format!("t{turn}"), Instant::now()));
         }
-        assert_eq!(saver.finish("end".into()), Err("refused".to_owned()));
+        assert_eq!(saver.finish("end"), Err("refused".to_owned()));
         assert_eq!(said.lock().expect("said").as_slice(), ["refused"]);
     }
 
@@ -369,7 +368,100 @@ mod tests {
             sink(text)
         };
         let mut saver = Saver::start(sink, |_| {});
-        assert_eq!(saver.finish("final".into()), Ok(()));
+        assert_eq!(saver.finish("final"), Ok(()));
         assert_eq!(log.lock().expect("log").as_slice(), ["final"]);
+    }
+
+    /// Texts queued behind each other are folded into one write of the newest,
+    /// and every one of them leaves the in-flight count, whatever its kind.
+    #[test]
+    fn folded_texts_all_leave_the_in_flight_count_and_every_final_one_is_answered() {
+        let (send, queue) = mpsc::channel();
+        let ((first, heard_first), (second, heard_second)) = (mpsc::channel(), mpsc::channel());
+        for (text, ack) in [("a", None), ("b", Some(first)), ("c", Some(second))] {
+            let job = Job {
+                text: text.to_owned(),
+                ack,
+            };
+            assert!(send.send(job).is_ok());
+        }
+        drop(send);
+        let pace = Mutex::new(Pace {
+            waiting: 3,
+            done: None,
+        });
+        let (log, sink) = recorder();
+        work(&queue, &sink, &pace, |_| {});
+        assert_eq!(*log.lock().expect("log"), ["c"], "one write, the newest");
+        let pace = pace.lock().expect("pace");
+        assert_eq!(pace.waiting, 0, "three texts were taken, three leave");
+        assert!(pace.done.is_some(), "the end of the write is recorded");
+        assert_eq!(heard_first.recv(), Ok(Ok(())));
+        assert_eq!(heard_second.recv(), Ok(Ok(())));
+    }
+
+    /// A background write that fails is said once, for the first failure, and
+    /// a later one stays quiet.
+    #[test]
+    fn the_first_failed_background_write_is_the_one_said() {
+        let (send, queue) = mpsc::channel();
+        let (second, said) = (send.clone(), Mutex::new(Vec::new()));
+        let later = Mutex::new(Some(second));
+        let sink = move |text: &str| {
+            if text == "one" {
+                // While the first write runs, the next text is queued: it is
+                // a cycle of its own, and the last sender goes with it.
+                let next = later.lock().expect("sender").take();
+                if let Some(next) = next {
+                    let _ = next.send(Job {
+                        text: "two".to_owned(),
+                        ack: None,
+                    });
+                }
+                Err("first".to_owned())
+            } else {
+                Err("second".to_owned())
+            }
+        };
+        let job = Job {
+            text: "one".to_owned(),
+            ack: None,
+        };
+        assert!(send.send(job).is_ok());
+        drop(send);
+        let pace = Mutex::new(Pace {
+            waiting: 2,
+            done: None,
+        });
+        work(&queue, &sink, &pace, |why| {
+            said.lock().expect("said").push(why);
+        });
+        assert_eq!(*said.lock().expect("said"), ["first"]);
+    }
+
+    /// While the final write runs the thread counts it in flight, as it does
+    /// a background one, and the count is empty once it has landed.
+    #[test]
+    fn the_final_write_is_counted_in_flight_until_it_lands() {
+        let (open, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let (log, record) = recorder();
+        let mut saver = Saver::paced(
+            GAP,
+            move |text: &str| {
+                let _ = gate.lock().expect("gate").recv();
+                record(text)
+            },
+            |_| {},
+        );
+        let pace = Arc::clone(&saver.pace);
+        let last = std::thread::spawn(move || saver.finish("final"));
+        until("the final write is counted in flight", || {
+            pace.lock().expect("pace").waiting == 1
+        });
+        assert!(open.send(()).is_ok());
+        assert_eq!(last.join().expect("the final write ends"), Ok(()));
+        assert_eq!(pace.lock().expect("pace").waiting, 0);
+        assert_eq!(*log.lock().expect("log"), ["final"]);
     }
 }
