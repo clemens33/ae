@@ -67,7 +67,8 @@ fn keep_carries_once_and_waits_for_the_orchestrators_memo_and_reply() {
     assert_eq!(web.submit(&draft).value, receipt.value);
     assert_eq!(rig.enter_count(), 1);
     assert_eq!(openings(&rig), [id.as_str()]);
-    assert_eq!(rig.submitted().lines().last(), Some(LINE));
+    let expected = format!("REQUEST {id} from human:chat: {LINE}\n");
+    assert_eq!(rig.submitted().matches(&expected).count(), 1);
 
     clock.advance(1);
     let waiting = card(&web, "tmux38");

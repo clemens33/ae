@@ -132,10 +132,11 @@ fn wait_for_send(
         SEND_WAIT,
     )?;
     let received = rig.submitted();
-    if rig.enter_count() != count || received.lines().last() != Some(line) {
+    let expected = format!(" from human:chat: {line}\n");
+    if rig.enter_count() != count || received.matches(&expected).count() != 1 {
         return Err(Failed::new(
             check,
-            format!("wanted one new submission ending in {line:?}; got {received:?}"),
+            format!("wanted one new submission with body {line:?}; got {received:?}"),
         ));
     }
     Ok(())
@@ -174,7 +175,8 @@ pub(super) fn check_walk(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
         SEND_WAIT,
     )?;
     let received = rig.submitted();
-    if rig.enter_count() != 4 || received.lines().last() != Some("#s2-m close No longer needed") {
+    let expected = " from human:chat: #s2-m close No longer needed\n";
+    if rig.enter_count() != 4 || received.matches(expected).count() != 1 {
         return Err(Failed::new("walk-close", received));
     }
     ok("walk-close", cell);
