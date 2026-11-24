@@ -122,7 +122,58 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minma
 .receipt.k-sent { border-color: var(--accent); }
 .receipt.k-refused, .receipt.k-unknown, .receipt.k-error { border-color: var(--need); color: var(--need); }
 .receipt.k-wait { color: var(--mute); }
+.link { color: var(--accent); text-align: left; overflow-wrap: anywhere; }
+.link:disabled { color: var(--mute); cursor: default; }
+.btn {
+  display: block; width: 100%; text-align: left; white-space: normal; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+}
+.btn small { display: block; color: var(--mute); font-size: .86em; }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+.btn:disabled { opacity: .5; cursor: default; }
+.revisit { margin: 6px 8px 0; border: 1px solid var(--line); border-radius: var(--r); padding: 9px 11px; background: var(--panel); }
+.revisit .hd { display: flex; justify-content: space-between; font-size: .74em; letter-spacing: .09em; text-transform: uppercase; color: var(--mute); }
+.revisit .hd .link { text-transform: none; letter-spacing: 0; font-size: 1.18em; }
+.revisit .nm { margin: 4px 0 1px; font-weight: 600; overflow-wrap: anywhere; }
+.revisit .ln { margin: 0 0 2px; font-size: .9em; overflow-wrap: anywhere; }
+.revisit .meta { margin: 0 0 6px; color: var(--mute); font-size: .84em; }
+.revisit .acts { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: .9em; }
+.pq { display: none; }
+.cact { margin-top: 18px; }
+.walk-back {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, .4);
+}
+.walk {
+  width: min(560px, 100%); max-height: 100%; overflow: auto; padding: 18px 20px;
+  background: var(--panel); color: var(--ink); border-radius: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3);
+}
+.walk:focus { outline: none; }
+.walk h2 { margin: 0 0 2px; font-size: 1.2em; overflow-wrap: anywhere; }
+.walk .sub { margin: 0 0 4px; }
+.walk .steps { display: flex; gap: 5px; margin: 8px 0 12px; }
+.walk .steps i { height: 4px; flex: 1; border-radius: 2px; background: var(--line); }
+.walk .steps i.on { background: var(--accent); }
+.walk .w-acts { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-top: 14px; }
+.walk .w-acts .link { align-self: flex-start; }
+.walk .w-field { display: block; font-size: .9em; color: var(--mute); }
+.walk .w-field input {
+  display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px;
+}
+.walk .w-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.walk .w-note { margin: 10px 0 0; padding-left: 9px; border-left: 3px solid var(--need); white-space: pre-wrap; overflow-wrap: anywhere; }
+.walk .w-gone { margin: 10px 0 0; padding-left: 9px; border-left: 3px solid var(--need); overflow-wrap: anywhere; }
+.walk .w-hint { margin: 4px 0 0; overflow-wrap: anywhere; }
+.walk .w-done { margin: 14px 0 0; padding-left: 18px; }
+.walk .w-done li { margin: 3px 0; overflow-wrap: anywhere; }
 @media (max-width: 759px) {
+  .pq {
+    display: flex; justify-content: space-between; gap: 10px; padding: 7px 12px;
+    border-bottom: 1px solid var(--line); font-size: .9em; background: var(--panel);
+  }
+  .pq .link { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pq .rv-next { flex: none; }
   .stream { padding: 14px 12px 6px; }
   .composer { padding: 8px 12px 10px; }
   .msg { max-width: 94%; }

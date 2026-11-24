@@ -45,8 +45,8 @@ a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
 
 ## The desk column
 
-The column beside the chat lists the orchestrator's topics: **Needs you**, **Moving** and **All
-topics** with a search over slug and title. A narrow screen switches between Chat and Topics.
+The column beside the chat lists the orchestrator's topics: **Needs you**, **Moving**, **Quiet**
+(the Revisit line, see below) and **All topics** with a search over slug and title. A narrow screen switches between Chat and Topics.
 
 - A topic is a memo checkpoint under `topic-<slug>`, the slug `[a-z0-9][a-z0-9-]{0,47}`. One
   checkpoint line reads `title: Web UI | state: moving | what: … | last: … | next: … | src: … |
@@ -67,6 +67,58 @@ topics** with a search over slug and title. A narrow screen switches between Cha
 
 Clicking a row opens its card, which `GET /api/topic/<slug>` answers from the same snapshot as the
 chat.
+
+## Revisit and the walk
+
+The **Quiet** block holds the Revisit line: one quiet topic by name, with its next step (else its
+last state, else what it is), its last review time, **Open topic**, **Next** and **Walk the quiet
+topics (n)**. On a narrow screen the same line sits above the chat and hides while the draft holds
+an attached topic. The shown topic lives only in the tab, and one that stops being quiet falls back
+to the first.
+
+- Quiet topics are ordered by last review, the oldest first. A review time that is no
+  `YYYY-MM-DDTHH:MM:SSZ` (empty or hand-edited) counts as the oldest, and equal times go by slug.
+  `desk.revisit` of `GET /api/state` lists them in that order and each entry's `next` names the
+  following slug, the last one pointing at the first, so Next wraps and a single topic points at
+  itself.
+- The walk shows one quiet topic at a time with its what, last and next, and **Keep**, **Ask for a
+  next step**, **Close with one line**, **Skip** (only when the topic is no longer quiet) and
+  **Stop**. A card has **Close with one line** too, the same dialog for one topic, for every Quiet,
+  Moving or Parked topic. A topic under **Needs you** (a request waits for you or for the
+  orchestrator, or its state says it needs you), a closed one and an unreadable one cannot be
+  closed. `GET /api/topic/<slug>` carries `verdict`: `null` for those, else the lines
+  `keep`, `ask` and `close` (the start of the closing line, `#<slug> close `, ending in a space) and
+  `reason_max`. The page reads the card again before each send; a topic that left the quiet group
+  shows `no longer quiet` with Skip and Stop only.
+- A verdict is one ordinary owner ask in the composer's own path (cap of five open asks, claim,
+  receipt): `#<slug> keep`, `#<slug> ask` or `#<slug> close <reason>`. The page holds no store
+  of its own and the server never validates a verdict. The reason is trimmed and has 1 to
+  `reason_max` (200) Unicode scalar values, with no control character and no line break, so a
+  verdict stays one line. The page checks every input and cancels a paste with a line break.
+- The orchestrator seat turns a verdict into a topic record and answers the ask: `review: keep` or
+  `review: ask` moves the review time and nothing else, and `state: closed` with `close: <reason>`
+  (and `review: close`) closes the topic. The record comes first, so the topic moves in one step.
+  Until the ask is answered the topic shows under **Needs you** with an **Owed to you** wait, and
+  it is not offered a second verdict. A reason that tags another topic (`#other`) also makes that
+  topic wait until the answer.
+- **This page does nothing visible until the orchestrator's charter teaches the topic records and
+  the verdict lines.** The charter is not part of `ae web`. A seat that writes `status:` or prose
+  in `state:` leaves every topic unreadable, so no topic is Quiet and the block stays empty. A
+  seat without the verdict rule reads a verdict line as a plain chat message and writes no record.
+- A server receipt settles a step. `sent` and `unknown: may have landed, not resent` are final:
+  the walk shows the outcome and moves on, and the end screen lists each topic. A `refused`
+  receipt stays on its topic with **Try again**, which sends a new draft; the owner may edit the
+  reason first. A refusal is a definite answer of the server for that draft: nothing was sent. An
+  absent answer is not one, see **Check again** below. A single close from a card dismisses its
+  dialog on a `sent` receipt and leaves the result, `Closing line sent for #<slug>: …`, on that
+  card as a status line. When the orchestrator changes while a step is open, the walk sends no new
+  line: the open attempt still checks its own receipt with its first body, and every later step
+  waits until the walk is opened again. With five asks open the console refuses with `cap-full: 5/5 …` and the walk waits
+  at that step: answer or withdraw one open ask, then press **Try again**.
+- Without any receipt (about two minutes, or ae web not reachable) the step shows **Check again**,
+  which posts the same body and draft id once more. Until a receipt arrives, **Stop**, Escape and a
+  click outside the dialog do nothing. Reloading the page is the only other way out; it ends the
+  walk and the page can no longer say what happened to that draft.
 
 ## Sending
 
@@ -141,7 +193,8 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   it up through `PATH`.
 - It drives one tab over the DevTools protocol. Every click is a real pointer press and release
   at the control's centre, after a hit test proves the press lands on that control.
-- Four cells, each a fresh load: 1440x900 and 360x740, each light and dark. Each cell checks that
+- Four cells, each a fresh load: 1440x900 light, 360x740 light, 360x740 dark and 1440x900 dark.
+  Each cell checks that
   the modules load under the strict CSP header with no exception, console error, dialog or CSP
   violation (`modules`); that a topic titled `<img src=x onerror=alert(1)> & </p>` shows that
   literal text and the page holds no `img` and no inline script (`hostile-literal`); the scheme's
@@ -150,10 +203,26 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
 - A wide cell types a draft, clicks a topic row and checks that the card opens while the draft
   keeps its text (`draft-kept`) and the focus (`focus-kept`). A narrow cell takes the same draft
   through Topics, the card and back to Chat (`draft-kept`).
+- Every cell checks the Revisit line: the oldest quiet topic shows, Next cycles through the
+  fixture's three quiet topics and wraps (`revisit`), and on a narrow screen the walk dialog fits
+  the viewport with the focus on Keep (`walk-fits`).
 - The 1440x900 dark cell clicks Send and waits for the `sent to …` receipt with its request id;
-  the fake TUI must have received the draft once (`sent`).
+  the fake TUI must have received the draft once (`sent`). It then walks the three quiet topics,
+  each verdict reaching the fake TUI once as the exact line (`walk-keep`, `walk-ask`,
+  `walk-close`), and runs the edge cases against a held send endpoint: no dismissal while a
+  carry is open, an unknown receipt advancing, a cap refusal with Try again (`walk-dismissal`,
+  `walk-cap`), the card's close button for ineligible topics (`walk-card`) and the reason's
+  bounds, 200 accepted and 201, blank, line break and pasted line break refused (`walk-reason`).
+- The same cell then checks three guards in one page (`guard-skip`, `guard-selection`,
+  `guard-route`): a step without a receipt keeps **Check again** and its draft id when its topic
+  leaves Quiet, so Skip, Escape and a click outside do nothing; the Revisit line keeps its topic
+  when another one leaves and returns; and a changed orchestrator route stops new sends while the
+  open attempt checks its receipt with its first body. The checks replace only the replies of
+  `/api/send` and the route id of `/api/state`.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
 guard that keeps the focus in the draft. The recipe passes only when that run fails at
-`focus-kept (1440x900 light)` and at no other check.
+`focus-kept (1440x900 light)` and at no other check. `just web-smoke plant-walk` serves `app.mjs`
+with the walk's Keep sending the Ask line and passes only when the run fails at `walk-keep
+(1440x900 dark)` and at no other check.

@@ -4514,15 +4514,17 @@ harness-smoke mode="":
 # recipe sets. Chrome is the absolute path in AE_WEB_SMOKE_CHROME, else this OS's stock install
 # path, never a PATH lookup. Screenshots and the log land in .local/web-smoke/<UTC stamp>/.
 # `just web-smoke plant` serves app.mjs without the topic row's focus guard and passes only
-# when the run fails at focus-kept and at no other check. tests/it/gate.rs pins the filter,
-# the gate variable and both run lines byte for byte: change them together.
+# when the run fails at focus-kept and at no other check; `just web-smoke plant-walk` serves the
+# walk's Keep sending the Ask line and passes only when the run fails at walk-keep. tests/it/gate.rs
+# pins the filter, the gate variable and both run lines byte for byte: change them together.
 web-smoke mode="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "${1:-}" in
         "") plant="" ;;
         plant) plant=focus ;;
-        *) echo "usage: just web-smoke [plant]" >&2; exit 2 ;;
+        plant-walk) plant=walk ;;
+        *) echo "usage: just web-smoke [plant|plant-walk]" >&2; exit 2 ;;
     esac
     chrome="${AE_WEB_SMOKE_CHROME:-}"
     if [[ -z "$chrome" ]]; then
@@ -4548,16 +4550,21 @@ web-smoke mode="":
     AE_WEB_SMOKE_PLANT="$plant" nice -n 10 just _tmux-isolated test --run-ignored only --no-capture -E "$filter" >"$out/run.log" 2>&1 || status=$?
     cat "$out/run.log"
     # The plant passes only when the run failed, said the fault was served, and every failure it
-    # reports is the focus check of the first cell.
-    caught='web-smoke FAILED at focus-kept (1440x900 light): '
+    # reports is the one check its fault must break: the focus check of the first cell, or the
+    # walk's Keep check of the one cell that sends.
+    case "$plant" in
+        focus) check='focus-kept (1440x900 light)' ;;
+        walk) check='walk-keep (1440x900 dark)' ;;
+    esac
+    caught="web-smoke FAILED at $check: "
     if ((status != 0)) \
         && grep -qF 'web-smoke plant: /assets/app.mjs served without' "$out/run.log" \
         && grep -qF "$caught" "$out/run.log" \
         && ! grep -F 'web-smoke FAILED at ' "$out/run.log" | grep -qvF "$caught"; then
-        echo "web-smoke plant: caught at focus-kept, as planted (run exit $status); evidence in $out"
+        echo "web-smoke plant: caught at $check, as planted (run exit $status); evidence in $out"
         exit 0
     fi
-    echo "web-smoke plant: the planted fault was NOT caught at focus-kept (run exit $status); evidence in $out" >&2
+    echo "web-smoke plant: the planted fault was NOT caught at $check (run exit $status); evidence in $out" >&2
     exit 1
 
 # Coverage is a REPORT, not a gate. It becomes a gate the day a threshold is

@@ -173,7 +173,7 @@ function TopicRow({ row, group, chosen, choose }) {
   </button>`;
 }
 
-function Desk({ desk, chosen, choose }) {
+function Desk({ desk, chosen, choose, revisit }) {
   const [query, setQuery] = useState("");
   const rows = (name) => {
     const found = desk.groups.find((group) => group.group === name);
@@ -204,6 +204,10 @@ function Desk({ desk, chosen, choose }) {
       : null}
     <div class="grp"><span>${GROUPS.moving}</span><span>${rows("moving").length}</span></div>
     ${listed("moving")}
+    ${revisit.entry
+      ? html`<div class="grp"><span>${GROUPS.quiet}</span><span>${revisit.count}</span></div>
+          <${Revisit} entry=${revisit.entry} count=${revisit.count} next=${revisit.next} open=${choose} walk=${revisit.walk} />`
+      : null}
     <div class="grp"><span>All topics</span><span>${all.length}</span></div>
     <input
       type="search"
@@ -248,8 +252,13 @@ function Source({ origin }) {
   </span>`;
 }
 
-function Card({ card, close }) {
+function Card({ card, close, closeLine, outcome }) {
   const fields = card.fields;
+  // Only Quiet, Moving and Parked cards can be closed from here; a card with a
+  // wait shows the button disabled and says why, a closed or unreadable one
+  // shows none.
+  const closable = Boolean(card.verdict);
+  const blocked = card.group === "needs_you";
   return html`<aside class="card" aria-label="Topic">
     <div class="hd">
       <h2>${fields.title ? fields.title.value : card.slug}</h2>
@@ -279,6 +288,15 @@ function Card({ card, close }) {
           <h3>Earlier records</h3>
           <ul>${card.history.map((entry, at) => html`<li key=${"h" + at}><${Source} origin=${entry} /> <span class="raw">${entry.text}</span></li>`)}</ul>
         </div>`
+      : null}
+    ${closable || blocked
+      ? html`<div class="cact">
+          <button class="btn cl-line" disabled=${!closable} onClick=${closeLine}>Close with one line</button>
+        </div>`
+      : null}
+    ${outcome ? html`<p class="note cl-note" role="status">${outcome}</p>` : null}
+    ${blocked
+      ? html`<p class="note">This topic is under Needs you, so it cannot be closed from here.</p>`
       : null}
   </aside>`;
 }
@@ -390,13 +408,20 @@ async function carry(body, show) {
 // verbatim on every retry and every later check until an answer settles it,
 // so the server carries a draft at most once and a check always finds its
 // receipt. While an attempt is open the draft cannot change.
-function Composer({ route, slug }) {
+function Composer({ route, slug, onAttached }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [attempt, setAttempt] = useState("");
   const [note, setNote] = useState(null);
   const box = useRef(null);
   const frozen = sending || Boolean(attempt);
+  // A draft whose first line is a bare #slug is the one Attach wrote.
+  const attached = /^#[a-z0-9][a-z0-9-]*$/.test(text.split("\n", 1)[0]);
+  useEffect(() => {
+    if (onAttached) {
+      onAttached(attached);
+    }
+  }, [attached, onAttached]);
   const ready = Boolean(attempt || (route && text.trim()));
 
   const attach = () => {
@@ -521,6 +546,412 @@ function Composer({ route, slug }) {
 }
 
 
+// The Revisit line: one quiet topic by name with its next step, in the desk
+// column. Next cycles through the quiet topics in the order the server sends.
+function Revisit({ entry, count, next, open, walk }) {
+  return html`<div class="revisit" data-slug=${entry.slug}>
+    <div class="hd">
+      <span>Revisit</span>
+      ${count > 1 ? html`<button class="link rv-next" onClick=${next}>Next →</button>` : null}
+    </div>
+    <div class="nm">${entry.title || entry.slug}</div>
+    ${entry.line ? html`<p class="ln">${entry.line}</p>` : null}
+    <p class="meta" title=${entry.reviewed}>reviewed ${when(entry.reviewed)}</p>
+    <div class="acts">
+      <button class="link rv-open" onClick=${() => open(entry.slug)}>Open topic</button>
+      <button class="link rv-walk" onClick=${walk}>Walk the quiet topics (${count})</button>
+    </div>
+  </div>`;
+}
+
+// The same line above the chat on a narrow screen.
+function Strip({ entry, count, next, open }) {
+  return html`<div class="pq" data-slug=${entry.slug}>
+    <button class="link rv-open" onClick=${() => open(entry.slug)}>Revisit · ${entry.title || entry.slug}</button>
+    ${count > 1 ? html`<button class="link rv-next" onClick=${next}>Next →</button>` : null}
+  </div>`;
+}
+
+// The page owns the rules of a closing reason; the server serves only its
+// longest length. Once trimmed it is one line of 1 to `max` Unicode scalar
+// values with no control character and no line break, so a verdict is never
+// two chat lines. Every input is checked.
+const REASON_BAD = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+function reasonProblem(text, max) {
+  // The characters are checked before the trim, so a line break or control
+  // character at either end is refused as it is anywhere else.
+  if (REASON_BAD.test(text)) {
+    return "One line only: no line break or control character.";
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "Write one line saying why it ends.";
+  }
+  const length = Array.from(trimmed).length;
+  return length > max ? "At most " + max + " characters; this has " + length + "." : "";
+}
+
+// One read of a topic document: { slug, card, tag } for a fresh one, { slug,
+// same } when `tag` still names the current one, { slug, gone } when the topic
+// is no longer known and { slug, failed } with the reason when it could not be
+// read. Never throws.
+async function readTopic(slug, tag) {
+  try {
+    const headers = tag ? { "If-None-Match": tag } : {};
+    const answer = await api("topic/" + slug, { headers });
+    if (answer.status === 200) {
+      return { slug, card: await answer.json(), tag: answer.headers.get("ETag") || "" };
+    }
+    if (answer.status === 304) {
+      return { slug, same: true };
+    }
+    if (answer.status === 404) {
+      return { slug, gone: true };
+    }
+    return { slug, failed: "ae web answered " + answer.status };
+  } catch (_) {
+    return { slug, failed: UNREACHABLE };
+  }
+}
+
+const DONE = { keep: "kept", ask: "asked for a next step", close: "closed" };
+
+// The walk through the quiet topics, and with one entry the dialog that closes
+// one topic from its card. A verdict is one owner chat line carried like a
+// composer draft: the topic document supplies the line, the orchestrator turns
+// it into a memo record, and the page never keeps a store of its own.
+// A server receipt settles a step: sent and unknown are both final (the server
+// never carries that draft again), a refusal leaves the step to be tried again
+// as a new draft. Only a carry without any receipt keeps the dialog from being
+// dismissed; reloading the page is the one other way out.
+function Walk({ walk, route, state, stop }) {
+  const entries = walk.entries;
+  const single = walk.single;
+  const [at, setAt] = useState(0);
+  const [log, setLog] = useState([]);
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState(null);
+  const [refused, setRefused] = useState(false);
+  const [closing, setClosing] = useState(single);
+  const [reason, setReason] = useState("");
+  const [pasted, setPasted] = useState("");
+  const [doc, setDoc] = useState(null);
+  const attempt = useRef(null);
+  const last = useRef("keep");
+  const held = useRef({ slug: "", value: "" });
+  const keepBox = useRef(null);
+  const reasonBox = useRef(null);
+  const idleNow = useRef(true);
+  const entry = entries[at] || null;
+  const slug = entry ? entry.slug : "";
+  const idle = phase === "idle";
+  idleNow.current = idle;
+  // A walk sends only to the orchestrator it was opened against. When the
+  // route changed, nothing new is sent; an open attempt still checks its own
+  // receipt, because its body names the route it was written for.
+  const sendTo = walk.route;
+  const stale = !sendTo || !route || route.id !== sendTo.id;
+
+  // The topic document of this step, read again on every new snapshot.
+  useEffect(() => {
+    if (!slug) {
+      return undefined;
+    }
+    let gone = false;
+    const again = async () => {
+      const read = await readTopic(slug, held.current.slug === slug ? held.current.value : "");
+      if (gone || read.same) {
+        return;
+      }
+      if (read.card) {
+        held.current = { slug, value: read.tag };
+      }
+      // A failed read keeps the document already shown.
+      setDoc((before) => (read.failed && before && before.slug === slug && before.card ? before : read));
+    };
+    again();
+    return () => {
+      gone = true;
+    };
+  }, [slug, state]);
+
+  const loaded = Boolean(doc && doc.slug === slug);
+  const card = loaded && doc.card ? doc.card : null;
+  const verdict = card ? card.verdict : null;
+  const eligible = Boolean(verdict) && (single || card.group === "quiet");
+  const live = eligible && !stale && idle;
+  const max = verdict ? verdict.reason_max : 200;
+  const problem = reasonProblem(reason, max);
+  const name = (card && card.fields.title && card.fields.title.value) || (entry && entry.title) || slug;
+
+  // The dialog takes the focus when it opens, so that the page behind it
+  // cannot act on a key, and gives the focus back to what opened it.
+  useEffect(() => {
+    const opener = document.activeElement;
+    const box = document.querySelector(".walk");
+    if (box) {
+      box.focus();
+    }
+    return () => {
+      if (opener && opener.isConnected && typeof opener.focus === "function") {
+        opener.focus();
+      }
+    };
+  }, []);
+
+  // Focus goes to the first action once a step can take one.
+  useEffect(() => {
+    const target = closing ? reasonBox.current : keepBox.current;
+    if (live && target) {
+      target.focus();
+    }
+  }, [slug, live, closing]);
+
+  // Escape stops the walk, and Tab stays inside it, while no carry is open.
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        if (idleNow.current) {
+          event.preventDefault();
+          stop();
+        }
+        return;
+      }
+      if (event.key !== "Tab") {
+        return;
+      }
+      const box = document.querySelector(".walk");
+      if (!box) {
+        return;
+      }
+      const items = Array.from(box.querySelectorAll("button:not(:disabled), input:not(:disabled)"));
+      const at = items.indexOf(document.activeElement);
+      if (!items.length) {
+        event.preventDefault();
+        box.focus();
+      } else if (at < 0) {
+        // Focus on the dialog box or outside the enabled items enters the cycle.
+        event.preventDefault();
+        items[event.shiftKey ? items.length - 1 : 0].focus();
+      } else if (!event.shiftKey && at === items.length - 1) {
+        event.preventDefault();
+        items[0].focus();
+      } else if (event.shiftKey && at === 0) {
+        event.preventDefault();
+        items[items.length - 1].focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [stop]);
+
+  const next = (text) => {
+    setLog((before) => before.concat(text));
+    setNote(null);
+    setRefused(false);
+    setReason("");
+    setPasted("");
+    setClosing(single);
+    setPhase("idle");
+    setAt((now) => now + 1);
+  };
+
+  // A receipt settles the step.
+  const finish = (sent, receipt) => {
+    const shown = receiptNote(receipt);
+    attempt.current = null;
+    if (shown.kind === "refused") {
+      setNote(shown);
+      setRefused(true);
+      setPhase("idle");
+      return;
+    }
+    if (single && shown.kind === "sent") {
+      // The dialog goes, and its card keeps what happened.
+      stop({ slug, text: "Closing line sent for #" + slug + ": " + shown.label + "." });
+      return;
+    }
+    const words =
+      shown.kind === "sent"
+        ? sent.name + ": " + DONE[sent.kind] + (sent.kind === "close" ? ": " + sent.reason : "") + ", " + shown.label
+        : sent.name + ": " + shown.words;
+    next(words);
+  };
+
+  // The open attempt carried, or carried again with the same body and id.
+  const carryOpen = async () => {
+    const sent = attempt.current;
+    setPhase("pending");
+    setNote(line("wait", "sending"));
+    const done = await carry(sent.body, setNote);
+    if (done.receipt) {
+      finish(sent, done.receipt);
+      return;
+    }
+    if (done.spent) {
+      attempt.current = null;
+    }
+    setNote(done.note);
+    setRefused(Boolean(done.spent));
+    setPhase(done.spent ? "idle" : "noanswer");
+  };
+
+  // Check the topic once more, then send the verdict as a new draft.
+  const act = async (kind) => {
+    if (!live || (kind === "close" && problem)) {
+      return;
+    }
+    last.current = kind;
+    setPhase("pending");
+    setRefused(false);
+    setNote(line("wait", "checking the topic"));
+    const fresh = await readTopic(slug, "");
+    if (!fresh.failed) {
+      setDoc(fresh);
+    }
+    const lines = fresh.card ? fresh.card.verdict : null;
+    if (!lines || (!single && fresh.card.group !== "quiet")) {
+      setNote(fresh.failed ? line("error", fresh.failed) : null);
+      setPhase("idle");
+      return;
+    }
+    const text = kind === "close" ? lines.close + reason.trim() : lines[kind];
+    let made;
+    try {
+      made = await draft(sendTo, text);
+    } catch (_) {
+      made = { note: line("error", UNREACHABLE) };
+    }
+    if (!made.body) {
+      setNote(made.note);
+      setPhase("idle");
+      return;
+    }
+    attempt.current = { body: made.body, kind, name, reason: reason.trim() };
+    await carryOpen();
+  };
+
+  const skip = () => {
+    if (idle) {
+      next(name + ": skipped, " + (card ? "no longer quiet" : "not readable"));
+    }
+  };
+
+  const onReason = (event) => {
+    setReason(event.currentTarget.value);
+    setPasted("");
+  };
+  const onPaste = (event) => {
+    const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+    if (REASON_BAD.test(text)) {
+      event.preventDefault();
+      setPasted("Paste cancelled: the text holds a line break or control character.");
+    }
+  };
+  const onReasonKey = (event) => {
+    // Confirming an input-method candidate with Enter is no send.
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      if (!problem) {
+        act("close");
+      }
+    }
+  };
+  const dismiss = (event) => {
+    if (event.target === event.currentTarget && idle) {
+      stop();
+    }
+  };
+
+  const doneList = html`<ul class="w-done">${log.map((text, each) => html`<li key=${each}>${text}</li>`)}</ul>`;
+  let body;
+  if (!entry) {
+    body = html`<h2>${single ? "Closing line" : log.length ? "Walk done" : "No quiet topic is left to review"}</h2>
+      ${log.length ? doneList : null}
+      <p class="mute sm">Each line sent shows under Owed to you until the orchestrator answers.</p>
+      <div class="w-acts"><button class="btn pri w-end" onClick=${stop}>Back to the chat</button></div>`;
+  } else {
+    const why = !loaded
+      ? null
+      : doc.gone
+        ? (single ? "#" + slug + " is gone." : "No longer quiet: #" + slug + " is gone.")
+        : doc.failed
+          ? "Cannot read #" + slug + ": " + doc.failed
+          : !eligible
+            ? (single ? "This topic cannot be closed now: it is " : "No longer quiet: it is now ") +
+              (GROUPS[card.group] || card.group) + "."
+            : null;
+    body = html`${single
+        ? null
+        : html`<div class="w-step mute sm">Quiet topic ${at + 1} of ${entries.length}</div>
+            <div class="steps">${entries.map((_, each) => html`<i key=${each} class=${each <= at ? "on" : ""}></i>`)}</div>`}
+      ${!loaded ? html`<p class="w-wait mute">Reading #${slug}.</p>` : html`<h2 class="nm">${name}</h2>`}
+      ${card
+        ? html`<p class="sub mute sm">#${slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
+            ${[["what", "What"], ["last", "Last"], ["next", "Next"]]
+              .filter(([key]) => card.fields[key])
+              .map(([key, label]) => html`<div class="fld" key=${key}><h3>${label}</h3><p class="raw">${card.fields[key].value}</p></div>`)}`
+        : null}
+      ${why ? html`<p class="w-gone">${why}</p>` : null}
+      ${stale && loaded
+        ? html`<p class="w-hint mute sm">${route && sendTo ? "The orchestrator changed since this opened: stop, then open it again." : "No proven orchestrator to send to."}</p>`
+        : null}
+      ${note ? html`<p class="w-note" role="status">${note.words}</p>` : null}
+      ${refused && note && note.words.startsWith("cap-full")
+        ? html`<p class="w-hint mute sm">The walk waits here: answer or withdraw one open ask, then press Try again.</p>`
+        : null}
+      <div class="w-acts">
+        ${eligible && !closing
+          ? html`<button class="btn" data-walk="keep" ref=${keepBox} disabled=${!live} onClick=${() => act("keep")}>
+                Keep<small>Still wanted. It stays, and the review time moves to now.</small>
+              </button>
+              <button class="btn" data-walk="ask" disabled=${!live} onClick=${() => act("ask")}>
+                Ask for a next step<small>Sends one chat line to the orchestrator.</small>
+              </button>
+              <button class="btn" data-walk="close" disabled=${!live} onClick=${() => setClosing(true)}>
+                Close with one line<small>It leaves the list. The line stays under Closed.</small>
+              </button>`
+          : null}
+        ${eligible && closing
+          ? html`<label class="w-field">Closing line
+                <input
+                  class="reason"
+                  type="text"
+                  ref=${reasonBox}
+                  placeholder="Why it ends, in one line"
+                  value=${reason}
+                  disabled=${!idle}
+                  onInput=${onReason}
+                  onPaste=${onPaste}
+                  onKeyDown=${onReasonKey}
+                />
+              </label>
+              <p class="w-hint mute sm" role="status">${pasted || problem}</p>
+              <button class="btn pri w-closeok" disabled=${!live || Boolean(problem)} onClick=${() => act("close")}>Close the topic</button>
+              <button class="link w-undo" disabled=${!idle} onClick=${single ? stop : () => setClosing(false)}>${single ? "Cancel" : "Back"}</button>`
+          : null}
+        ${refused ? html`<button class="btn w-retry" disabled=${!live || (last.current === "close" && Boolean(problem))} onClick=${() => act(last.current)}>Try again</button>` : null}
+        ${phase === "noanswer" ? html`<button class="btn w-check" onClick=${carryOpen}>Check again</button>` : null}
+        ${loaded && !eligible && !single ? html`<button class="link w-skip" disabled=${!idle} onClick=${skip}>Skip</button>` : null}
+        <button class="link w-stop" disabled=${!idle} onClick=${stop}>Stop</button>
+      </div>
+      ${log.length ? doneList : null}`;
+  }
+  return html`<div class="walk-back" onClick=${dismiss}>
+    <div
+      class="walk"
+      role="dialog"
+      aria-modal="true"
+      aria-label=${single ? "Close a topic" : "Walk the quiet topics"}
+      data-carry=${phase}
+      tabIndex="-1"
+    >
+      ${body}
+    </div>
+  </div>`;
+}
+
 function App() {
   const [state, setState] = useState(null);
   const [problem, setProblem] = useState("");
@@ -532,6 +963,50 @@ function App() {
   const [view, setView] = useState("chat");
   const [cardProblem, setCardProblem] = useState("");
   const cardTag = useRef("");
+  // The Revisit line's shown topic, the walk or close dialog and whether the
+  // draft holds an attached topic (the strip hides then).
+  const [rv, setRv] = useState("");
+  const [walk, setWalk] = useState(null);
+  const [attached, setAttached] = useState(false);
+  const quiet = (state && state.desk && state.desk.revisit) || [];
+  // A shown topic that left the quiet list falls back to the first of it.
+  const current = quiet.find((entry) => entry.slug === rv) || quiet[0] || null;
+  // The shown topic is kept as what the page displays, so a topic that left and
+  // comes back does not take the selection from the one shown meanwhile.
+  const shownSlug = current ? current.slug : "";
+  useEffect(() => {
+    setRv(shownSlug);
+  }, [shownSlug]);
+  const nextRevisit = () => {
+    if (current) {
+      setRv(current.next);
+    }
+  };
+  // What a closed dialog leaves on its card: the sent line of a single close.
+  const [closed, setClosed] = useState(null);
+  const stopWalk = useCallback((said) => {
+    setWalk(null);
+    if (said && typeof said.slug === "string" && typeof said.text === "string") {
+      setClosed(said);
+    }
+  }, []);
+  const startWalk = () => {
+    if (quiet.length) {
+      setWalk({
+        entries: quiet.map((entry) => ({ slug: entry.slug, title: entry.title })),
+        single: false,
+        route: state.route,
+      });
+    }
+  };
+  const startClose = () => {
+    if (card) {
+      setClosed(null);
+      const title = card.fields.title ? card.fields.title.value : null;
+      setWalk({ entries: [{ slug: card.slug, title }], single: true, route: state ? state.route : null });
+    }
+  };
+  const revisitProps = { entry: current, count: quiet.length, next: nextRevisit, walk: startWalk };
 
   // Choosing the open topic again only shows its card: its answer and tag
   // stay, because no new snapshot would bring them back. A card that could
@@ -689,18 +1164,31 @@ function App() {
     ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>
       ${state && state.desk
-        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} />`
+        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} revisit=${revisitProps} />`
         : html`<nav class="col" aria-label="Topics"></nav>`}
       <section class="chat" aria-label="Chat">
+        ${current && !attached && !walk
+          ? html`<${Strip} entry=${current} count=${quiet.length} next=${nextRevisit} open=${choose} />`
+          : null}
         ${state ? html`<${Stream} chat=${state.chat} />` : html`<div class="stream"></div>`}
-        <${Composer} route=${state ? state.route : null} slug=${card ? card.slug : ""} />
+        <${Composer} route=${state ? state.route : null} slug=${card ? card.slug : ""} onAttached=${setAttached} />
       </section>
-      ${card ? html`<${Card} card=${card} close=${close} />` : null}
+      ${card
+        ? html`<${Card}
+            card=${card}
+            close=${close}
+            closeLine=${startClose}
+            outcome=${closed && closed.slug === card.slug ? closed.text : ""}
+          />`
+        : null}
     </main>
     <nav class="tabs" aria-label="Views">
       <button class=${view === "chat" ? "on" : ""} onClick=${() => setView("chat")}>Chat</button>
       <button class=${view === "chat" ? "" : "on"} onClick=${() => setView("topics")}>Topics</button>
     </nav>
+    ${walk
+      ? html`<${Walk} walk=${walk} route=${state ? state.route : null} state=${state} stop=${stopWalk} />`
+      : null}
   </div>`;
 }
 

@@ -29,6 +29,9 @@
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
 //! web-smoke plant` passes only when it fails there and nowhere else.
+//! `AE_WEB_SMOKE_PLANT=walk` serves `app.mjs` with the walk's Keep sending the
+//! Ask line. That run must fail at `walk-keep (1440x900 dark)`: `just web-smoke
+//! plant-walk` passes only when it fails there and nowhere else.
 
 use std::collections::BTreeMap;
 use std::hash::BuildHasher as _;
@@ -78,6 +81,11 @@ const DARK_BG: &str = "rgb(21, 23, 25)";
 const ROW_GUARD: &str =
     "onMouseDown=${(event) => event.preventDefault()}\n    onClick=${() => choose(row.slug)}";
 const ROW_PLANTED: &str = "onClick=${() => choose(row.slug)}";
+
+/// The walk's Keep button as `app.mjs` serves it, and what the walk plant
+/// serves instead: the same button, which sends the Ask line.
+const WALK_GUARD: &str = "onClick=${() => act(\"keep\")}";
+const WALK_PLANTED: &str = "onClick=${() => act(\"ask\")}";
 
 /// What each check's script sees: `tag` names an element, `row` finds the
 /// smoke topic's first row, `box` is the draft box.
@@ -268,11 +276,14 @@ fn chrome_path() -> PathBuf {
     path
 }
 
-fn planted() -> bool {
+fn planted() -> Option<&'static str> {
     match env_text(PLANT).as_deref() {
-        None => false,
-        Some("focus") => true,
-        Some(other) => panic!("web-smoke: {PLANT}={other:?}; the one planted fault is `focus`"),
+        None => None,
+        Some("focus") => Some("focus"),
+        Some("walk") => Some("walk"),
+        Some(other) => {
+            panic!("web-smoke: {PLANT}={other:?}; the planted faults are `focus` and `walk`")
+        }
     }
 }
 
@@ -352,7 +363,8 @@ fn live_web_smoke() {
     );
     let mut browser = Browser::start(&chrome, &rig.scratch);
     let mut tab = browser.tab();
-    tab.prepare(plant);
+    tab.prepare(plant.is_some());
+    tab.fault = plant;
     let link = listen.link();
     let mut failure = None;
     for (at, cell) in CELLS.into_iter().enumerate() {
@@ -360,7 +372,7 @@ fn live_web_smoke() {
         // whose session the page kept.
         let url = (at == 0).then_some(link.as_str());
         let mut result = run_cell(&mut tab, &rig, cell, url, at == SEND_CELL);
-        if plant && tab.planted == 0 {
+        if plant.is_some() && tab.planted == 0 {
             result = Err(Failed::new(
                 "plant",
                 "/assets/app.mjs was never intercepted",
@@ -390,7 +402,7 @@ fn live_web_smoke() {
     if let Some(words) = failure {
         panic!("{words}");
     }
-    println!("web-smoke PASS: 4 cells, one send");
+    println!("web-smoke PASS: 4 cells, sends in the one send cell");
 }
 
 fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool) -> Checked {
@@ -452,6 +464,7 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
         ok("sent", cell);
         web_walk_browser_spec::check_walk(tab, rig, cell)?;
         web_walk_browser_spec::check_edges(tab, rig, cell)?;
+        web_guard_browser::check_guards(tab, rig, cell)?;
     }
     tab.flush();
     if !tab.problems.is_empty() {
@@ -577,6 +590,7 @@ impl Browser {
             replies: BTreeMap::new(),
             problems: Vec::new(),
             planted: 0,
+            fault: None,
         }
     }
 
@@ -772,6 +786,8 @@ struct Tab {
     problems: Vec<String>,
     /// How many times the plant served its `app.mjs`.
     planted: usize,
+    /// The planted fault, when the run has one: `focus` or `walk`.
+    fault: Option<&'static str>,
 }
 
 impl Tab {
@@ -858,7 +874,8 @@ impl Tab {
     }
 
     /// The planted fault: `app.mjs` served with its topic row's focus guard
-    /// removed, every other byte and header as the listener sent them.
+    /// removed, or with the walk's Keep sending the Ask line, every other
+    /// byte and header as the listener sent them.
     fn plant(&mut self, params: &Value) {
         let id = params.get_str("requestId").unwrap_or_default().to_owned();
         let body = self.call(
@@ -872,12 +889,16 @@ impl Tab {
         } else {
             raw.to_owned()
         };
-        let sites = text.matches(ROW_GUARD).count();
+        let (guard, planted, what) = match self.fault {
+            Some("walk") => (WALK_GUARD, WALK_PLANTED, "walk Keep buttons"),
+            _ => (ROW_GUARD, ROW_PLANTED, "topic row focus guards"),
+        };
+        let sites = text.matches(guard).count();
         assert_eq!(
             sites, 1,
-            "web-smoke plant did not apply: {sites} topic row focus guards in app.mjs, want 1"
+            "web-smoke plant did not apply: {sites} {what} in app.mjs, want 1"
         );
-        let served = text.replacen(ROW_GUARD, ROW_PLANTED, 1);
+        let served = text.replacen(guard, planted, 1);
         let headers = match params.get("responseHeaders") {
             Some(Value::Arr(headers)) => headers
                 .iter()
@@ -906,10 +927,17 @@ impl Tab {
             ]),
         );
         self.planted += 1;
-        println!(
-            "web-smoke plant: /assets/app.mjs served without the topic row's mousedown \
-             preventDefault (1 site); focus-kept must fail"
-        );
+        if self.fault == Some("walk") {
+            println!(
+                "web-smoke plant: /assets/app.mjs served without the walk's own Keep line (Keep \
+                 sends the Ask line, 1 site); walk-keep must fail"
+            );
+        } else {
+            println!(
+                "web-smoke plant: /assets/app.mjs served without the topic row's mousedown \
+                 preventDefault (1 site); focus-kept must fail"
+            );
+        }
     }
 
     fn prepare(&mut self, plant: bool) {
@@ -1145,3 +1173,6 @@ fn base64_decode(text: &str) -> Vec<u8> {
 
 #[path = "web_walk_browser_spec.rs"]
 mod web_walk_browser_spec;
+
+#[path = "web_guard_browser.rs"]
+mod web_guard_browser;
