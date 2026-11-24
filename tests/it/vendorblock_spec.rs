@@ -622,7 +622,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
             SINCE,
         ),
     );
-    let cleared = ae_quota(&root, &["quota", "clear", "muse"]);
+    let cleared = ae_quota(&root, &["quota", "clear", "client-muse"]);
     let err = String::from_utf8_lossy(&cleared.stderr);
     let out = String::from_utf8_lossy(&cleared.stdout);
     assert_eq!(cleared.status.code(), Some(0), "{err}{out}");
@@ -632,7 +632,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
             .join("vendorblock/provider-github-copilot.rec")
             .exists()
     );
-    let again = ae_quota(&root, &["quota", "clear", "muse"]);
+    let again = ae_quota(&root, &["quota", "clear", "client-muse"]);
     let err = String::from_utf8_lossy(&again.stderr);
     let out = String::from_utf8_lossy(&again.stdout);
     assert_ne!(again.status.code(), Some(0), "{err}{out}");
