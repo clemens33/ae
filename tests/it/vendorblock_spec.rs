@@ -275,7 +275,23 @@ fn the_measured_sidebar_starts_four_columns_past_the_rule() {
     let gap = rest.chars().take_while(|ch| *ch == ' ').count();
     let column = phrase.chars().count() + gap;
     let length = rule.trim_end().chars().count();
-    assert_eq!(column, length + 4, "rule {length}, sidebar column {column}");
+    assert_eq!(length, 96, "the 140-column rule row");
+    assert_eq!(column, 100, "sidebar column is L + 4");
+    assert_eq!(column, length + 4);
+}
+
+/// A continuation with no composer rule row is not a measured sidebar.
+#[test]
+fn a_sidebar_continuation_with_no_rule_row_does_not_book() {
+    let bare = OPENCODE_140
+        .lines()
+        .filter(|line| !line.contains('╹'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(bare.contains(PHRASE), "the error row remains");
+    assert!(!bare.contains('╹'), "the rule row is gone");
+    assert_eq!(class(&bare, "opencode"), None);
+    assert_eq!(notice(&bare, "opencode"), None);
 }
 
 fn shift_sidebar(frame: &str, delta: isize) -> String {
