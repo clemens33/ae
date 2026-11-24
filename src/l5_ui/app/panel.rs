@@ -733,6 +733,7 @@ impl App {
         } else {
             return;
         };
+        self.layout.cover_targets(area);
         let view = self.desk_view().cloned();
         let live = self.live_view().cloned();
         let (look, zone) = self.dressed();
@@ -1197,6 +1198,7 @@ impl App {
         // link from the panel's text.
         if let Some(cells) = cells {
             self.layout.uncover(cells);
+            self.layout.cover_targets(cells);
         }
         self.layout.links.extend(links);
         self.layout.panel_border(buf, self.model.split(), columns);

@@ -36,6 +36,7 @@ use crate::time::Timestamp;
 use crate::tmux;
 mod boarddrag_spec;
 mod boardfull_spec;
+mod boardgrip_spec;
 mod boardhide_spec;
 mod boardhide_ui_spec;
 mod boardtabs_pins_spec;

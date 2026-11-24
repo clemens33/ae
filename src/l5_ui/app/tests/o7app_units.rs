@@ -155,7 +155,7 @@ fn assert_fills_to_the_margin(rows: &[(String, u16)], draft: &str, end: u16) {
 pub(super) fn border_of(buf: &Buffer) -> u16 {
     (0..buf.area.width)
         .rev()
-        .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
+        .find(|x| (2..buf.area.height - 5).all(|y| matches!(buf[(*x, y)].symbol(), "│" | "┃")))
         .expect("the side panel's border")
 }
 
@@ -1274,7 +1274,9 @@ fn a_side_panel_takes_half_the_cells_right_of_the_sidebar() {
     for width in [160_u16, 161] {
         let buf = at(width, 45, &mut app);
         let rules: Vec<u16> = (0..width)
-            .filter(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
+            .filter(|x| {
+                (2..buf.area.height - 5).all(|y| matches!(buf[(*x, y)].symbol(), "│" | "┃"))
+            })
             .collect();
         let [rule, border] = rules[..] else {
             panic!(

@@ -66,7 +66,10 @@ fn the_side_panels_border_wears_the_sidebar_rules_ink() {
             "{name}: the oracle wears a palette ink"
         );
         for y in 0..HEIGHT {
-            assert_eq!(buf[(border, y)].symbol(), "│", "{name}: row {y}");
+            assert!(
+                matches!(buf[(border, y)].symbol(), "│" | "┃"),
+                "{name}: row {y}"
+            );
             assert_eq!(
                 worn(&buf, border, y),
                 worn(&buf, rule, y),

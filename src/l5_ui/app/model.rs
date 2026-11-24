@@ -935,7 +935,12 @@ impl Model {
         let Some(drag) = self.drag else {
             return false;
         };
-        let kept = match drag.edge {
+        self.resize(drag.edge, size)
+    }
+
+    /// Set `edge`'s size, as a drag or a key asks it; whether it changed.
+    pub(crate) fn resize(&mut self, edge: Edge, size: u16) -> bool {
+        let kept = match edge {
             Edge::Sidebar => &mut self.split.sidebar,
             Edge::List => &mut self.split.list,
             Edge::Panel => &mut self.split.panel,

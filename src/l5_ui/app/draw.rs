@@ -399,6 +399,20 @@ impl Layout {
         }
     }
 
+    /// Drop the chat column's own targets, its turns, folds, composer and
+    /// newer-turns hint, from the cells of `area`, which a column drawn over the
+    /// main column paints whole: a press there is on none of them, and a border
+    /// the press lands beside is free to take it.
+    pub(super) fn cover_targets(&mut self, area: Rect) {
+        self.targets.retain(|(cells, hit)| {
+            !(cells.intersects(area)
+                && matches!(
+                    hit,
+                    Hit::Compose | Hit::Turn(_) | Hit::Fold(_) | Hit::Newest
+                ))
+        });
+    }
+
     /// The sessions whose cards the frame drew.
     pub(super) fn sessions(&self) -> impl Iterator<Item = &str> {
         self.targets.iter().filter_map(|(_, target)| match target {
@@ -1022,9 +1036,7 @@ pub(super) fn draw_board(
         let border_cells = Rect::new(area.x, area.y, 1, area.height);
         layout.border(buf, Edge::Desk, area.width, border_cells);
         let rule = paint.rule(dragged(model, Edge::Desk));
-        for y in area.y..area.bottom() {
-            put(buf, area.x, y, "│", 1, rule);
-        }
+        rule_line(buf, area.x, area.y..area.bottom(), rule);
     }
     let left = area.x.saturating_add(2);
     let room = area.width.saturating_sub(2);
@@ -1243,9 +1255,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     buf.set_style(panel, ctx.paint.ground(|p| p.ink));
     let left = if let Stand::Side { .. } = stand {
         let border = ctx.paint.rule(dragged(screen.model, Edge::Panel));
-        for y in 0..height {
-            put(buf, from, y, "│", 1, border);
-        }
+        rule_line(buf, from, 0..height, border);
         from + 1
     } else {
         from
@@ -1436,6 +1446,62 @@ fn drag_position(drag: Drag, mouse: Mouse) -> u16 {
 /// Whether `edge` is being dragged.
 fn dragged(model: &Model, edge: Edge) -> bool {
     model.drag().is_some_and(|drag| drag.edge == edge)
+}
+
+/// How many cells one `<` or `>` moves the right-hand column's border.
+pub(crate) const KEY_STEP: u16 = 4;
+
+/// The rows of a column's rule that draw the grip: the middle ones.
+const GRIP_ROWS: u16 = 5;
+
+/// A column's left rule over `rows` of column `x`, in the rule's `style`: the
+/// thin line, and on the middle [`GRIP_ROWS`] rows a heavy one, the handle the
+/// eye finds. The glyph differs, never the colour, so a frame with no theme
+/// shows the grip too.
+fn rule_line(buf: &mut Buffer, x: u16, rows: Range<u16>, style: Style) {
+    let middle = rows.start + (rows.end.saturating_sub(rows.start)) / 2;
+    let grip = middle.saturating_sub(GRIP_ROWS / 2)..middle.saturating_add(GRIP_ROWS / 2 + 1);
+    for y in rows {
+        let glyph = if grip.contains(&y) { "┃" } else { "│" };
+        put(buf, x, y, glyph, 1, style);
+    }
+}
+
+/// What one press of `>` (`grow`) or `<` makes of the right-hand column in
+/// `area` split as `split` and stood as `columns`: the board where it stands
+/// beside the panel, else the side panel. Its edge and the width a step of
+/// [`KEY_STEP`] cells asks, clamped as the drag of that edge clamps it; `None`
+/// with no such column, or when the clamp leaves its width as it is.
+pub(crate) fn stepped(
+    area: Rect,
+    split: Split,
+    columns: Columns,
+    grow: bool,
+) -> Option<(Edge, u16)> {
+    if !floor_met(area) {
+        return None;
+    }
+    let step = |now: u16| {
+        if grow {
+            now.saturating_add(KEY_STEP)
+        } else {
+            now.saturating_sub(KEY_STEP)
+        }
+    };
+    let (edge, now, size) = if let Some(slot) = desk_slot(area, split, columns) {
+        let full = columns.panel.is_some_and(|(full, _)| full);
+        let size = clamp_desk_drag(area, split, full, step(slot.width));
+        (Edge::Desk, slot.width, size)
+    } else if let Stand::Side { border, end } = stand(area, split, columns) {
+        let asked = Split {
+            panel: Some(step(end - border)),
+            ..split
+        };
+        (Edge::Panel, end - border, side_width(area, end, asked)?)
+    } else {
+        return None;
+    };
+    (size != now).then_some((edge, size))
 }
 
 // ---------------------------------------------------------------------------
@@ -3248,7 +3314,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 23] = [
+const BROWSE_KEYS: [(&str, &str); 24] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -3265,6 +3331,7 @@ const BROWSE_KEYS: [(&str, &str); 23] = [
     ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),
     ("b", "hide / show the orchestrator board"),
+    ("< >", "narrow / widen the board or side panel, 4 cells"),
     ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
     (
         "1-5 Tab",
@@ -4433,7 +4500,7 @@ const HELD_KEYS: [(&str, &str); 4] = [
 const MOUSE_KEYS: [(&str, &str); 4] = [
     ("click", "select a session, tab, seat or turn"),
     ("wheel", "scroll 3 rows (the list: 1 session)"),
-    ("drag", "a border resizes the sidebar / list"),
+    ("drag", "a border resizes a column or the list"),
     (
         "drag text",
         "select drawn text, copy on release; Esc clears",

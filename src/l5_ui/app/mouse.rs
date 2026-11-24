@@ -409,6 +409,16 @@ impl App {
         self.model.drag_to(size)
     }
 
+    /// `>` or `<` (`grow`): the right-hand column a step wider or narrower, as
+    /// a drag of its border would size it. The step is the human's change to
+    /// the view, taken from the sizes as they stand, not from the last frame's
+    /// cells, so keys read together step once each. Whether the size changed.
+    pub(super) fn step_column(&mut self, grow: bool) -> bool {
+        let columns = self.stand_columns();
+        draw::stepped(self.layout.area(), self.model.split(), columns, grow)
+            .is_some_and(|(edge, size)| self.model.resize(edge, size))
+    }
+
     /// The panel and board borders take presses before the panel does. Their
     /// motion and release stay here wherever the pointer goes, without moving
     /// the keys. A drag of the sidebar or list is the panel's once the pointer

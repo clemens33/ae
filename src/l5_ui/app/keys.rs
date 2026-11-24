@@ -397,6 +397,10 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
             let hide = !app.model.desk_hidden();
             return Some(app.hide_desk(hide) || disarmed);
         }
+        // The size keys are the frame's, whoever holds the keys, the board too.
+        if matches!(byte, b'<' | b'>') {
+            return Some(app.step_column(byte == b'>') || disarmed);
+        }
         if app.desk_focused() && !matches!(byte, b'O' | b'F' | b'X' | b'q' | b',' | b'?') {
             // `1`-`5` pick a tab by its place on the bar; every other byte is
             // the focused board's to ignore.

@@ -162,17 +162,23 @@ record, and a session with none recorded (or none in the listing) draws none.
 A session replaced between two reads of its record can therefore show the
 previous incarnation's dir for at most one refresh (5 seconds).
 
-Every border can be dragged with the mouse. The rule between the sidebar and
+Every border can be dragged with the mouse. A press on a rule, or on the plain
+cell on either side of it, takes it: a tab label, a link or any other click
+target beside a rule keeps its click. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
 least 40. The rule under the `Agents` heading moves the split between the session
 list and the body: the list keeps one session and its more row, the body three rows (or
 as few as it had undragged). The left border of the side-by-side
 [orchestrator panel](#orchestrator-panel) or [board](#orchestrator-board) sets
 its width. The two chat columns each keep at least 40 cells and the board keeps
-at least 24. A rule takes the title colour while you drag it, or reverses with
-`theme = off`. Letting go ends the drag. [Zoom](#zoom) hides the sidebar and
-its rules. A smaller pane limits the sizes temporarily. The dragged sizes are
-part of the saved view: a fresh `ae app` draws them again
+at least 24. The rules of the panel and the board carry a heavier grip on their
+middle rows, in the rule's own colour. `<` and `>` size the right-hand column
+without the mouse: each press narrows or widens the board, or the side panel when
+no board stands beside it, by 4 cells, within the limits of a drag; the keys are
+text while you write. A rule takes the title colour while you drag it, or
+reverses with `theme = off`. Letting go ends the drag. [Zoom](#zoom) hides the
+sidebar and its rules. A smaller pane limits the sizes temporarily. The dragged
+and stepped sizes are part of the saved view: a fresh `ae app` draws them again
 ([What survives a quit](#what-survives-a-quit)).
 
 Below 90x20 the sidebar goes and the chat takes the pane; below 40x8 the app
@@ -263,6 +269,7 @@ Browsing:
 | Wheel over chat, the board or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar, session list, orchestrator panel or board, also while writing |
+| `<` / `>` | narrow / widen the right-hand column by 4 cells: the board, or the side panel when no board stands beside it, within the limits of a drag; also while the board or the panel holds the keys, text while writing; saved with the view ([What survives a quit](#what-survives-a-quit)) |
 | Click composer | write the selected session, when no other app writes it |
 | `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |

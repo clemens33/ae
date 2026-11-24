@@ -727,7 +727,7 @@ fn p3_panel_scroll_is_independent_of_the_main_column_and_survives_selection_chan
         .rev()
         .find(|x| {
             (2..initial.area.height.saturating_sub(5))
-                .all(|y| matches!(initial[(*x, y)].symbol(), "│" | "|"))
+                .all(|y| matches!(initial[(*x, y)].symbol(), "│" | "┃" | "|"))
         })
         .expect("a visible border separates the two native columns");
     assert!(main_x < split && split < panel_body_x);
