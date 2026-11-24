@@ -957,7 +957,8 @@ mod web_verdict_spec;
 
 #[allow(
     clippy::expect_used,
-    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+    clippy::items_after_statements,
+    reason = "the frozen spec uses expect and a late use in its fixtures and its bytes stay as nav froze them"
 )]
 #[path = "web_decide_spec.rs"]
 mod web_decide_spec;

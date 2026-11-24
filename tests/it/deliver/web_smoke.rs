@@ -394,6 +394,32 @@ fn live_web_smoke() {
             break;
         }
     }
+    // The S3a compose cases follow the four cells on the same tab, in the wide
+    // dark viewport they end in, and only when every earlier check passed, so a
+    // plant that fails an earlier check never reaches them.
+    if failure.is_none() {
+        let compose = Cell {
+            width: 1440,
+            height: 900,
+            dark: true,
+        };
+        let result = web_compose_browser_spec::check_s3a(&mut tab);
+        // Only a failure is pictured here: a pass keeps the receipt shot of the
+        // 1440x900 dark cell, taken before the compose cases changed the page.
+        if result.is_err()
+            && let Err(why) = tab.shot(out.as_deref(), compose, true)
+        {
+            eprintln!("web-smoke shot: {why}");
+        }
+        if let Err(failed) = result {
+            failure = Some(format!(
+                "web-smoke FAILED at {} ({}): {}",
+                failed.check,
+                compose.name(),
+                failed.detail
+            ));
+        }
+    }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
     tab.close();
@@ -1179,7 +1205,10 @@ mod web_guard_browser;
 
 #[allow(
     clippy::expect_used,
-    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+    clippy::items_after_statements,
+    clippy::manual_string_new,
+    clippy::too_many_lines,
+    reason = "the frozen spec's case tables and one long check keep the bytes nav froze"
 )]
 #[path = "web_compose_browser_spec.rs"]
 mod web_compose_browser_spec;
