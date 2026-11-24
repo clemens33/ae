@@ -3322,6 +3322,8 @@ mod sleepgap_refresh_spec;
 #[cfg(test)]
 mod sleepgap_spec;
 #[cfg(test)]
+mod vendorblock_roster_spec;
+#[cfg(test)]
 mod waithold_cycle_spec;
 
 #[cfg(test)]

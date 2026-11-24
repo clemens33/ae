@@ -2030,6 +2030,14 @@ impl ToolKind {
         matches!(self, Self::Agy)
     }
 
+    /// Whether one client of this tool serves several upstream providers, each
+    /// named by the `provider/` part of its `--model` id. A vendor block of such
+    /// a tool is the provider's, so the others stay usable.
+    #[must_use]
+    pub const fn serves_model_providers(self) -> bool {
+        matches!(self, Self::OpenCode)
+    }
+
     /// Canonical diagnostic and metadata spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

@@ -92,10 +92,10 @@ fn a_launch_override_on_a_blocked_client_refuses_with_the_clear_command() {
     block(&root, "muse", "muse", None);
     let line = refused(resolve(&root, "lead", "emberm"));
     assert!(
-        line.starts_with("Error: scope muse blocked (account:"),
+        line.starts_with("Error: scope client-muse blocked (account:"),
         "{line}"
     );
-    assert!(line.contains("ae quota clear muse"), "{line}");
+    assert!(line.contains("ae quota clear client-muse"), "{line}");
     // `--colead` and `--seat` ride the same path, and a free client spawns.
     assert!(resolve(&root, "colead", "emberm").is_err());
     assert!(resolve(&root, "lead", "ds41flashgom").is_ok());
@@ -108,10 +108,13 @@ fn a_provider_block_refuses_a_launch_override_of_that_provider_only() {
     block(&root, "opencode", "opencode", Some("github-copilot"));
     let line = refused(resolve(&root, "lead", "cpsol61h"));
     assert!(
-        line.starts_with("Error: scope github-copilot blocked (account:"),
+        line.starts_with("Error: scope provider-github-copilot blocked (account:"),
         "{line}"
     );
-    assert!(line.contains("ae quota clear github-copilot"), "{line}");
+    assert!(
+        line.contains("ae quota clear provider-github-copilot"),
+        "{line}"
+    );
     assert!(
         resolve(&root, "lead", "ds41flashgom").is_ok(),
         "another provider launches"

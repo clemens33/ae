@@ -1566,7 +1566,7 @@ records are named; incomplete totals are labelled partial. Missing usage never b
 No flags or positional arguments combine with `--profiles`; the session helper keeps its
 existing table-only syntax.
 
-### Vendor blocks: `ae quota clear <scope>`
+### Vendor blocks: `ae quota clear <stem>`
 
 A vendor refusal that no reset frees blocks the scope that saw it, fleet-wide. Two lines are
 measured: Muse's `model failed: API error 402 … Billing verification failed` (kind `billing`) and
@@ -1582,24 +1582,27 @@ The scope is the `[clients]` label, except for an `opencode` client. One `openco
 serves several upstream providers (Copilot, OpenCode Go, the free Zen models), so a profile whose
 `--model` or `-m` id is `provider/model` is in the scope of that provider: a Copilot block
 (`github-copilot/gpt-6.1-sol`) refuses only the `github-copilot` profiles and the other providers of
-the same client still spawn. A model id with no `/` falls back to the client's own scope. A provider
-that spells the client's label (the `opencode/` Zen models on an `opencode` client) is the client's
-scope. The first sighting of a scope writes one record, `<state root>/vendorblock/<scope>.rec`,
-naming the client, the harness, the time, the seat and the vendor's own words; a provider scope adds
-a `provider` row. The seat shows `needs you (billing)` or `needs you (account)` in `ae list`, rides
-the usage limit latch (attention `limit`, journal action `limit` with the kind in its summary) and
-an auto reseat treats it like a usage limit.
+the same client still spawn. A model id with no `/` is the client's own scope. The first sighting of
+a scope writes one record: `<state root>/vendorblock/client-<label>.rec` for a client and
+`provider-<provider>.rec` for a provider, so the `opencode/` Zen provider never meets a client
+labelled `opencode`: `client-opencode` refuses the slash-free models and not Zen, `provider-opencode`
+refuses Zen and not the slash-free models. The record names the client, the harness, the time, the
+seat and the vendor's own words; a provider record adds a `provider` row. The seat shows `needs you
+(billing)` or `needs you (account)` in `ae list`, rides the usage limit latch (attention `limit`,
+journal action `limit` with the kind in its summary) and an auto reseat treats it like a usage
+limit.
 
 `ae quota` prints a `blocked scopes` section under the table, one line per blocked scope:
 `blocked (billing since 2026-09-08T09:10:00Z)`, the reason, the seat that saw it and
-`ae quota clear <scope>`. `spawn --using` and `--lead`, `--colead` and `--seat` on a blocked scope
+`ae quota clear <stem>`. `spawn --using` and `--lead`, `--colead` and `--seat` on a blocked scope
 (including a `profile@client` selection, which keeps the profile's own provider) refuse before any
 seat or tmux effect and name the same command.
 
-Only `ae quota clear <scope>` ends a block: no later quiet pane, completed turn or auto reseat
-does, because nothing measured proves the account works again. It removes that scope's record
+Only `ae quota clear <stem>` ends a block (`client-muse`, `provider-github-copilot`: the record's
+file name without `.rec`). No later quiet pane, completed turn or auto reseat does, because nothing
+measured proves the account works again. It removes that scope's record
 (whatever it holds, so a damaged file never strands the human) and says `no block recorded for
-<scope>` or `unknown scope <scope>` otherwise, both with a non-zero exit. A record is hostile
+<stem>` or `unknown scope <word>` otherwise, both with a non-zero exit. A record is hostile
 persisted state: a record that does not parse, sits at another scope's file, names another client,
 harness or provider than its scope or stamps a future time blocks nothing.
 

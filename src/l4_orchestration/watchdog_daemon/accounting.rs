@@ -529,7 +529,8 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
     if next.limit_since.is_none() {
         next.limit_since = Some(seen.now_epoch);
         let cell = seen.limit_notice.as_deref();
-        if let Some((kind, tool)) = cell.and_then(crate::watchdog::blocked::classify) {
+        if let Some((kind, binary)) = cell.and_then(crate::watchdog::blocked::classify) {
+            let tool = crate::tool::ToolKind::from_binary_name(binary);
             book_block(effects, kind, tool, cell.unwrap_or_default());
         } else {
             let quoted = cell.map(|cell| format!(": {cell}")).unwrap_or_default();
@@ -561,8 +562,8 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
 
 /// The records of a seat's first sight of an ACCOUNT BLOCK: the same `limit`
 /// word every reader already folds, a head that names the kind, the notice, and
-/// the one scope block the loop writes. No reset is read for it, so no wake is
-/// ever booked.
+/// the one scope block the loop writes (and announces with the clear command
+/// it needs). No reset is read for it, so no wake is ever booked.
 fn book_block(
     effects: &mut Vec<Effect>,
     kind: crate::vendorblock::Kind,
@@ -574,10 +575,6 @@ fn book_block(
         action: "limit",
         summary: format!("{} — {reason}", crate::events::limit_head(kind)),
     });
-    effects.push(Effect::Notify(format!(
-        "hit a vendor {} block: {reason} — its client is refused for every spawn until `ae quota clear`",
-        kind.word()
-    )));
     effects.push(Effect::BlockScope {
         kind,
         tool,

@@ -14,7 +14,13 @@
 //! models): a profile whose `--model` / `-m` id is `provider/model` is in the
 //! scope of that provider, so a Copilot block leaves the other providers of the
 //! same client usable. A model id with no `/` has no provider to tell apart and
-//! falls back to the client's own scope. The record's file is `<scope>.rec`.
+//! falls back to the client's own scope.
+//!
+//! The two kinds of scope never share a file: a client's record is
+//! `client-<label>.rec` and a provider's is `provider-<provider>.rec`, so the
+//! `opencode/` Zen provider cannot collide with a client labelled `opencode`.
+//! The stem (`client-muse`, `provider-github-copilot`) is also the word
+//! `ae quota clear` takes.
 //!
 //! Only `ae quota clear <scope>` removes a record. No pane fact, no completed
 //! turn and no auto reseat clears it: nothing measured proves the account works
@@ -22,7 +28,7 @@
 
 use crate::time::Timestamp;
 
-/// The directory under the state root that holds one `<client>.rec` per block.
+/// The directory under the state root that holds one record file per scope.
 pub const DIR: &str = "vendorblock";
 
 /// The most bytes a record may be; a larger file is damage.
@@ -128,11 +134,21 @@ pub fn profile_provider(cfg: &crate::config::IdentityConfig, profile: &str) -> O
 }
 
 /// The file name a scope's record has, or `None` for a word that could not name
-/// one file in [`DIR`]. A scope is a `[clients]` label or an upstream provider;
-/// the provider grammar is the wider of the two.
+/// one file in [`DIR`]: `client-<label>.rec` for a `[clients]` label, and
+/// `provider-<provider>.rec` for an upstream provider.
 #[must_use]
-pub fn file_name(scope: &str) -> Option<String> {
-    is_provider(scope).then(|| format!("{scope}.rec"))
+pub fn file_name(provider: bool, word: &str) -> Option<String> {
+    if provider {
+        is_provider(word).then(|| format!("provider-{word}.rec"))
+    } else {
+        crate::config::is_client_label(word).then(|| format!("client-{word}.rec"))
+    }
+}
+
+/// The stem of a scope's file, and the word `ae quota clear` takes for it.
+#[must_use]
+pub fn stem(provider: bool, word: &str) -> String {
+    format!("{}-{word}", if provider { "provider" } else { "client" })
 }
 
 /// One clean line of `text` for a record: control characters become blanks,
@@ -275,17 +291,30 @@ impl Record {
         self.since <= now
     }
 
-    /// The scope the record blocks, and its file stem: the provider when the
-    /// block is an upstream provider's, else the client label.
+    /// The word of the scope the record blocks: the provider when the block is
+    /// an upstream provider's, else the client label.
     #[must_use]
     pub fn scope(&self) -> &str {
         self.provider.as_deref().unwrap_or(&self.client)
     }
 
+    /// The file this record belongs in, or `None` when its scope word names none.
+    #[must_use]
+    pub fn file_name(&self) -> Option<String> {
+        file_name(self.provider.is_some(), self.scope())
+    }
+
+    /// The stem of this record's file and the word `ae quota clear` takes:
+    /// `client-<label>` or `provider-<provider>`.
+    #[must_use]
+    pub fn stem(&self) -> String {
+        stem(self.provider.is_some(), self.scope())
+    }
+
     /// The command that clears this scope, as every surface spells it.
     #[must_use]
     pub fn clear_command(&self) -> String {
-        format!("ae quota clear {}", self.scope())
+        format!("ae quota clear {}", self.stem())
     }
 
     /// `blocked (billing since 2026-09-08T09:10:00Z)` — the quota cell.
@@ -311,7 +340,7 @@ impl Record {
     pub fn quota_line(&self) -> String {
         format!(
             "  {} {} — {} ({}) — `{}` once the vendor has fixed it",
-            self.scope(),
+            self.stem(),
             self.cell(),
             self.reason,
             self.witness(),
@@ -324,7 +353,7 @@ impl Record {
     pub fn refusal(&self) -> String {
         format!(
             "scope {} blocked ({}: {}) since {} ({}); run `{}` once the vendor has fixed it",
-            self.scope(),
+            self.stem(),
             self.kind.word(),
             self.reason,
             Timestamp::from_epoch(self.since),
@@ -338,9 +367,6 @@ impl Record {
 /// for an `OpenCode` profile whose model id is `provider/model`, that provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
-    /// The file stem and the word `ae quota clear` takes: the provider, else
-    /// the client label.
-    pub key: String,
     /// The `[clients]` label.
     pub client: String,
     /// The harness binary the client runs.
@@ -352,19 +378,26 @@ pub struct Scope {
 impl Scope {
     /// The scope of a seat on `client` running `tool`, whose profile's model id
     /// names `provider`. Only `OpenCode` serves several providers through one
-    /// client, so any other tool is always its client's scope. A provider that
-    /// spells the client's own label (the `opencode/` Zen models on an `opencode`
-    /// client) has the one file of that label, so it is the client's scope.
+    /// client, so any other tool is always its client's scope.
     #[must_use]
     pub fn new(client: &str, tool: crate::tool::ToolKind, provider: Option<String>) -> Self {
-        let provider =
-            provider.filter(|word| tool == crate::tool::ToolKind::OpenCode && word != client);
         Self {
-            key: provider.clone().unwrap_or_else(|| client.to_owned()),
             client: client.to_owned(),
             tool: tool.as_str().to_owned(),
-            provider,
+            provider: provider.filter(|_| tool.serves_model_providers()),
         }
+    }
+
+    /// The word of this scope: its provider, else its client label.
+    #[must_use]
+    pub fn word(&self) -> &str {
+        self.provider.as_deref().unwrap_or(&self.client)
+    }
+
+    /// The stem of this scope's file: `client-<label>` or `provider-<provider>`.
+    #[must_use]
+    pub fn stem(&self) -> String {
+        stem(self.provider.is_some(), self.word())
     }
 
     /// The scope a launch of `profile` is in: on the client the `profile@client`
@@ -417,11 +450,12 @@ pub enum Standing {
     Damaged(String),
 }
 
-/// The record file of `scope` (a file stem) under `state_root`, read through the
+/// The record file of a scope under `state_root` (`provider` selects the
+/// namespace, `word` is the provider or the client label), read through the
 /// capped store door: never followed through a link, never read past [`CAP`].
 #[must_use]
-pub fn standing(state_root: &std::path::Path, scope: &str) -> Standing {
-    let Some(name) = file_name(scope) else {
+pub fn standing(state_root: &std::path::Path, provider: bool, word: &str) -> Standing {
+    let Some(name) = file_name(provider, word) else {
         return Standing::Absent;
     };
     match crate::store::read_capped_in(&state_root.join(DIR), &name, CAP) {
@@ -437,16 +471,15 @@ pub fn standing(state_root: &std::path::Path, scope: &str) -> Standing {
     }
 }
 
-/// The block that stands in `scope` at `now`: a record that parsed, sits at its
-/// own scope's file, names this client, tool and provider, and was not stamped in
-/// the future. Anything else (a misfiled, mismatched or future record) is no
-/// block.
+/// The block that stands in `scope` at `now`: a record that parsed, sits in its
+/// own namespace's file, names this client, tool and provider, and was not
+/// stamped in the future. Anything else (a misfiled, mismatched or future
+/// record) is no block.
 #[must_use]
 pub fn block(state_root: &std::path::Path, scope: &Scope, now: i64) -> Option<Record> {
-    match standing(state_root, &scope.key) {
+    match standing(state_root, scope.provider.is_some(), scope.word()) {
         Standing::Held(record)
-            if record.scope() == scope.key
-                && record.client == scope.client
+            if record.client == scope.client
                 && record.tool == scope.tool
                 && record.provider == scope.provider
                 && record.stands_at(now) =>
@@ -466,14 +499,14 @@ pub fn block(state_root: &std::path::Path, scope: &Scope, now: i64) -> Option<Re
 /// A scope that names no file, a state root whose `vendorblock` is not a real
 /// directory, or the publish itself.
 pub fn record_first(state_root: &std::path::Path, record: &Record) -> std::io::Result<bool> {
-    let Some(name) = file_name(record.scope()) else {
+    let Some(name) = record.file_name() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "a scope names no record file",
         ));
     };
-    if let Standing::Held(held) = standing(state_root, record.scope())
-        && held.scope() == record.scope()
+    if let Standing::Held(held) = standing(state_root, record.provider.is_some(), record.scope())
+        && held.provider == record.provider
         && held.stands_at(record.since)
     {
         return Ok(false);
@@ -527,6 +560,38 @@ pub fn scope_refusal_in(
     block(state_root, &scope, now).map(|record| record.refusal())
 }
 
+/// What a human typed after `ae quota clear`: a record stem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+    /// `client-<label>`: the record of a `[clients]` label.
+    Client(&'a str),
+    /// `provider-<name>`: the record of an upstream provider.
+    Provider(&'a str),
+}
+
+impl<'a> Target<'a> {
+    /// The target `text` names, or `None` for a word that is no record stem.
+    #[must_use]
+    pub fn parse(text: &'a str) -> Option<Self> {
+        if let Some(label) = text.strip_prefix("client-") {
+            crate::config::is_client_label(label).then_some(Self::Client(label))
+        } else if let Some(name) = text.strip_prefix("provider-") {
+            is_provider(name).then_some(Self::Provider(name))
+        } else {
+            None
+        }
+    }
+
+    /// Whether `scope` is what this target names.
+    #[must_use]
+    pub fn names(&self, scope: &Scope) -> bool {
+        match *self {
+            Self::Client(label) => scope.provider.is_none() && scope.client == label,
+            Self::Provider(name) => scope.provider.as_deref() == Some(name),
+        }
+    }
+}
+
 /// What clearing one scope's record did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cleared {
@@ -538,13 +603,10 @@ pub enum Cleared {
     Refused(String),
 }
 
-/// Remove `scope`'s record, whatever it holds: a damaged file must never
-/// strand a human who types the command the refusal named.
+/// Remove the record `target` names, whatever it holds: a damaged file must
+/// never strand a human who types the command the refusal named.
 #[must_use]
-pub fn clear(state_root: &std::path::Path, scope: &str) -> Cleared {
-    let Some(name) = file_name(scope) else {
-        return Cleared::Absent;
-    };
+pub fn clear(state_root: &std::path::Path, target: Target<'_>) -> Cleared {
     let dir = state_root.join(DIR);
     if let Err(why) = crate::store::prove_real_directory(&dir) {
         return match crate::store::source_presence(&dir) {
@@ -552,6 +614,13 @@ pub fn clear(state_root: &std::path::Path, scope: &str) -> Cleared {
             _ => Cleared::Refused(why.to_string()),
         };
     }
+    let (provider, word) = match target {
+        Target::Client(label) => (false, label),
+        Target::Provider(name) => (true, name),
+    };
+    let Some(name) = file_name(provider, word) else {
+        return Cleared::Absent;
+    };
     let path = dir.join(name);
     match crate::store::source_presence(&path) {
         crate::store::SourcePresence::Absent => Cleared::Absent,
@@ -568,8 +637,9 @@ pub fn clear(state_root: &std::path::Path, scope: &str) -> Cleared {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAP, Cleared, Kind, REASON_MAX, Record, Scope, Standing, block, clean, clear, file_name,
-        parse, provider_of, record_first, render, scope_refusal_in, standing,
+        CAP, Cleared, Kind, REASON_MAX, Record, SEAT_MAX, Scope, Standing, TOOL_MAX, Target, block,
+        clean, clear, file_name, parse, provider_of, record_first, render, scope_refusal_in,
+        standing,
     };
 
     fn sample() -> Record {
@@ -655,6 +725,62 @@ mod tests {
     }
 
     #[test]
+    fn the_record_cap_and_every_width_are_inclusive_edges() {
+        let cap = usize::try_from(CAP).unwrap_or(0);
+        assert_eq!(parse(&vec![b'a'; cap]), Err("a row without `=`"));
+        assert_eq!(parse(&vec![b'a'; cap + 1]), Err("over the record cap"));
+
+        let good = render(&sample());
+        let widest_tool = "a".repeat(TOOL_MAX);
+        let parsed = parse(
+            good.replace("tool=muse", &format!("tool={widest_tool}"))
+                .as_bytes(),
+        );
+        assert_eq!(parsed.map(|record| record.tool), Ok(widest_tool));
+        let too_wide_tool = "a".repeat(TOOL_MAX + 1);
+        assert_eq!(
+            parse(
+                good.replace("tool=muse", &format!("tool={too_wide_tool}"))
+                    .as_bytes()
+            ),
+            Err("a bad tool")
+        );
+
+        let widest_since = good.replace("since=1788858600", "since=999999999999");
+        assert_eq!(
+            parse(widest_since.as_bytes()).map(|record| record.since),
+            Ok(999_999_999_999)
+        );
+        let too_wide_since = good.replace("since=1788858600", "since=1000000000000");
+        assert_eq!(parse(too_wide_since.as_bytes()), Err("a bad since"));
+
+        let widest_seat = "s".repeat(SEAT_MAX);
+        let parsed = parse(
+            good.replace("seat=testpins-rev", &format!("seat={widest_seat}"))
+                .as_bytes(),
+        );
+        assert_eq!(parsed.map(|record| record.seat), Ok(widest_seat));
+        let too_wide_seat = "s".repeat(SEAT_MAX + 1);
+        assert_eq!(
+            parse(
+                good.replace("seat=testpins-rev", &format!("seat={too_wide_seat}"))
+                    .as_bytes()
+            ),
+            Err("a bad seat")
+        );
+
+        let said = "Billing verification failed. Billing Issue";
+        let widest_reason = "r".repeat(REASON_MAX);
+        let parsed = parse(good.replace(said, &widest_reason).as_bytes());
+        assert_eq!(parsed.map(|record| record.reason), Ok(widest_reason));
+        let too_wide_reason = "r".repeat(REASON_MAX + 1);
+        assert_eq!(
+            parse(good.replace(said, &too_wide_reason).as_bytes()),
+            Err("a bad reason")
+        );
+    }
+
+    #[test]
     fn a_reason_is_one_clean_bounded_line() {
         assert_eq!(clean("  a\u{1b}[0m \tb\nc  "), "a [0m b c");
         assert_eq!(clean("\u{7}\u{7}"), "");
@@ -668,12 +794,23 @@ mod tests {
     }
 
     #[test]
-    fn only_a_label_names_a_file() {
-        assert_eq!(file_name("muse").as_deref(), Some("muse.rec"));
-        assert_eq!(file_name("cc-mic").as_deref(), Some("cc-mic.rec"));
+    fn the_two_namespaces_never_share_a_file() {
+        assert_eq!(file_name(false, "muse").as_deref(), Some("client-muse.rec"));
+        assert_eq!(
+            file_name(true, "opencode").as_deref(),
+            Some("provider-opencode.rec")
+        );
+        assert_eq!(
+            file_name(false, "opencode").as_deref(),
+            Some("client-opencode.rec")
+        );
         for bad in ["", "../x", "a/b", ".hidden", "a b", "-lead"] {
-            assert_eq!(file_name(bad), None, "{bad:?}");
+            assert_eq!(file_name(false, bad), None, "{bad:?}");
+            assert_eq!(file_name(true, bad), None, "{bad:?}");
         }
+        assert_eq!(file_name(false, &"c".repeat(33)), None, "label cap");
+        assert!(file_name(true, "a.b_c-d").is_some(), "provider grammar");
+        assert_eq!(file_name(false, "a.b"), None, "a label has no dot");
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -689,6 +826,10 @@ mod tests {
         root
     }
 
+    fn muse_scope() -> Scope {
+        Scope::new("muse", crate::tool::ToolKind::Muse, None)
+    }
+
     #[test]
     fn the_first_sighting_wins_and_damage_is_replaced() {
         let root = scratch("first");
@@ -698,16 +839,18 @@ mod tests {
         later.since += 60;
         later.seat = "other".to_owned();
         assert_eq!(record_first(&root, &later).ok(), Some(false), "kept");
-        assert_eq!(standing(&root, "muse"), Standing::Held(first.clone()));
-        std::fs::write(root.join("vendorblock/muse.rec"), "damage").expect("damage");
-        assert!(matches!(standing(&root, "muse"), Standing::Damaged(_)));
+        assert_eq!(
+            standing(&root, false, "muse"),
+            Standing::Held(first.clone())
+        );
+        std::fs::write(root.join("vendorblock/client-muse.rec"), "damage").expect("damage");
+        assert!(matches!(
+            standing(&root, false, "muse"),
+            Standing::Damaged(_)
+        ));
         assert_eq!(record_first(&root, &later).ok(), Some(true), "replaced");
-        assert_eq!(standing(&root, "muse"), Standing::Held(later));
+        assert_eq!(standing(&root, false, "muse"), Standing::Held(later));
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    fn muse_scope() -> Scope {
-        Scope::new("muse", crate::tool::ToolKind::Muse, None)
     }
 
     #[test]
@@ -728,10 +871,11 @@ mod tests {
             ..muse_scope()
         };
         assert_eq!(block(&root, &other_client, at), None, "client");
-        // A record filed under another scope's name is no block of that scope.
-        std::fs::write(root.join("vendorblock/free.rec"), render(&record)).expect("misfiled");
+        // A record filed in another scope's file is no block of that scope.
+        std::fs::write(root.join("vendorblock/client-free.rec"), render(&record))
+            .expect("misfiled");
         let free = Scope {
-            key: "free".to_owned(),
+            client: "free".to_owned(),
             ..muse_scope()
         };
         assert_eq!(block(&root, &free, at), None, "misfiled");
@@ -739,58 +883,131 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_block_is_not_the_client_block_and_the_other_way_round() {
+    fn the_client_scope_and_the_provider_scope_of_one_word_are_two_blocks() {
         let root = scratch("kinds");
-        let record = copilot();
-        assert_eq!(record_first(&root, &record).ok(), Some(true));
-        assert!(matches!(
-            standing(&root, "github-copilot"),
-            Standing::Held(_)
-        ));
-        let at = record.since;
         let tool = crate::tool::ToolKind::OpenCode;
-        let provider = |word: &str| Scope::new("opencode", tool, Some(word.to_owned()));
-        assert_eq!(block(&root, &provider("github-copilot"), at), Some(record));
-        assert_eq!(block(&root, &provider("opencode-go"), at), None);
-        assert_eq!(
-            block(&root, &Scope::new("opencode", tool, None), at),
-            None,
-            "a Copilot record is not the client's"
-        );
+        let zen = Record {
+            provider: Some("opencode".to_owned()),
+            seat: "zen-seat".to_owned(),
+            ..copilot()
+        };
         let client = Record {
             provider: None,
             seat: "bare-seat".to_owned(),
             ..copilot()
         };
-        assert_eq!(record_first(&root, &client).ok(), Some(true));
-        assert!(matches!(standing(&root, "opencode"), Standing::Held(_)));
+        let at = zen.since;
+        let zen_scope = Scope::new("opencode", tool, Some("opencode".to_owned()));
+        let client_scope = Scope::new("opencode", tool, None);
+        assert_eq!(record_first(&root, &zen).ok(), Some(true));
+        assert_eq!(block(&root, &zen_scope, at), Some(zen.clone()));
         assert_eq!(
-            block(&root, &Scope::new("opencode", tool, None), at),
-            Some(client),
-            "the client record blocks a model with no provider"
-        );
-        assert_eq!(
-            block(&root, &provider("opencode-go"), at),
+            block(&root, &client_scope, at),
             None,
-            "the client record does not block another provider"
+            "zen is not the client"
         );
+        assert_eq!(
+            record_first(&root, &client).ok(),
+            Some(true),
+            "its own file"
+        );
+        assert_eq!(block(&root, &client_scope, at), Some(client));
+        assert_eq!(block(&root, &zen_scope, at), Some(zen), "still held");
+        let copilot_scope = Scope::new("opencode", tool, Some("github-copilot".to_owned()));
+        assert_eq!(block(&root, &copilot_scope, at), None, "another provider");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_record_in_the_wrong_namespace_is_no_block() {
+        let root = scratch("misfiled");
+        let tool = crate::tool::ToolKind::OpenCode;
+        let at = copilot().since;
+        let dir = root.join("vendorblock");
+        std::fs::create_dir_all(&dir).expect("dir");
+        // A provider record in the client file, and a client record in the
+        // provider file: neither scope reads the other's.
+        std::fs::write(dir.join("client-opencode.rec"), render(&copilot())).expect("write");
+        let client = Record {
+            provider: None,
+            ..copilot()
+        };
+        std::fs::write(dir.join("provider-github-copilot.rec"), render(&client)).expect("write");
+        assert_eq!(block(&root, &Scope::new("opencode", tool, None), at), None);
+        let provider = Scope::new("opencode", tool, Some("github-copilot".to_owned()));
+        assert_eq!(block(&root, &provider, at), None);
+        assert!(matches!(
+            standing(&root, false, "opencode"),
+            Standing::Held(_)
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn clear_removes_one_record_and_says_when_none_is_there() {
         let root = scratch("clear");
-        assert_eq!(clear(&root, "muse"), Cleared::Absent, "no directory");
-        assert_eq!(record_first(&root, &sample()).ok(), Some(true));
-        assert_eq!(clear(&root, "muse"), Cleared::Removed);
-        assert_eq!(clear(&root, "muse"), Cleared::Absent);
         assert_eq!(
-            clear(&root, "../muse"),
+            clear(&root, Target::Client("muse")),
             Cleared::Absent,
-            "no label, no file"
+            "no directory"
         );
-        std::fs::write(root.join("vendorblock/muse.rec"), "damage").expect("damage");
-        assert_eq!(clear(&root, "muse"), Cleared::Removed, "damage clears too");
+        assert_eq!(record_first(&root, &sample()).ok(), Some(true));
+        assert_eq!(clear(&root, Target::Client("muse")), Cleared::Removed);
+        assert_eq!(clear(&root, Target::Client("muse")), Cleared::Absent);
+        std::fs::write(root.join("vendorblock/client-muse.rec"), "damage").expect("damage");
+        assert_eq!(
+            clear(&root, Target::Client("muse")),
+            Cleared::Removed,
+            "damage clears too"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_clear_word_is_a_record_stem_and_the_two_kinds_never_meet() {
+        assert_eq!(Target::parse("client-muse"), Some(Target::Client("muse")));
+        assert_eq!(
+            Target::parse("provider-opencode"),
+            Some(Target::Provider("opencode"))
+        );
+        for bad in [
+            "",
+            "muse",
+            "opencode",
+            "client-",
+            "provider-",
+            "client-a.b",
+            "client-../x",
+            "provider-a/b",
+            "clientmuse",
+            "provider:opencode",
+        ] {
+            assert_eq!(Target::parse(bad), None, "{bad:?}");
+        }
+        let root = scratch("words");
+        let zen = Record {
+            provider: Some("opencode".to_owned()),
+            ..copilot()
+        };
+        let client = Record {
+            provider: None,
+            ..copilot()
+        };
+        assert_eq!(zen.stem(), "provider-opencode");
+        assert_eq!(client.stem(), "client-opencode");
+        assert_eq!(record_first(&root, &zen).ok(), Some(true));
+        assert_eq!(record_first(&root, &client).ok(), Some(true));
+        assert_eq!(
+            clear(&root, Target::Provider("opencode")),
+            Cleared::Removed,
+            "the provider stem leaves the client record"
+        );
+        assert!(matches!(
+            standing(&root, false, "opencode"),
+            Standing::Held(_)
+        ));
+        assert_eq!(standing(&root, true, "opencode"), Standing::Absent);
+        assert_eq!(clear(&root, Target::Client("opencode")), Cleared::Removed);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -800,7 +1017,6 @@ mod tests {
         let body = render(&record);
         assert!(body.ends_with("provider=github-copilot\n"), "{body}");
         assert_eq!(parse(body.as_bytes()), Ok(record.clone()));
-        // A record without the row is the whole client's, byte for byte today's.
         let whole = render(&Record {
             provider: None,
             ..record
@@ -834,6 +1050,10 @@ mod tests {
             Some("opencode-go")
         );
         assert_eq!(
+            provider_of("opencode/big-pickle").as_deref(),
+            Some("opencode")
+        );
+        assert_eq!(
             provider_of("a/b/c").as_deref(),
             Some("a"),
             "the first slash"
@@ -858,18 +1078,21 @@ mod tests {
             crate::tool::ToolKind::OpenCode,
             provider.clone(),
         );
-        assert_eq!(scope.key, "github-copilot");
+        assert_eq!(scope.word(), "github-copilot");
         assert_eq!(scope.client, "opencode");
         assert_eq!(scope.tool, "opencode");
         assert_eq!(scope.provider, provider.clone());
         let muse = Scope::new("muse", crate::tool::ToolKind::Muse, provider);
-        assert_eq!((muse.key.as_str(), muse.provider), ("muse", None));
+        assert_eq!(muse.word(), "muse");
+        assert_eq!(muse.provider, None);
+        assert_eq!(muse.stem(), "client-muse");
+        assert_eq!(scope.stem(), "provider-github-copilot");
         let zen = Scope::new(
             "opencode",
             crate::tool::ToolKind::OpenCode,
             Some("opencode".to_owned()),
         );
-        assert_eq!((zen.key.as_str(), zen.provider), ("opencode", None));
+        assert_eq!(zen.provider.as_deref(), Some("opencode"), "its own scope");
     }
 
     const OPENCODE_CONFIG: &str = "[clients]\nopencode = opencode\nmuse = muse\n[profiles]\n\
@@ -892,10 +1115,13 @@ mod tests {
         for blocked in ["cp", "short"] {
             let why = refuse(blocked, None).expect(blocked);
             assert!(
-                why.starts_with("scope github-copilot blocked (account: "),
+                why.starts_with("scope provider-github-copilot blocked (account: "),
                 "{why}"
             );
-            assert!(why.contains("ae quota clear github-copilot"), "{why}");
+            assert!(
+                why.contains("ae quota clear provider-github-copilot"),
+                "{why}"
+            );
         }
         for open in ["go", "zen", "bare", "nomodel", "emberm"] {
             assert_eq!(refuse(open, None), None, "{open} is not the Copilot scope");
@@ -920,51 +1146,74 @@ mod tests {
     }
 
     #[test]
-    fn a_model_with_no_provider_falls_back_to_the_client_scope_and_names_it() {
+    fn a_slash_free_block_does_not_refuse_zen_and_a_zen_block_does_not_refuse_a_slash_free_model() {
         let cfg = crate::config::parse_identity(OPENCODE_CONFIG).expect("config");
-        let root = scratch("fallback");
-        let record = Record {
+        let at = copilot().since;
+        let client = Record {
             provider: None,
             seat: "bare-seat".to_owned(),
             ..copilot()
         };
-        assert_eq!(record_first(&root, &record).ok(), Some(true));
-        let at = record.since;
+        let root = scratch("fallback");
+        assert_eq!(record_first(&root, &client).ok(), Some(true));
         for bare in ["bare", "nomodel"] {
             let why = scope_refusal_in(&cfg, &root, bare, None, at).expect(bare);
             assert!(
-                why.starts_with("scope opencode blocked (account: "),
+                why.starts_with("scope client-opencode blocked (account: "),
                 "{why}"
             );
-            assert!(why.contains("ae quota clear opencode"), "{why}");
+            assert!(why.contains("ae quota clear client-opencode"), "{why}");
         }
-        for provider in ["cp", "go"] {
+        for provider in ["cp", "go", "zen"] {
             assert_eq!(
                 scope_refusal_in(&cfg, &root, provider, None, at),
                 None,
-                "{provider} names a provider: not the client fallback"
+                "{provider} names a provider: not the client scope"
             );
         }
+        let _ = std::fs::remove_dir_all(&root);
+
+        let zen = Record {
+            provider: Some("opencode".to_owned()),
+            seat: "zen-seat".to_owned(),
+            ..copilot()
+        };
+        let root = scratch("zen");
+        assert_eq!(record_first(&root, &zen).ok(), Some(true));
+        let why = scope_refusal_in(&cfg, &root, "zen", None, at).expect("zen");
         assert!(
-            scope_refusal_in(&cfg, &root, "zen", None, at).is_some(),
-            "the `opencode/` Zen provider spells the client label: the client's scope"
+            why.contains("ae quota clear provider-opencode"),
+            "the Zen provider is not the client: {why}"
         );
+        for other in ["bare", "nomodel", "cp", "go"] {
+            assert_eq!(
+                scope_refusal_in(&cfg, &root, other, None, at),
+                None,
+                "{other} is not the Zen provider"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_configured_scopes_are_each_client_and_each_provider_a_profile_names() {
         let cfg = crate::config::parse_identity(OPENCODE_CONFIG).expect("config");
-        let keys: Vec<String> = Scope::configured(&cfg)
+        let found: Vec<(String, Option<String>)> = Scope::configured(&cfg)
             .into_iter()
-            .map(|scope| scope.key)
+            .map(|scope| (scope.client, scope.provider))
             .collect();
+        let pair =
+            |client: &str, provider: Option<&str>| (client.to_owned(), provider.map(str::to_owned));
         assert_eq!(
-            keys,
-            ["opencode", "github-copilot", "opencode-go", "muse"]
-                .map(str::to_owned)
-                .to_vec(),
-            "client first, then its profiles' providers; zen shares the client scope"
+            found,
+            vec![
+                pair("opencode", None),
+                pair("opencode", Some("github-copilot")),
+                pair("opencode", Some("opencode-go")),
+                pair("opencode", Some("opencode")),
+                pair("muse", None),
+            ],
+            "client first, then its profiles' providers; zen is its own scope"
         );
     }
 
@@ -975,13 +1224,20 @@ mod tests {
             record.cell(),
             "blocked (billing since 2026-09-08T09:10:00Z)"
         );
-        assert_eq!(record.clear_command(), "ae quota clear muse");
+        assert_eq!(record.clear_command(), "ae quota clear client-muse");
         assert!(record.refusal().contains(
             "blocked (billing: Billing verification failed. Billing Issue) since 2026-09-08T09:10:00Z"
         ));
-        assert!(record.refusal().contains("ae quota clear muse"));
+        assert!(record.refusal().contains("ae quota clear client-muse"));
         assert!(record.quota_line().contains(&record.cell()));
         assert!(record.stands_at(record.since));
         assert!(!record.stands_at(record.since - 1));
+        let provider = copilot();
+        assert_eq!(provider.stem(), "provider-github-copilot");
+        assert_eq!(
+            provider.clear_command(),
+            "ae quota clear provider-github-copilot"
+        );
+        assert!(provider.quota_line().contains("client opencode"));
     }
 }

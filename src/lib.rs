@@ -483,8 +483,8 @@ fn run_public_quota(
     )
 }
 
-/// `ae quota clear <scope>`: the one way a vendor block ends. Exactly one
-/// scope (a `[clients]` label or an upstream provider), else usage (exit 2)
+/// `ae quota clear <stem>`: the one way a vendor block ends. Exactly one
+/// record stem (`client-<label>` or `provider-<name>`), else usage (exit 2)
 /// before any state is read.
 fn run_public_quota_clear(
     shape: &shape::Shape,
@@ -493,7 +493,10 @@ fn run_public_quota_clear(
     err: &mut impl Write,
 ) -> Result<u8> {
     let [client] = tail else {
-        writeln!(err, "ae quota: usage: ae quota clear <scope>")?;
+        writeln!(
+            err,
+            "ae quota: usage: ae quota clear <client-LABEL|provider-NAME>"
+        )?;
         return Ok(entry::EXIT_USAGE);
     };
     let Some(root) = doors::state_root(shape) else {

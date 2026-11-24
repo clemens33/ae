@@ -66,14 +66,15 @@ impl Cycle<'_> {
     }
 
     /// Write the block record of this seat's scope under the session's own state
-    /// root (`<root>/sessions/<name>`'s grandparent). The scope is the seat's
-    /// `[clients]` label, or for an `OpenCode` seat whose profile model id is
-    /// `provider/model` that upstream provider, so a Copilot block leaves the
-    /// other providers of the same client usable. A seat the roster no longer
-    /// names falls back to the ONE configured client of the harness that drew the
-    /// line, and a harness with several is never guessed at. A write that fails
-    /// is said on the watchdog's stderr and stops nothing: the journal's `limit`
-    /// record already says what happened.
+    /// root (`<root>/sessions/<name>`'s grandparent) and tell the human which
+    /// word clears it. The scope is the seat's `[clients]` label, or for an
+    /// `OpenCode` seat whose profile model id is `provider/model` that upstream
+    /// provider, so a block on one provider leaves the other providers of the
+    /// same client usable. A seat the roster no longer names falls back to the ONE
+    /// configured client of the harness that drew the line, and a harness with
+    /// several is never guessed at. A write that fails is said on the watchdog's
+    /// stderr and stops nothing: the journal's `limit` record already says what
+    /// happened.
     fn block_scope(
         &self,
         on: &Acting<'_>,
@@ -81,7 +82,16 @@ impl Cycle<'_> {
         err: &mut impl Write,
     ) {
         let (kind, tool, reason) = block;
+        let reason = match crate::vendorblock::clean(reason) {
+            clean if clean.is_empty() => kind.word().to_owned(),
+            clean => clean,
+        };
+        let head = format!("hit a vendor {} block: {reason}", kind.word());
         let Some(root) = self.meta_dir.parent().and_then(std::path::Path::parent) else {
+            self.notify(
+                on.agent,
+                &format!("{head} — it is not recorded: no state root"),
+            );
             return;
         };
         let global = crate::doors::config_file(crate::shape::current(), root);
@@ -105,11 +115,11 @@ impl Cycle<'_> {
                 tool.as_str(),
                 kind.word()
             );
+            self.notify(
+                on.agent,
+                &format!("{head} — no single client scope to block; the limit record stands"),
+            );
             return;
-        };
-        let reason = match crate::vendorblock::clean(reason) {
-            clean if clean.is_empty() => kind.word().to_owned(),
-            clean => clean,
         };
         let scope = crate::vendorblock::Scope::new(&client, tool, provider);
         let record = crate::vendorblock::Record {
@@ -128,20 +138,32 @@ impl Cycle<'_> {
                 on.agent,
                 record.scope()
             );
+            self.notify(
+                on.agent,
+                &format!("{head} — the record would be unreadable; the limit record stands"),
+            );
             return;
         }
         match crate::vendorblock::record_first(root, &record) {
-            Ok(true) => {
-                let _ = writeln!(
-                    err,
-                    "ae: watchdog: {}: scope {} is blocked ({}): {}",
+            Ok(first) => {
+                if first {
+                    let _ = writeln!(
+                        err,
+                        "ae: watchdog: {}: scope {} is blocked ({}): {}",
+                        on.agent,
+                        record.scope(),
+                        kind.word(),
+                        record.reason
+                    );
+                }
+                self.notify(
                     on.agent,
-                    record.scope(),
-                    kind.word(),
-                    record.reason
+                    &format!(
+                        "{head} — its scope is refused for every spawn until `{}`",
+                        record.clear_command()
+                    ),
                 );
             }
-            Ok(false) => {}
             Err(why) => {
                 let _ = writeln!(
                     err,
@@ -149,6 +171,10 @@ impl Cycle<'_> {
                     on.agent,
                     kind.word(),
                     record.scope()
+                );
+                self.notify(
+                    on.agent,
+                    &format!("{head} — it could not be recorded; the limit record stands"),
                 );
             }
         }

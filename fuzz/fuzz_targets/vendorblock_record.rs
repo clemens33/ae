@@ -25,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
             "a parsed record must render back to itself"
         );
         assert!(
-            ae::vendorblock::file_name(record.scope()).is_some(),
+            record.file_name().is_some(),
             "a parsed scope names one record file"
         );
         assert!(
@@ -44,6 +44,10 @@ fuzz_target!(|data: &[u8]| {
         assert!(
             !refusal.chars().any(char::is_control),
             "a refusal is one clean line"
+        );
+        assert!(
+            ae::vendorblock::Target::parse(&record.stem()).is_some(),
+            "the word a refusal names is a word the clear command takes"
         );
     }
 });

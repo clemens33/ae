@@ -84,15 +84,16 @@ pub(super) fn rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
     }
 }
 
-/// What a vendor refused, and which harness drew the line, read back out of a
-/// notice [`notice`] produced, or `None` for any other notice (a usage limit's,
-/// a menu's).
+/// What a vendor refused, and the binary name of the harness that drew the line
+/// (`muse`, `opencode`), read back out of a notice [`notice`] produced, or `None`
+/// for any other notice (a usage limit's, a menu's). The binary name is the
+/// adapter's key: its `ToolKind` is `ToolKind::from_binary_name`'s to say.
 #[must_use]
-pub fn classify(notice: &str) -> Option<(Kind, crate::tool::ToolKind)> {
+pub fn classify(notice: &str) -> Option<(Kind, &'static str)> {
     if notice.starts_with(MUSE_HEAD) && notice.contains(MUSE_BILLING) {
-        Some((Kind::Billing, crate::tool::ToolKind::Muse))
+        Some((Kind::Billing, "muse"))
     } else if notice.starts_with(OPENCODE_ROW) {
-        Some((Kind::Account, crate::tool::ToolKind::OpenCode))
+        Some((Kind::Account, "opencode"))
     } else {
         None
     }
@@ -255,7 +256,7 @@ fn is_footer(cell: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell, is_footer, kind_of, reason_of, rule_length, scrub};
+    use super::{cell, is_footer, kind_of, notice, reason_of, rows, rule_length, scrub};
     use crate::vendorblock::Kind;
 
     #[test]
@@ -320,6 +321,41 @@ mod tests {
         assert_eq!(rule_length(&with_sidebar), Some(7));
         let off = format!("  ╹▀▀▀▀{}side", " ".repeat(5));
         assert_eq!(rule_length(&off), None);
+    }
+
+    #[test]
+    fn a_muse_cell_ends_at_the_first_row_that_is_not_its_indented_continuation() {
+        let frame = "\u{25c6} model failed: API error 402 [request_id=abc]: Billing verification failed.\n  Billing Issue\nnext output row\n";
+        assert_eq!(
+            notice(frame, "muse").as_deref(),
+            Some("model failed: API error 402: Billing verification failed. Billing Issue")
+        );
+        assert_eq!(notice(frame, "opencode"), None);
+        assert_eq!(notice(frame, "claude"), None);
+    }
+
+    #[test]
+    fn the_opencode_stop_proof_rows_are_the_refusal_row_and_its_footer() {
+        let error = "     Error: You have exceeded your monthly quota";
+        let footer = "     Build \u{b7} GPT-6.1 Sol \u{b7} 692ms";
+        let rule = format!("  \u{2579}{}", "\u{2580}".repeat(60));
+        let frame = [
+            error,
+            "",
+            footer,
+            "",
+            "  \u{2503}  Build \u{b7} GPT-6.1 Sol",
+            rule.as_str(),
+            "                         ctrl+p commands",
+        ]
+        .join("\n");
+        assert_eq!(rows(&frame, "opencode"), Some(vec![error, footer]));
+        assert_eq!(
+            notice(&frame, "opencode").as_deref(),
+            Some("Error: You have exceeded your monthly quota")
+        );
+        assert_eq!(rows(&frame, "claude"), None);
+        assert_eq!(notice(&frame, "muse"), None);
     }
 
     #[test]

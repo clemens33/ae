@@ -2209,6 +2209,10 @@ pub fn run_retire(
 }
 
 #[cfg(test)]
+#[path = "vendorblock_spawn_spec.rs"]
+mod vendorblock_spawn_spec;
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::disallowed_methods,
@@ -4315,7 +4319,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
-
-#[cfg(test)]
-#[path = "vendorblock_spawn_spec.rs"]
-mod vendorblock_spawn_spec;

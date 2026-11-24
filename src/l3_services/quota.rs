@@ -3259,9 +3259,10 @@ fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> 
     text
 }
 
-/// `ae quota clear <scope>`: remove one scope's block record (a `[clients]`
-/// label, or the upstream provider an `OpenCode` model id names), the ONLY way a
-/// block ends. Nothing measured proves a refused account works again, so
+/// `ae quota clear <stem>`: remove one scope's block record, the ONLY way a
+/// block ends. The stem is the record's file name without `.rec`:
+/// `client-<label>` for a `[clients]` label, `provider-<name>` for the upstream
+/// provider an `OpenCode` model id names, so the two never share a word. Nothing measured proves a refused account works again, so
 /// no pane fact, no completed turn and no auto reseat clears it.
 ///
 /// The record goes first, whatever the config says now, so a scope removed
@@ -3274,14 +3275,14 @@ fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> 
 /// Returns an I/O error only when the supplied output stream cannot be written.
 pub fn run_clear(
     inputs: &Inputs<'_>,
-    client: &str,
+    word: &str,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
-    if !crate::vendorblock::is_provider(client) {
-        writeln!(err, "ae quota: unknown scope {client}")?;
+    let Some(target) = crate::vendorblock::Target::parse(word) else {
+        writeln!(err, "ae quota: unknown scope {word}")?;
         return Ok(1);
-    }
+    };
     let cfg = match crate::config::read_identity(inputs.global, inputs.local) {
         Ok(cfg) => cfg,
         Err(error) => {
@@ -3293,28 +3294,25 @@ pub fn run_clear(
         writeln!(err, "ae quota: no state root to clear a block in")?;
         return Ok(1);
     };
-    match crate::vendorblock::clear(root, client) {
+    match crate::vendorblock::clear(root, target) {
         crate::vendorblock::Cleared::Removed => {
-            writeln!(out, "ae quota: cleared the block on {client}")?;
+            writeln!(out, "ae quota: cleared the block on {word}")?;
             Ok(0)
         }
         crate::vendorblock::Cleared::Absent
             if crate::vendorblock::Scope::configured(&cfg)
                 .iter()
-                .any(|scope| scope.key == client) =>
+                .any(|scope| target.names(scope)) =>
         {
-            writeln!(err, "ae quota: no block recorded for {client}")?;
+            writeln!(err, "ae quota: no block recorded for {word}")?;
             Ok(1)
         }
         crate::vendorblock::Cleared::Absent => {
-            writeln!(err, "ae quota: unknown scope {client}")?;
+            writeln!(err, "ae quota: unknown scope {word}")?;
             Ok(1)
         }
         crate::vendorblock::Cleared::Refused(why) => {
-            writeln!(
-                err,
-                "ae quota: could not clear the block on {client}: {why}"
-            )?;
+            writeln!(err, "ae quota: could not clear the block on {word}: {why}")?;
             Ok(1)
         }
     }
