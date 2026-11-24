@@ -1,0 +1,30 @@
+   New session                   +
+
+  ┃
+  ┃  hi
+  ┃
+
+     Error: You have exceeded your monthly quota
+
+     Build · GPT-6.1 Sol · 692ms
+
+  ┃
+  ┃  second turn
+  ┃
+
+     Error: You have exceeded your monthly quota
+
+     Build · GPT-6.1 Sol · 334ms
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · GPT-6.1 Sol GitHub Copilot · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /private/tmp/vbprobe-oc/cwd                                    shift+tab agents  ctrl+p commands
+

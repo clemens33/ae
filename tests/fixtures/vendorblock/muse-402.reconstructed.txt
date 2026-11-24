@@ -1,0 +1,45 @@
+
+  Muse Code 1.4.25
+
+  Skills: 64 loaded · 1 warning (ctrl+o to expand)
+
+❯ hi
+
+◆ model failed: API error 402 [request_id=00000000-0000-4000-8000-000000000000]: Billing verification failed. Billing Issue
+
+Start building with a monthly plan · /upgrade (https://accountscenter.meta.com/muse_code/?ep=no_payg)
+── Voice input (alt(option)+v to start) ────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-ember-1.0 · max · /private/tmp/vbprobe-muse/cwd · YOLO
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

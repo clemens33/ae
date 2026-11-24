@@ -1,0 +1,21 @@
+# opencode 2.4.1 Copilot quota row, measured 2026-11-24 (probe: /tmp/vbprobe-oc, 40 rows, one failed turn 'hi')
+# width | composer rule row length (the ╹▀… row, trailing blanks trimmed) | first non-blank column after the phrase on the Error row (0-based) | sidebar? 
+100 | 98 | none | no
+110 | 108 | none | no
+120 | 118 | none | no
+121 | 77 | 81 | yes
+122 | 78 | 82 | yes
+123 | 79 | 83 | yes
+124 | 80 | 84 | yes
+125 | 81 | 85 | yes
+126 | 82 | 86 | yes
+127 | 83 | 87 | yes
+128 | 84 | 88 | yes
+129 | 85 | 89 | yes
+130 | 86 | 90 | yes
+131 | 87 | 91 | yes
+132 | 88 | 92 | yes
+140 | 96 | 100 | yes
+160 | 116 | 120 | yes
+200 | 156 | 160 | yes
+240 | 196 | 200 | yes

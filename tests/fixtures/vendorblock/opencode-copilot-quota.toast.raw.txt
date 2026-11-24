@@ -1,0 +1,45 @@
+   New session                   + 
+                                                                                                ┃                                        ┃
+  ┃                                                                                             ┃  Session failed                     x  ┃
+  ┃  hi                                                                                         ┃                                        ┃
+  ┃                                                                                             ┃  You have exceeded your monthly quota  ┃
+                                                                                                ┃                                        ┃
+     Error: You have exceeded your monthly quota                                                    • chrome-devtools            Disabled
+                                                                                                  
+     Build · GPT-6.1 Sol · 692ms                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+                                                                                                  
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃  Build · GPT-6.1 Sol GitHub Copilot · high                                                    
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+  /private/tmp/vbprobe-oc/cwd                                  shift+tab agents  ctrl+p commands    /private/tmp/vbprobe-oc/cwd
+                                                                                                  

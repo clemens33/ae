@@ -252,6 +252,7 @@ mod tmuxlock_spec;
 mod transport;
 mod trustmiss_spec;
 mod usage;
+mod vendorblock_spec;
 mod vendorwait_spec;
 mod waithold_spec;
 mod waiton_moved_spec;

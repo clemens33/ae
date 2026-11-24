@@ -1,0 +1,45 @@
+   New session                   +
+
+  ┃                                                                                                 New session - 2026-11-24T09:35:55.
+  ┃  hi                                                                                             156Z
+  ┃
+                                                                                                    MCP
+     Error: You have exceeded your monthly quota                                                    • chrome-devtools            Disabled
+
+     Build · GPT-6.1 Sol · 692ms
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · GPT-6.1 Sol GitHub Copilot · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /private/tmp/vbprobe-oc/cwd                                  shift+tab agents  ctrl+p commands    /private/tmp/vbprobe-oc/cwd
+
