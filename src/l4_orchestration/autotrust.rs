@@ -896,3 +896,38 @@ mod tests {
         assert_eq!(place(&NotDirectory { path }), "is not a directory");
     }
 }
+
+#[cfg(test)]
+mod covers_tests {
+    use super::{Kind, Proof};
+    use crate::watchdog::{TrustSighting, TrustVariant};
+    use std::path::PathBuf;
+
+    fn sighting(variant: TrustVariant, block: &str) -> TrustSighting {
+        TrustSighting {
+            folder: "/work/project".to_owned(),
+            toward_yes: None,
+            variant,
+            block: block.to_owned(),
+        }
+    }
+
+    /// trustfix survivors: a proof covers only the block it was made for, the
+    /// same variant AND the same raw warning text, so the read after the arrow
+    /// cannot swap in another measured block before Enter.
+    #[test]
+    fn a_proof_covers_only_its_own_variant_and_block() {
+        let proof = Proof {
+            name: "helper".to_owned(),
+            episode: "start-one".to_owned(),
+            folder: PathBuf::from("/work/project"),
+            kind: Kind::Trust,
+            variant: TrustVariant::Settings,
+            block: "warning".to_owned(),
+        };
+        assert!(proof.covers(&sighting(TrustVariant::Settings, "warning")));
+        assert!(!proof.covers(&sighting(TrustVariant::Settings, "other warning")));
+        assert!(!proof.covers(&sighting(TrustVariant::HomeSettings, "warning")));
+        assert!(!proof.covers(&sighting(TrustVariant::Plain, "")));
+    }
+}
