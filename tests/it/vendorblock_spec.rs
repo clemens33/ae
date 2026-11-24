@@ -426,24 +426,37 @@ fn cell(state: Option<&str>, limit: bool, moving: bool) -> String {
 const CONFIG: &str = "\
 [clients]
 muse = muse
-copilot = opencode
-free = opencode
+opencode = opencode
 codex = codex
 
 [profiles]
 emberm = muse --model muse-ember-1.0
-cpsol61h = copilot --model github-copilot/gpt-6.1-sol
-flash = free --model deepseek
+cpsol61h = opencode --model github-copilot/gpt-6.1-sol
+flashgo = opencode --model opencode-go/deepseek-v4-flash
+bare = opencode --model glm-5
 solx = codex --model sol
 ";
 
-fn record(tool: &str, client: &str, kind: &str, seat: &str, reason: &str, since: i64) -> String {
+fn record(
+    tool: &str,
+    client: &str,
+    provider: &str,
+    kind: &str,
+    seat: &str,
+    reason: &str,
+    since: i64,
+) -> String {
+    let provider_line = if provider.is_empty() {
+        String::new()
+    } else {
+        format!("provider={provider}\n")
+    };
     format!(
         "\
 version=1
 tool={tool}
 client={client}
-since={since}
+{provider_line}since={since}
 kind={kind}
 seat={seat}
 reason={reason}
@@ -507,6 +520,7 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         &record(
             "muse",
             "muse",
+            "",
             "billing",
             "testpins-rev",
             "Billing verification failed",
@@ -514,10 +528,11 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         ),
     );
     root.write(
-        "copilot",
+        "github-copilot",
         &record(
             "opencode",
-            "copilot",
+            "opencode",
+            "github-copilot",
             "account",
             "trustfix-nav",
             "You have exceeded your monthly quota",
@@ -528,7 +543,15 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
     // duplicate key do not become a second block.
     root.write(
         "free",
-        &record("opencode", "free", "account", "x", "nope", SINCE + 1),
+        &record(
+            "opencode",
+            "opencode",
+            "opencode-go",
+            "account",
+            "x",
+            "nope",
+            SINCE + 1,
+        ),
     );
     root.write(
         "codex",
@@ -547,9 +570,9 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
         out.contains(&format!("blocked (account since {SINCE_ISO}")),
         "{out}"
     );
-    assert!(out.contains("ae quota clear copilot"), "{out}");
+    assert!(out.contains("ae quota clear github-copilot"), "{out}");
     assert!(
-        !out.contains("ae quota clear free"),
+        !out.contains("ae quota clear opencode-go"),
         "a future stamp is not a block: {out}"
     );
     assert!(
@@ -578,6 +601,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
         &record(
             "muse",
             "muse",
+            "",
             "billing",
             "testpins-rev",
             "Billing verification failed",
@@ -585,10 +609,11 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
         ),
     );
     root.write(
-        "copilot",
+        "github-copilot",
         &record(
             "opencode",
-            "copilot",
+            "opencode",
+            "github-copilot",
             "account",
             "trustfix-nav",
             "You have exceeded your monthly quota",
@@ -600,7 +625,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
     let out = String::from_utf8_lossy(&cleared.stdout);
     assert_eq!(cleared.status.code(), Some(0), "{err}{out}");
     assert!(!root.ae_home.join("vendorblock/muse.rec").exists());
-    assert!(root.ae_home.join("vendorblock/copilot.rec").exists());
+    assert!(root.ae_home.join("vendorblock/github-copilot.rec").exists());
     let again = ae_quota(&root, &["quota", "clear", "muse"]);
     let err = String::from_utf8_lossy(&again.stderr);
     let out = String::from_utf8_lossy(&again.stdout);

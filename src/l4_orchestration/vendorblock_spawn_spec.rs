@@ -1,9 +1,11 @@
 //! FROZEN SPEC (vendorblock S2 spawn refusal).
 //!
-//! A blocked client refuses `_spawn --using` before the session meta is read,
+//! A blocked scope refuses `_spawn --using` before the session meta is read,
 //! so a missing meta never reaches tmux. The record is
-//! `<state-root>/vendorblock/<client>.rec`. `<client>` is the `[clients]`
-//! label, not the binary: `copilot` and `free` are both `opencode`.
+//! `<state-root>/vendorblock/<scope>.rec`. An opencode scope is the model
+//! id's provider, the text before the first `/` in `--model` or `-m`. A model
+//! id with no `/` uses the whole client, and the refusal names that client.
+//! No config grammar was added: the model id is the existing flag value.
 //!
 //! `--lead`, `--colead` and `--seat` must call this same refusal before any
 //! server effect. Launch has no pure seam that fails before tmux, so this
@@ -61,14 +63,16 @@ impl Drop for Scratch {
 const CONFIG: &str = "\
 [clients]
 muse = muse
-copilot = opencode
-free = opencode
+opencode = opencode
 codex = codex
 
 [profiles]
 emberm = muse --model muse-ember-1.0
-cpsol61h = copilot --model github-copilot/gpt-6.1-sol
-flash = free --model deepseek
+cpsol61h = opencode --model github-copilot/gpt-6.1-sol
+short = opencode -m github-copilot/claude-x
+flashgo = opencode --model opencode-go/deepseek-v4-flash
+zen = opencode --model opencode/big-pickle
+bare = opencode --model glm-5
 solx = codex --model sol
 ";
 
@@ -91,10 +95,25 @@ fn copilot_record() -> String {
         "\
 version=1
 tool=opencode
-client=copilot
+client=opencode
+provider=github-copilot
 since={SINCE}
 kind=account
 seat=trustfix-nav
+reason=You have exceeded your monthly quota
+"
+    )
+}
+
+fn client_record() -> String {
+    format!(
+        "\
+version=1
+tool=opencode
+client=opencode
+since={SINCE}
+kind=account
+seat=bare-seat
 reason=You have exceeded your monthly quota
 "
     )
@@ -131,7 +150,7 @@ fn spawn(root: &Path, using: &str) -> (u8, String) {
 fn a_blocked_client_refuses_spawn_before_the_session_exists() {
     let scratch = Scratch::new("block");
     scratch.record("muse", &muse_record());
-    scratch.record("copilot", &copilot_record());
+    scratch.record("github-copilot", &copilot_record());
     let (rc, err) = spawn(&scratch.root, "emberm");
     assert_ne!(rc, 0, "{err}");
     assert!(
@@ -149,25 +168,48 @@ fn a_blocked_client_refuses_spawn_before_the_session_exists() {
         )),
         "{err}"
     );
-    assert!(err.contains("ae quota clear copilot"), "{err}");
-    // The `@client` suffix is the scope, not the profile's own client.
-    let (rc, err) = spawn(&scratch.root, "flash@copilot");
+    assert!(err.contains("ae quota clear github-copilot"), "{err}");
+    let (rc, err) = spawn(&scratch.root, "short");
     assert_ne!(rc, 0, "{err}");
-    assert!(err.contains("ae quota clear copilot"), "{err}");
+    assert!(err.contains("ae quota clear github-copilot"), "{err}");
 }
 
+/// One opencode client carries every provider. A github-copilot block admits
+/// the others. The admitted spawn still stops on the missing session, before
+/// a pane exists, so the test does not exec opencode.
 #[test]
-fn an_unblocked_client_of_the_same_binary_is_not_refused_as_blocked() {
-    let scratch = Scratch::new("open");
-    scratch.record("copilot", &copilot_record());
-    for using in ["flash", "cpsol61h@free", "solx"] {
+fn a_copilot_block_does_not_stop_another_opencode_provider() {
+    let scratch = Scratch::new("providers");
+    scratch.record("github-copilot", &copilot_record());
+    for using in ["flashgo", "zen", "bare", "solx"] {
         let (rc, err) = spawn(&scratch.root, using);
         assert_ne!(rc, 0, "{using}: a missing session still refuses");
         assert!(
             !err.contains("blocked ("),
-            "{using} is not the blocked client: {err}"
+            "{using} is not the github-copilot provider: {err}"
+        );
+        assert!(
+            err.contains("cannot read the meta") || err.contains("session not found"),
+            "{using} was not admitted to the normal spawn path: {err}"
         );
     }
+    let fallback = Scratch::new("bare");
+    fallback.record("opencode", &client_record());
+    let (rc, err) = spawn(&fallback.root, "bare");
+    assert_ne!(rc, 0, "{err}");
+    assert!(
+        err.contains(&format!(
+            "blocked (account: You have exceeded your monthly quota) since {SINCE_ISO}"
+        )),
+        "{err}"
+    );
+    assert!(err.contains("ae quota clear opencode"), "{err}");
+    let (rc, err) = spawn(&fallback.root, "cpsol61h");
+    assert!(
+        !err.contains("blocked ("),
+        "a provider profile is not the client fallback: {err}"
+    );
+    let _ = rc;
 }
 
 const MUSE_402: &str = include_str!("../../tests/fixtures/vendorblock/muse-402.reconstructed.txt");
