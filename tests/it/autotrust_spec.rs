@@ -3079,3 +3079,52 @@ fn trustfix_home_answers_again_after_a_carried_reseat_into_another_config_home()
     assert_eq!(rig.wire(), [keys.as_slice(), keys.as_slice()].concat());
     assert_eq!(rig.count("human-prompt"), 0, "the successor needs no human");
 }
+
+/// trustfix survivor: a block the watchdog found due but the answerer then
+/// declined (here the folder changed before the first key) is named with the
+/// answerer's reason, in the journal and in the notification alike.
+#[test]
+fn trustfix_a_block_the_answerer_declines_is_named_with_its_reason() {
+    let mut rig = Rig::new("declined-reason", "claude", "normal");
+    let folder = fs::canonicalize(&rig.root)
+        .expect("fixture folder")
+        .display()
+        .to_string();
+    let other = fs::canonicalize(rig.root.join("other"))
+        .expect("other folder")
+        .display()
+        .to_string();
+    write(
+        rig.root.join("declined-frame"),
+        text(rig.root.join("frame")).replace(&folder, &other),
+    );
+    write(
+        rig.root.join("guard-lock"),
+        rig.root
+            .join("sessions/.locks")
+            .join(format!("send-lock-{}", rig.pane.replace('%', "_")))
+            .display()
+            .to_string(),
+    );
+    write(rig.root.join("wrapper"), "decline");
+    rig.start_stepped();
+    rig.named();
+    rig.stop();
+    let events = rig.events();
+    let named: Vec<_> = events
+        .iter()
+        .filter(|event| event.action == "human-prompt")
+        .collect();
+    assert_eq!(named.len(), 1, "one naming");
+    let summary = named[0].summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains("auto_trust did not answer: the modal names ")
+            && summary.contains("not the seat's folder"),
+        "the naming carries the answerer's reason: {summary}"
+    );
+    assert!(
+        text(rig.root.join("notifications")).contains(summary),
+        "the notification carries the same reason: {summary}"
+    );
+    assert!(rig.wire().is_empty(), "no key on a declined proof");
+}
