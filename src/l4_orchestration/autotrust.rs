@@ -656,13 +656,16 @@ include!("../../tests/unit/unreach_clock_a2.rs");
 #[cfg(test)]
 mod tests {
     use super::{
-        Due, Proof, RESERVED, Seat, is_seat, ledger, owed, place, prove, reserve, spent, tool_pid,
+        Due, Kind, Proof, RESERVED, Seat, is_seat, ledger, owed, place, prove, reserve, spent,
+        tool_pid,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
     use crate::procs::Proc;
     use crate::store::SourceRead;
     use crate::tmux::{ObservedViewer, OptionReading};
+    use crate::watchdog::{TrustSighting, TrustVariant};
+    use std::path::PathBuf;
 
     const RESERVATION: &str = r#"{"ts":"2026-10-11T00:00:00Z","actor":"watchdog","action":"auto-trust-reserved","target":"lead","target_slot":"main","ref":"main:start:7"}"#;
 
@@ -895,13 +898,6 @@ mod tests {
         );
         assert_eq!(place(&NotDirectory { path }), "is not a directory");
     }
-}
-
-#[cfg(test)]
-mod covers_tests {
-    use super::{Kind, Proof};
-    use crate::watchdog::{TrustSighting, TrustVariant};
-    use std::path::PathBuf;
 
     fn sighting(variant: TrustVariant, block: &str) -> TrustSighting {
         TrustSighting {
