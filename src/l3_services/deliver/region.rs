@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::harness_state::{CLAUDE_HINTS, Hint};
 use crate::tool::{Composed, ComposerAnchor, DialogFooter, DialogSig, InputModel, NamedDialog};
 
 /// The foreground a captured run is painted in, when the capture names one.
@@ -518,39 +519,6 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
         InputModel::Unmodelled => None,
     }
 }
-
-/// A placeholder claude draws in the input row of an EMPTY box.
-struct Hint {
-    /// The exact text, measured.
-    text: &'static str,
-    /// The turn ae sent is in claude's queue behind a running one.
-    queued: bool,
-}
-
-/// Every claude placeholder MEASURED on 2.1.330 (fixtures:
-/// `tests/fixtures/claude-composer/README.md`). A string that is not here is
-/// unmeasured, so it reads as a draft: ae never guesses a placeholder.
-const CLAUDE_HINTS: [Hint; 4] = [
-    Hint {
-        text: "Press up to edit queued messages",
-        queued: true,
-    },
-    // After a failed turn that a resend can cure (a Mac sleep, an overload).
-    Hint {
-        text: "Resend your message to try again",
-        queued: false,
-    },
-    // After a failed turn that needs a fix first (a login, a model switch).
-    Hint {
-        text: "Once fixed, resend your message",
-        queued: false,
-    },
-    // After a request claude cannot send as it is.
-    Hint {
-        text: "Run /rewind to go back",
-        queued: false,
-    },
-];
 
 /// Whether the box holds claude's own placeholder and nothing else: the ONE
 /// definition of "the hint is chrome, not a draft".
@@ -1993,6 +1961,15 @@ mod tests {
         ] {
             assert!(occupied(&hint_row(text)), "{text}");
         }
+        // The cursor styling covers ONE cell: a longer inverse prefix is not it.
+        assert!(occupied(
+            "\u{1b}[7mRe\u{1b}[0;2msend your message to try again\u{1b}[0m"
+        ));
+        // The hint wrapped over two rows: its cells all read as the hint's text
+        // once joined, but the box holds more than the one measured row.
+        assert!(occupied(
+            "\u{1b}[7mR\u{1b}[0;2mesend your message to \ntry again\u{1b}[0m"
+        ));
         // The hint on its row with a second row of typed text under it.
         let rule = "─".repeat(60);
         let two_rows = format!(

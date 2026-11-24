@@ -1188,6 +1188,26 @@ fn a_send_onto_a_claude_queued_affordance_delivers_instead_of_abandoning() {
     );
 }
 
+/// A real 2.1.330 frame as ae's own seats draw it: their statusline row sits
+/// between the box and the footer, and the watchdog's frame grammar needs it.
+fn seat_frame(frame: &str) -> String {
+    let mut rows: Vec<&str> = frame.lines().collect();
+    let footer = rows.iter().rposition(|row| row.contains("⏵⏵"));
+    assert!(footer.is_some(), "setup: the footer row");
+    rows.insert(
+        footer.unwrap_or_default(),
+        "  🧠 Opus 5.5 (xhigh)  📁 seat  ctx 5%",
+    );
+    rows.join("\n")
+}
+
+/// What the watchdog's idle accounting reads: the PLAIN capture of the pane.
+fn plain_has_human_draft(rig: &Rig) -> bool {
+    let (ok, plain) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+    assert!(ok, "setup: the plain capture");
+    ae::harness_state::has_human_draft(&plain, ae::tool::ToolKind::Claude)
+}
+
 /// The REAL claude 2.1.330 composers after a failed turn (a Mac sleep, an
 /// overload, a login, an oversized request): the box is EMPTY and the input
 /// row carries claude's own hint, a cursor cell then a dim run. RED pre-fix:
@@ -1209,7 +1229,12 @@ fn a_send_onto_a_claude_error_hint_composer_delivers_instead_of_abandoning() {
             include_str!("../fixtures/claude-composer/claude-rewind-hint-2.1.330.esc"),
         ),
     ] {
-        let rig = Rig::with_frame(&format!("hint-{tag}"), "claude", frame);
+        let rig = Rig::with_frame(&format!("hint-{tag}"), "claude", &seat_frame(frame));
+        // The watchdog reads this frame as an empty box, so its nudge may try.
+        assert!(
+            !plain_has_human_draft(&rig),
+            "{tag}: no draft in accounting"
+        );
         let (code, stderr) = rig.run(
             ae::cli::SEND,
             &["tui", "wake up"],
@@ -1237,7 +1262,11 @@ fn the_error_hint_words_typed_into_the_box_still_abandon_the_send() {
             include_str!("../fixtures/claude-composer/claude-typed-resend-cursor-home-2.1.330.esc"),
         ),
     ] {
-        let rig = Rig::with_frame(&format!("typed-{tag}"), "claude", frame);
+        let rig = Rig::with_frame(&format!("typed-{tag}"), "claude", &seat_frame(frame));
+        // Half one: a PLAIN capture cannot tell these typed words from the hint
+        // (the named residual), so idle accounting reads no draft.
+        assert!(!plain_has_human_draft(&rig), "{tag}: plain accounting");
+        // Half two, the safety: the send re-reads the STYLED box and abandons.
         let (code, stderr) = rig.run(
             ae::cli::SEND,
             &["tui", "overwrite me"],

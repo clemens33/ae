@@ -220,10 +220,69 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
             lines
                 .iter()
                 .rposition(|line| line.starts_with('❯'))
-                .is_some_and(|index| claude_input_frame(&lines, index) && lines[index] != "❯")
+                .is_some_and(|index| {
+                    claude_input_frame(&lines, index)
+                        && lines[index] != "❯"
+                        && !claude_failure_hint_row(&lines[index])
+                })
         }
         InputModel::Unmodelled => false,
     }
+}
+
+/// A placeholder claude draws in the input row of an EMPTY box.
+pub(crate) struct Hint {
+    /// The exact text, measured.
+    pub(crate) text: &'static str,
+    /// The turn ae sent is in claude's queue behind a running one.
+    pub(crate) queued: bool,
+}
+
+/// Every claude placeholder MEASURED on 2.1.330 (fixtures:
+/// `tests/fixtures/claude-composer/README.md`). A string that is not here is
+/// unmeasured, so it reads as a draft: ae never guesses a placeholder. The
+/// styled composer read (`deliver::region`) takes this table downward, and the
+/// plain read below takes its failure hints.
+pub(crate) const CLAUDE_HINTS: [Hint; 4] = [
+    Hint {
+        text: "Press up to edit queued messages",
+        queued: true,
+    },
+    // After a failed turn that a resend can cure (a Mac sleep, an overload).
+    Hint {
+        text: "Resend your message to try again",
+        queued: false,
+    },
+    // After a failed turn that needs a fix first (a login, a model switch).
+    Hint {
+        text: "Once fixed, resend your message",
+        queued: false,
+    },
+    // After a request claude cannot send as it is.
+    Hint {
+        text: "Run /rewind to go back",
+        queued: false,
+    },
+];
+
+/// Whether `row` is a claude box row holding only a post-failure hint
+/// (`❯ Resend your message to try again`) as a PLAIN capture shows it. The
+/// queue hint is not one: it belongs to a turn that is still running.
+///
+/// Named residual: a plain capture has no rendering, so a person who TYPED
+/// exactly those words reads as no draft HERE, which feeds the watchdog's idle
+/// accounting and nothing that pastes. Every send re-reads the styled box
+/// (`deliver::region`) and abandons on typed text, so this can delay a human
+/// nowhere and only lets the nudge path try.
+fn claude_failure_hint_row(row: &str) -> bool {
+    let Some(rest) = row.strip_prefix('❯') else {
+        return false;
+    };
+    let rest = rest.replace('\u{a0}', " ");
+    let rest = rest.trim_matches([' ', '\t', '\n', '\u{b}', '\u{c}', '\r']);
+    CLAUDE_HINTS
+        .iter()
+        .any(|hint| !hint.queued && hint.text == rest)
 }
 
 /// Extract model and effort independently from the positively bounded current
@@ -2007,6 +2066,44 @@ mod tests {
     fn unsupported_harnesses_are_unknown_even_with_a_familiar_prompt() {
         let capture = include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Grok), HarnessState::Unknown);
+    }
+
+    #[test]
+    fn a_claude_failure_hint_row_is_no_draft_and_every_other_row_text_is() {
+        let border = "────────────────────────────────────────────────────────────────";
+        let boxed = |row: &str| {
+            format!(
+                "{border}\n❯ {row}\n{border}\n  🧠 Opus 5 (xhigh)  📁 ae\n  ⏵⏵ bypass permissions on\n"
+            )
+        };
+        assert!(gate(&boxed("")), "premise: a valid input frame");
+        for hint in [
+            "Resend your message to try again",
+            "Once fixed, resend your message",
+            "Run /rewind to go back",
+        ] {
+            assert!(!has_human_draft(&boxed(hint), ToolKind::Claude), "{hint}");
+            // The NBSP claude draws after the ornament reads the same.
+            let nbsp = boxed(hint).replace("❯ ", "❯\u{a0}");
+            assert!(!has_human_draft(&nbsp, ToolKind::Claude), "{hint} (nbsp)");
+            // Anything beside the hint, or another casing, is a draft.
+            for other in [
+                format!("{hint} now"),
+                format!("typed {hint}"),
+                hint.to_lowercase(),
+            ] {
+                assert!(has_human_draft(&boxed(&other), ToolKind::Claude), "{other}");
+            }
+        }
+        // The queue hint belongs to a running turn: it stays what it was.
+        assert!(has_human_draft(
+            &boxed("Press up to edit queued messages"),
+            ToolKind::Claude
+        ));
+        // The hint belongs to claude's grammar alone.
+        let codex =
+            "[redacted]\n› Resend your message to try again\n\n  gpt-5.6-sol xhigh · ~/ae\n";
+        assert!(has_human_draft(codex, ToolKind::Codex));
     }
 
     #[test]
