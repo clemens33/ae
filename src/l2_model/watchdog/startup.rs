@@ -342,55 +342,54 @@ fn refusal(warned: Warned, home: bool, warnings: TrustWarnings, settings: &str) 
 
 /// The folder a settings block names: one row, or a path claude wrapped over
 /// exactly two rows at a wrap column measured for this frame `width`
-/// (`TrustWarnings::wraps`), both whitespace-free fragments (lead ruling
+/// (`TrustWarnings::wraps`), both printable-ASCII fragments (lead ruling
 /// 2026-11-24). The result must still equal the seat's folder canonically
 /// before any key; any other join is named.
 fn drawn_folder(rows: &[&str], width: usize, wraps: &[(usize, usize)]) -> Option<String> {
     match rows {
         [row] => Some(row.trim().to_owned()),
         [head, tail] => {
+            // Printable ASCII only: terminal-safe, and one byte is one cell,
+            // so the measured column is the drawn column. The second row
+            // fits within the same column, or claude would wrap it again.
             let (head, tail) = (head.trim(), tail.trim());
-            let fragment = |row: &str| !row.is_empty() && !row.contains(char::is_whitespace);
-            (fragment(head) && fragment(tail) && wraps.contains(&(width, head.chars().count())))
-                .then(|| format!("{head}{tail}"))
+            let fragment =
+                |row: &str| !row.is_empty() && row.bytes().all(|byte| byte.is_ascii_graphic());
+            (fragment(head)
+                && fragment(tail)
+                && wraps.contains(&(width, head.len()))
+                && tail.len() <= head.len())
+            .then(|| format!("{head}{tail}"))
         }
         _ => None,
     }
 }
 
-/// Whether `list` is the permission list claude 2.1.330 draws for `count`
-/// entries: one entry alone, or entries joined by ", " with "and " before the
-/// last, where the last may be "<k> more" after exactly eight shown. An entry
-/// is a tool name (ASCII letter, then letters, digits, `_` or `-`) with an
-/// optional parenthesised rule, parentheses balanced. Anything else, a row
-/// added between the entries or after them included, is not measured.
+/// Whether `list` is the permission list claude 2.1.330 draws in full for
+/// `count` entries: one entry alone, or entries joined by ", " with "and "
+/// before the last (captured with one and six entries; the count is a field).
+/// An entry is a tool name (ASCII letter, then letters, digits, `_` or `-`)
+/// with an optional parenthesised rule, parentheses balanced. The elided
+/// "and <k> more" form was captured only beside an `.mcp.json` source, so it
+/// is not answered (lead ruling 2026-11-24, fail closed); nor is anything
+/// else, a row added between the entries or after them included.
 fn measured_list(list: &str, count: u32) -> bool {
-    const SHOWN: usize = 8;
     let mut rest = list;
-    let mut entries = 0_usize;
+    let mut entries = 0_u32;
     loop {
         let final_entry = match rest.strip_prefix("and ") {
-            Some(after) if entries > 0 => {
-                rest = after;
+            Some(tail) if entries > 0 => {
+                rest = tail;
                 true
             }
             _ => false,
         };
-        if final_entry
-            && let Some(more) = rest
-                .strip_suffix(" more")
-                .and_then(|more| more.parse::<u32>().ok())
-        {
-            return entries == SHOWN
-                && u32::try_from(entries)
-                    .is_ok_and(|shown| shown.checked_add(more) == Some(count));
-        }
         let Some(after) = permission_entry(rest) else {
             return false;
         };
         entries += 1;
         if after.is_empty() {
-            return (final_entry || entries == 1) && u32::try_from(entries) == Ok(count);
+            return (final_entry || entries == 1) && entries == count;
         }
         match after.strip_prefix(", ") {
             Some(next) if !final_entry => rest = next,
