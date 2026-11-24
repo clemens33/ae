@@ -453,15 +453,8 @@ fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanP
                 return None;
             }
             let block = spec.trust.map(|trust| {
-                trust_block(window, question, question + 1 + keys, trust, spec.selected).map_err(
-                    |why| {
-                        let why = crate::event_text::clip_head(&why, NOTICE_CELLS);
-                        format!(
-                            "dialog differs from the measured one ({}): {why}",
-                            trust.measured
-                        )
-                    },
-                )
+                trust_block(window, question, question + 1 + keys, trust, spec.selected)
+                    .map_err(|why| startup::differs(trust.measured, &why))
             });
             let (trust, differs) = match block {
                 None => (None, None),
@@ -655,11 +648,11 @@ fn trust_variant(drawn: &[String], spec: crate::tool::TrustSpec) -> Result<Trust
         return Ok(TrustVariant::Plain);
     }
     let Some(home) = spec.home else {
-        return Err(first_difference(drawn, &plain));
+        return Err(startup::first_difference(drawn, &plain));
     };
     let mut bare = plain.clone();
     let Some(access) = bare.get_mut(home.at) else {
-        return Err(first_difference(drawn, &plain));
+        return Err(startup::first_difference(drawn, &plain));
     };
     home.access.clone_into(access);
     if drawn == bare.as_slice() {
@@ -680,32 +673,7 @@ fn trust_variant(drawn: &[String], spec: crate::tool::TrustSpec) -> Result<Trust
     } else {
         &bare
     };
-    Err(first_difference(drawn, closest))
-}
-
-/// The first paragraph where `drawn` and `want` part, in words.
-fn first_difference(drawn: &[String], want: &[String]) -> String {
-    let quote = |text: &str| crate::event_text::clip_head(text, 100);
-    let at = drawn
-        .iter()
-        .zip(want)
-        .position(|(drawn, want)| drawn != want);
-    match (at, drawn.len().cmp(&want.len())) {
-        (Some(at), _) => format!(
-            "paragraph {} reads \"{}\", not \"{}\"",
-            at + 1,
-            quote(&drawn[at]),
-            quote(&want[at])
-        ),
-        (None, std::cmp::Ordering::Greater) => {
-            format!("unmeasured paragraph \"{}\"", quote(&drawn[want.len()]))
-        }
-        (None, _) => format!(
-            "paragraph {} \"{}\" is missing",
-            drawn.len() + 1,
-            quote(&want[drawn.len()])
-        ),
-    }
+    Err(startup::first_difference(drawn, closest))
 }
 
 /// Whether `row` is the prompt's question row.

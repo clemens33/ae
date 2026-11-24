@@ -203,14 +203,7 @@ fn trust_warnings(
             let why = why
                 .as_deref()
                 .unwrap_or("the folder rows are not one wrapped path");
-            let why = crate::event_text::clip_head(why, NOTICE_CELLS);
-            let measured = trust.measured;
-            (
-                None,
-                Some(format!(
-                    "dialog differs from the measured one ({measured}): {why}"
-                )),
-            )
+            (None, Some(differs(trust.measured, why)))
         }
     };
     report.push(settings);
@@ -219,6 +212,39 @@ fn trust_warnings(
         sighting,
         differs,
     })
+}
+
+/// The loud reason a trust block that is not measured is named with: the
+/// measured version, then `why` clipped to the notice. Both trust readers
+/// build it here, beside the menu-text cutter's other named caller.
+pub(super) fn differs(measured: &str, why: &str) -> String {
+    let why = crate::event_text::clip_head(why, NOTICE_CELLS);
+    format!("dialog differs from the measured one ({measured}): {why}")
+}
+
+/// The first paragraph where `drawn` and `want` part, in words.
+pub(super) fn first_difference(drawn: &[String], want: &[String]) -> String {
+    let quote = |text: &str| crate::event_text::clip_head(text, 100);
+    let at = drawn
+        .iter()
+        .zip(want)
+        .position(|(drawn, want)| drawn != want);
+    match (at, drawn.len().cmp(&want.len())) {
+        (Some(at), _) => format!(
+            "paragraph {} reads \"{}\", not \"{}\"",
+            at + 1,
+            quote(&drawn[at]),
+            quote(&want[at])
+        ),
+        (None, std::cmp::Ordering::Greater) => {
+            format!("unmeasured paragraph \"{}\"", quote(&drawn[want.len()]))
+        }
+        (None, _) => format!(
+            "paragraph {} \"{}\" is missing",
+            drawn.len() + 1,
+            quote(&want[drawn.len()])
+        ),
+    }
 }
 
 fn observed_columns(row: &str) -> usize {
