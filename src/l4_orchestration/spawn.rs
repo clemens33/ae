@@ -762,6 +762,22 @@ fn record_spawned_seat(
             crate::config::AGENT_NAME_GRAMMAR
         ));
     }
+    // A scope the vendor refused (`ae quota clear <scope>` ends it)
+    // owes the refusal BEFORE the meta is read and before any seat exists.
+    if let Some(root) = state_root {
+        let global = crate::doors::config_file(crate::shape::current(), root);
+        let local = crate::doors::local_config(invoker_cwd, Some(&global));
+        if let Some(why) = crate::vendorblock::scope_refusal(
+            root,
+            &global,
+            local.as_deref(),
+            &parsed.profile,
+            parsed.client.as_deref(),
+            now.epoch(),
+        ) {
+            return Err(format!("Error: {why}"));
+        }
+    }
     meta::plan_spawn_target(target, state_root)?;
     let facts = match facts(dir) {
         Ok(facts) => facts,

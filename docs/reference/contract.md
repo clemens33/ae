@@ -145,7 +145,7 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
   `tool`, `harness_state`, `launch_cmd`, `theme`, `store`, `events`, `effort_journal`, `state`,
   `requests`, `inventory`, `tracked`, `desk`, `roster`, `pairs`, `tmux`, `session_tmux`,
   `archive`, `digest`, `filters`, `memo`, `goal`, `wait_on`, `birth`, `model_drift`, `liveness`,
-  `conversation`, `topic`, `watchdog`.
+  `conversation`, `topic`, `watchdog`, `vendorblock`.
 - **3 services** — one capability each over that state: delivery and the helper verbs, the board,
   usage and Statistics reads, Telegram, launch builders, install and upgrade. Modules: `deliver`,
   `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `deskcheck`, `deskcmd`, `desklive`, `deskstore`, `desktick`, `quota`, `usage`, `watchdog_state`,

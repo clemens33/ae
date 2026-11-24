@@ -1,0 +1,7 @@
+version=1
+tool=muse
+client=muse
+since=017
+kind=billing
+seat=testpins-rev
+reason=Billing verification failed. Billing Issue

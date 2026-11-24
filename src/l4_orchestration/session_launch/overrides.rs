@@ -453,6 +453,8 @@ struct OverrideCtx<'a> {
     recorded: Option<&'a Meta>,
     session: &'a str,
     home: Option<&'a Path>,
+    /// The state root the vendor block records live under (`AE_HOME`).
+    state_root: &'a Path,
 }
 
 /// Resolve one `--seat <agent>=<profile[@client]>` value: the agent must be a
@@ -470,6 +472,19 @@ fn resolve_one_override(
         )));
     }
     let (profile, client) = split_seat_override(value).map_err(SeatOverrideRefusal::Usage)?;
+    // A scope its vendor refused (`ae quota clear <scope>` ends it)
+    // takes no seat: the one refusal `spawn --using` owes too, before any
+    // server effect. An `OpenCode` block of one upstream provider refuses only
+    // the profiles whose model id names that provider.
+    if let Some(why) = crate::vendorblock::scope_refusal_in(
+        ctx.cfg,
+        ctx.state_root,
+        &profile,
+        client.as_deref(),
+        crate::time::Timestamp::now().epoch(),
+    ) {
+        return Err(SeatOverrideRefusal::Failed(format!("Error: {why}")));
+    }
     let (command, parsed) = if let Some(label) = client.as_deref() {
         resolve_client_override(
             ctx.cfg,
@@ -772,6 +787,7 @@ fn seat_override_snapshot(
         recorded: recorded.as_ref(),
         session,
         home: home.as_deref(),
+        state_root: &env.home,
     };
     for (agent, value) in &plan.seat_profiles {
         overrides.push(resolve_one_override(&ctx, agent, value)?);
@@ -912,3 +928,7 @@ pub(super) fn apply_seat_overrides(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "vendorblock_launch_spec.rs"]
+mod vendorblock_launch_spec;

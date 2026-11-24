@@ -309,6 +309,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "vendorblock_record"
+path = "fuzz_targets/vendorblock_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "challenge_summary"
 path = "fuzz_targets/challenge_summary.rs"
 test = false

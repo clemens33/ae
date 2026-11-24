@@ -1,0 +1,8 @@
+version=1
+tool=opencode
+client=opencode
+since=1788858600
+kind=account
+seat=trustfix-nav
+reason=You have exceeded your monthly quota
+provider=github-copilot

@@ -38,6 +38,7 @@ ae brief [name] [--all] [--since <dur>] [--full] [--seat <agent>]
                        --seat prints ONE seat's seed pack instead of the cards
 ae quota [--json]      Show bounded local quota snapshots for every configured account;
                        --json prints the same rows as one JSON document
+ae quota clear CLIENT  End one client scope's vendor block, the only way a block ends
 ae usage [name…] [--hourly] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
@@ -1564,6 +1565,43 @@ separate 1 GiB allowance and existing per-seat caps: a seat either fits or is na
 records are named; incomplete totals are labelled partial. Missing usage never becomes zero.
 No flags or positional arguments combine with `--profiles`; the session helper keeps its
 existing table-only syntax.
+
+### Vendor blocks: `ae quota clear <scope>`
+
+A vendor refusal that no reset frees blocks the scope that saw it, fleet-wide. Two lines are
+measured: Muse's `model failed: API error 402 … Billing verification failed` (kind `billing`) and
+OpenCode's `Error: You have exceeded your monthly quota` for Copilot (kind `account`). OpenCode's
+row counts only as the NEWEST transcript row: exactly five spaces and the measured sentence, then
+only blank rows, the measured `<agent> · <model> · <n>ms` footer, blank rows and the composer. A
+quote of the same words in tool output, at another indent or followed by a later row books nothing,
+and neither does an unmeasured footer. The sidebar may follow the sentence only starting at the
+column four past the composer rule row's length. Any other 4xx, 5xx or unknown text stays
+unclassified.
+
+The scope is the `[clients]` label, except for an `opencode` client. One `opencode` client often
+serves several upstream providers (Copilot, OpenCode Go, the free Zen models), so a profile whose
+`--model` or `-m` id is `provider/model` is in the scope of that provider: a Copilot block
+(`github-copilot/gpt-6.1-sol`) refuses only the `github-copilot` profiles and the other providers of
+the same client still spawn. A model id with no `/` falls back to the client's own scope. A provider
+that spells the client's label (the `opencode/` Zen models on an `opencode` client) is the client's
+scope. The first sighting of a scope writes one record, `<state root>/vendorblock/<scope>.rec`,
+naming the client, the harness, the time, the seat and the vendor's own words; a provider scope adds
+a `provider` row. The seat shows `needs you (billing)` or `needs you (account)` in `ae list`, rides
+the usage limit latch (attention `limit`, journal action `limit` with the kind in its summary) and
+an auto reseat treats it like a usage limit.
+
+`ae quota` prints a `blocked scopes` section under the table, one line per blocked scope:
+`blocked (billing since 2026-09-08T09:10:00Z)`, the reason, the seat that saw it and
+`ae quota clear <scope>`. `spawn --using` and `--lead`, `--colead` and `--seat` on a blocked scope
+(including a `profile@client` selection, which keeps the profile's own provider) refuse before any
+seat or tmux effect and name the same command.
+
+Only `ae quota clear <scope>` ends a block: no later quiet pane, completed turn or auto reseat
+does, because nothing measured proves the account works again. It removes that scope's record
+(whatever it holds, so a damaged file never strands the human) and says `no block recorded for
+<scope>` or `unknown scope <scope>` otherwise, both with a non-zero exit. A record is hostile
+persisted state: a record that does not parse, sits at another scope's file, names another client,
+harness or provider than its scope or stamps a future time blocks nothing.
 
 ### Machine-readable: `ae quota --json`
 
