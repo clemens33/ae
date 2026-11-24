@@ -82,7 +82,7 @@ pub(crate) struct Journal {
     request_at: HashMap<Vec<u8>, usize>,
     /// Where the `relay-attempt` and `relay-result` records of each reference sit.
     relay_at: HashMap<String, Vec<usize>>,
-    /// Where the console ask openings of each reference sit.
+    /// Where the ask openings of each reference sit, whoever opened them.
     ask_at: HashMap<String, Vec<usize>>,
     /// The reference of each claimed relay, in the order of its first attempt.
     attempts: Vec<String>,
@@ -104,7 +104,7 @@ impl Journal {
             if event.action == relay::ATTEMPT && claimed.insert(id.to_owned()) {
                 attempts.push(id.to_owned());
             }
-            if event.actor == tracked::CONSOLE_SINK && event.action == tracked::Kind::Ask.action() {
+            if event.action == tracked::Kind::Ask.action() {
                 ask_at.entry(id.to_owned()).or_default().push(at);
             }
         }
@@ -157,7 +157,8 @@ impl Journal {
         self.picked(self.relay_at.get(id))
     }
 
-    /// The console ask openings of `id`, in journal order.
+    /// The ask openings of `id`, in journal order, whoever opened them: a
+    /// reader that wants the console's judges the actor itself.
     fn ask_events(&self, id: &str) -> Vec<Event> {
         self.picked(self.ask_at.get(id))
     }
@@ -215,7 +216,15 @@ impl SessionInput {
             (Some(why), _) => Some(why.clone()),
             (None, Err(why)) => Some(format!("journal unreadable: {why}")),
             (None, Ok(journal)) => journal.lost.as_ref().map(|why| {
-                format!("journal partly unreadable, its readable claims are kept: {why}")
+                let asks = self
+                    .uuid
+                    .as_deref()
+                    .map(|uuid| owner_asks(journal, &self.name, uuid))
+                    .unwrap_or_default();
+                format!(
+                    "journal partly unreadable, its readable claims are kept and its owner asks and seat states are not proved: {why}{}",
+                    unproved_asks(&asks)
+                )
             }),
         }
     }
@@ -539,12 +548,13 @@ fn holds_owner_opening(journal: &Journal, id: &str, uuid: &str) -> bool {
     matches!(journal.ask_events(id).as_slice(), [only] if is_owner_opening(only, uuid))
 }
 
-/// The owner asks a journal that cannot be read strictly holds, in one gap
-/// line: a reply may sit in the lost part, so none of them is proved open.
-fn unproved_asks(session: &SessionInput, asks: &[&Event], why: &str, unresolved: &mut Vec<Gap>) {
+/// The owner asks a journal that cannot be read strictly holds, as the tail of
+/// the session's one coverage line: a reply may sit in the lost part, so none
+/// of them is proved open.
+fn unproved_asks(asks: &[&Event]) -> String {
     const NAMED: usize = 3;
     if asks.is_empty() {
-        return;
+        return String::new();
     }
     let mut ids: Vec<&str> = asks
         .iter()
@@ -558,14 +568,11 @@ fn unproved_asks(session: &SessionInput, asks: &[&Event], why: &str, unresolved:
         ids.push("...");
         format!(" and {more} more")
     };
-    unresolved.push(Gap {
-        subject: format!("session {}", session.name),
-        reason: format!(
-            "{} owner ask(s) read from a journal that cannot be read strictly, not proved open: {}{tail} ({why})",
-            asks.len(),
-            ids.join(", ")
-        ),
-    });
+    format!(
+        "; {} owner ask(s) not proved open: {}{tail}",
+        asks.len(),
+        ids.join(", ")
+    )
 }
 
 /// The words that say the origin of an obligation is not running.
@@ -605,19 +612,23 @@ fn open_rows(
             continue;
         };
         let claimed = relays(session, uuid, journal, &held, unresolved);
-        // The relays each owner ask is cited by, indexed once.
+        // Each bound join is judged once: a relay whose cited ask is not one
+        // owner opening of this journal is a gap and never a link, so the
+        // owner's line and the gap read the same verdict. A partial read
+        // judges none, and its asks are one tail of the session's coverage line.
         let mut by_ask: HashMap<&str, Vec<&Relay>> = HashMap::new();
+        let mut unjoined: HashSet<&str> = HashSet::new();
         for relay in &claimed {
             if let Join::Bound(cited) = &relay.join {
-                by_ask.entry(cited.as_str()).or_default().push(relay);
+                if journal.lost.is_none() && !holds_owner_opening(journal, cited, uuid) {
+                    unjoined.insert(relay.id.as_str());
+                } else {
+                    by_ask.entry(cited.as_str()).or_default().push(relay);
+                }
             }
         }
-        let asks = owner_asks(journal, &session.name, uuid);
-        // A partial read proves the claims it holds, never an ask still open.
-        if let Some(why) = &journal.lost {
-            unproved_asks(session, &asks, why, unresolved);
-        } else {
-            for ask in asks {
+        if journal.lost.is_none() {
+            for ask in owner_asks(journal, &session.name, uuid) {
                 let Some(id) = ask.reference.as_deref() else {
                     continue;
                 };
@@ -646,7 +657,7 @@ fn open_rows(
         } else {
             ""
         };
-        for relay in claimed {
+        for relay in &claimed {
             let subject = format!("relay {} ({})", relay.id, relay.place);
             match &relay.join {
                 Join::Absent => {}
@@ -654,9 +665,7 @@ fn open_rows(
                     subject: subject.clone(),
                     reason: format!("owner join not read: {why}"),
                 }),
-                Join::Bound(cited)
-                    if journal.lost.is_none() && !holds_owner_opening(journal, cited, uuid) =>
-                {
+                Join::Bound(cited) if unjoined.contains(relay.id.as_str()) => {
                     unresolved.push(Gap {
                         subject: subject.clone(),
                         reason: format!(
@@ -981,6 +990,9 @@ fn fleet_gaps(incomplete: &[FailedSource], complete: bool, paired: bool) -> Vec<
     gaps
 }
 
+/// The degradation reason of a record whose journal lost records.
+const JOURNAL_LOST: &str = "journal records were lost";
+
 /// Why the record of a session reads as degraded, and whether that loses the
 /// evidence a relay is proved from: a lost meta, a malformed meta line or a
 /// repeated `session_id` do. Lost journal records, a repeated roster row and
@@ -1020,7 +1032,7 @@ fn degradation(snapshot: Option<&RecordSnapshot>) -> (String, bool) {
         // read that fails keeps only the claims it can prove, and a target
         // read in part proves no request state. This record's identity is not
         // lost with the lines.
-        reasons.push("journal records were lost".to_owned());
+        reasons.push(JOURNAL_LOST.to_owned());
     }
     if reasons.is_empty() {
         reasons.push("an unusable idle-nudge pin".to_owned());
@@ -1028,15 +1040,28 @@ fn degradation(snapshot: Option<&RecordSnapshot>) -> (String, bool) {
     (reasons.join("; "), proof)
 }
 
+/// The session key of a fleet entry: its name and, when its meta names one,
+/// its uuid, so a record is judged by the id it carries.
+fn key_of(entry: &crate::digest::SessionEntry) -> SessionKey<'_> {
+    entry.session_uuid.as_deref().map_or_else(
+        || SessionKey::named(&entry.name),
+        |uuid| SessionKey::new(&entry.name, uuid),
+    )
+}
+
 /// The `waiting-user` seats of one fleet entry, each with the facts that bind
-/// it to its launch.
+/// it to its launch. The seat state and its declaration row are read from the
+/// one journal read the entry was built from.
 fn waits_of(
     entry: &crate::digest::SessionEntry,
     snapshot: Option<&RecordSnapshot>,
-    events: Option<&[Event]>,
     as_of: Timestamp,
 ) -> Vec<Wait> {
     let meta = snapshot.and_then(|snapshot| snapshot.meta.as_ref());
+    let events = snapshot
+        .and_then(|snapshot| snapshot.events.as_ref())
+        .map(|read| read.events.as_slice());
+    let key = key_of(entry);
     crate::brief::agent_lines_from_world(entry, as_of)
         .into_iter()
         .filter(|line| line.state == "waiting-user")
@@ -1049,7 +1074,7 @@ fn waits_of(
                 .map(|age| Timestamp::from_epoch(as_of.epoch().saturating_sub(age)));
             let witness = seat.map_or_else(
                 || Witness::Unproved("the roster names no slot for the seat".to_owned()),
-                |seat| witness_of(events, &entry.name, &seat.slot, &seat.reference(), since),
+                |seat| witness_of(events, key, &seat.slot, &seat.reference(), since),
             );
             let launch_id = slot
                 .as_deref()
@@ -1070,13 +1095,16 @@ fn waits_of(
         .collect()
 }
 
-/// What the declaration row of a seat says of its launch. The row is the one
-/// the digest selected, found again by the same rule in the journal read for
-/// this check: it must be a `waiting-user` made at the second the fleet read
-/// named, or the two reads saw different declarations and nothing is proved.
+/// What the declaration row of a seat says of its launch. The row is the
+/// seat's newest declaration under its stable session key, taken from the
+/// same read the seat state came from: a record pinned to another session id
+/// is no declaration of this seat even under its name, and one pinned to this
+/// id is, across a rename. It must be a `waiting-user` made at the second the
+/// seat state names, or the state came from some other row and nothing is
+/// proved. The second is a consistency check, never how the row is chosen.
 fn witness_of(
     events: Option<&[Event]>,
-    session: &str,
+    session: SessionKey<'_>,
     slot: &str,
     reference: &str,
     since: Option<Timestamp>,
@@ -1086,8 +1114,13 @@ fn witness_of(
             "the journal that holds the declaration cannot be read".to_owned(),
         );
     };
-    let Some((event, _current)) = session::declaration_of(events, session, slot, reference) else {
-        return Witness::Unproved("the journal holds no declaration of the seat".to_owned());
+    let Some(event) = events.iter().rev().find(|event| {
+        event.declared_state().is_some()
+            && crate::watchdog::event_is_actor_in(event, session, slot, reference)
+    }) else {
+        return Witness::Unproved(
+            "the journal holds no declaration of the seat under its session id".to_owned(),
+        );
     };
     if event.declared_state() != Some("waiting-user")
         || since.is_some_and(|since| since.epoch() != event.ts.epoch())
@@ -1133,13 +1166,10 @@ fn inputs(read: &crate::fleet_read::WorldRead) -> (Vec<SessionInput>, Vec<Gap>) 
             let journal = match durable {
                 None => Err("no durable record".to_owned()),
                 Some(record) => match relay::strict_journal(&record.path) {
-                    Ok((bytes, events)) => {
-                        let key = entry.session_uuid.as_deref().map_or_else(
-                            || SessionKey::named(&entry.name),
-                            |uuid| SessionKey::new(&entry.name, uuid),
-                        );
-                        Ok(Journal::new(events, requests::states_in(&bytes, key)))
-                    }
+                    Ok((bytes, events)) => Ok(Journal::new(
+                        events,
+                        requests::states_in(&bytes, key_of(entry)),
+                    )),
                     Err(why) => record
                         .snapshot
                         .events
@@ -1149,27 +1179,31 @@ fn inputs(read: &crate::fleet_read::WorldRead) -> (Vec<SessionInput>, Vec<Gap>) 
                         }),
                 },
             };
-            let (degraded, record_gap) = if entry.degraded {
+            let (degraded, record_gap, journal_only) = if entry.degraded {
                 let (reason, proof) = degradation(snapshot);
                 let words = format!("record degraded: {reason}");
-                (Some(words.clone()), proof.then_some(words))
+                (
+                    Some(words.clone()),
+                    proof.then_some(words),
+                    reason == JOURNAL_LOST,
+                )
             } else {
-                (None, None)
+                (None, None, false)
             };
+            // A journal that the session's own coverage line already names as
+            // lost is that line's loss: its seat states are not proved there,
+            // and a second line for the same read would say it again.
+            let named = journal_only
+                && journal
+                    .as_ref()
+                    .map_or(true, |journal| journal.lost.is_some());
             let waits = match degraded {
+                Some(_) if named => Ok(Vec::new()),
                 Some(words) => Err(words),
                 None if !entry.agent_state_is_exact() => {
                     Err("seat states are not exact".to_owned())
                 }
-                None => Ok(waits_of(
-                    entry,
-                    snapshot,
-                    journal
-                        .as_ref()
-                        .ok()
-                        .map(|journal| journal.events.as_slice()),
-                    as_of,
-                )),
+                None => Ok(waits_of(entry, snapshot, as_of)),
             };
             SessionInput {
                 name: entry.name.clone(),

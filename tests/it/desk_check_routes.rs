@@ -134,6 +134,13 @@ fn a_damaged_unrelated_origin_line_keeps_the_readable_relay_claim_and_names_the_
         .find(|line| line.contains("orch") && line.contains("partly unreadable"))
         .unwrap_or_else(|| panic!("the damaged session has its one gap: {}", words(&out)));
     assert!(gap.contains("readable claims are kept"), "{gap}");
+    assert!(
+        section(&out, "unresolved coverage")
+            .iter()
+            .all(|line| !line.contains("seats of orch")),
+        "the journal loss is said once, by the session's line: {}",
+        words(&out)
+    );
 }
 
 #[test]

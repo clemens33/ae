@@ -760,22 +760,17 @@ fn a_partly_read_origin_keeps_its_claims_and_loses_its_asks_to_coverage() {
         report.unboarded[0].detail
     );
     assert_eq!((report.read, report.unreadable), (1, 1));
-    let session_gap = report
-        .unresolved
-        .iter()
-        .find(|gap| gap.subject == "session orch" && gap.reason.starts_with("journal partly"))
-        .expect("the session has its one gap");
-    assert!(session_gap.reason.contains("line 7 is not a record"));
-    let asks = report
-        .unresolved
-        .iter()
-        .find(|gap| gap.reason.contains("owner ask(s) read from a journal"))
-        .expect("the asks are one coverage line");
-    assert!(
-        asks.reason
-            .starts_with("5 owner ask(s) read from a journal that cannot be read strictly, not proved open: ask-a, ask-b, ask-c, ... and 2 more"),
-        "{}",
-        asks.reason
+    assert_eq!(
+        report.unresolved.len(),
+        1,
+        "one read loss is one coverage line: {:?}",
+        report.unresolved
+    );
+    let gap = &report.unresolved[0];
+    assert_eq!(gap.subject, "session orch");
+    assert_eq!(
+        gap.reason,
+        "journal partly unreadable, its readable claims are kept and its owner asks and seat states are not proved: line 7 is not a record; 5 owner ask(s) not proved open: ask-a, ask-b, ask-c, ... and 2 more"
     );
 }
 
@@ -1032,7 +1027,8 @@ fn the_board_error_line_cannot_be_altered_by_control_text() {
     );
 }
 
-fn declaration(ts: i64, actor: &str, value: &str, launch: Option<&str>) -> Event {
+/// A declaration record with `tail` appended to its fields.
+fn declaration_with(ts: i64, actor: &str, value: &str, tail: &str) -> Event {
     let body = crate::state::event_body(
         at(ts),
         actor,
@@ -1042,21 +1038,40 @@ fn declaration(ts: i64, actor: &str, value: &str, launch: Option<&str>) -> Event
             on: None,
         },
     );
-    let line = body.lines().next().expect("a record").to_owned();
-    let line = match launch {
-        Some(id) => format!(
-            "{},\"actor_launch_id\":\"{id}\"}}",
-            line.trim_end_matches('}')
-        ),
-        None => line,
-    };
+    let line = body.lines().next().expect("a record");
+    let line = format!("{}{tail}}}", line.trim_end_matches('}'));
     Event::parse_line(&line).expect("a record")
+}
+
+fn declaration(ts: i64, actor: &str, value: &str, launch: Option<&str>) -> Event {
+    let tail = launch.map_or_else(String::new, |id| format!(",\"actor_launch_id\":\"{id}\""));
+    declaration_with(ts, actor, value, &tail)
+}
+
+/// A declaration that carries the routing key a stamping writer leaves: the
+/// seat's slot, the session it spoke in by name and, when it has one, by id.
+fn routed_declaration(
+    ts: i64,
+    session: &str,
+    id: Option<&str>,
+    value: &str,
+    launch: Option<&str>,
+) -> Event {
+    let mut tail = format!(",\"actor_slot\":\"main\",\"actor_session\":\"{session}\"");
+    if let Some(id) = id {
+        tail.push_str(&format!(",\"actor_session_id\":\"{id}\""));
+    }
+    if let Some(launch) = launch {
+        tail.push_str(&format!(",\"actor_launch_id\":\"{launch}\""));
+    }
+    declaration_with(ts, "lead", value, &tail)
 }
 
 #[test]
 fn the_declaration_row_names_its_launch_and_a_foreign_read_proves_nothing() {
+    let key = SessionKey::new("alpha", TARGET);
     let witness = |events: Option<&[Event]>, since: i64| {
-        witness_of(events, "alpha", "main", "lead", Some(at(since)))
+        witness_of(events, key, "main", "lead", Some(at(since)))
     };
     let stamped = [declaration(100, "lead", "waiting-user", Some("tok-1"))];
     assert_eq!(
@@ -1088,10 +1103,84 @@ fn the_declaration_row_names_its_launch_and_a_foreign_read_proves_nothing() {
     let empty = declaration(100, "lead", "waiting-user", Some(""));
     unproved(witness(Some(&[empty]), 100), "present and empty");
     assert_eq!(
-        witness_of(Some(&stamped), "alpha", "main", "lead", None),
+        witness_of(Some(&stamped), key, "main", "lead", None),
         Witness::Launch("tok-1".to_owned()),
         "a missing fleet time leaves the row's own witness"
     );
+}
+
+#[test]
+fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
+    let key = SessionKey::new("alpha", TARGET);
+    let witness = |events: &[Event]| witness_of(Some(events), key, "main", "lead", Some(at(100)));
+    let unproved = |witness: Witness, phrase: &str| {
+        let Witness::Unproved(why) = witness else {
+            panic!("expected an unproved declaration, got {witness:?}");
+        };
+        assert!(why.contains(phrase), "{why}");
+    };
+    let launch = Witness::Launch("tok-1".to_owned());
+    // The seat's own stamped row names its launch.
+    let own = [routed_declaration(
+        100,
+        "alpha",
+        Some(TARGET),
+        "waiting-user",
+        Some("tok-1"),
+    )];
+    assert_eq!(witness(&own), launch);
+    // The same name and slot under another session id is another incarnation's
+    // row. Its launch name would pass, and it supplies nothing.
+    let foreign = [routed_declaration(
+        100,
+        "alpha",
+        Some(ORCH),
+        "waiting-user",
+        Some("tok-1"),
+    )];
+    unproved(
+        witness(&foreign),
+        "no declaration of the seat under its session id",
+    );
+    // Beside an older row of the seat itself, the seat's own row is the one
+    // read, and its second is not the one the seat state names.
+    let beside = [
+        declaration(90, "lead", "waiting-user", None),
+        routed_declaration(100, "alpha", Some(ORCH), "waiting-user", Some("tok-1")),
+    ];
+    unproved(witness(&beside), "not the one the fleet read named");
+    // A foreign row newer than the seat's own working row cannot end it.
+    let newer_foreign = [
+        routed_declaration(100, "alpha", Some(TARGET), "waiting-user", Some("tok-1")),
+        routed_declaration(150, "alpha", Some(ORCH), "working", Some("tok-0")),
+    ];
+    assert_eq!(witness(&newer_foreign), launch);
+    // A row pinned to this id before a rename is still the seat's.
+    let renamed = [routed_declaration(
+        100,
+        "alpha-old",
+        Some(TARGET),
+        "waiting-user",
+        Some("tok-1"),
+    )];
+    assert_eq!(witness(&renamed), launch);
+    // A row with no session id is judged by the name alone.
+    let legacy = [routed_declaration(
+        100,
+        "alpha",
+        None,
+        "waiting-user",
+        Some("tok-1"),
+    )];
+    assert_eq!(witness(&legacy), launch);
+    let other = [routed_declaration(
+        100,
+        "other",
+        None,
+        "waiting-user",
+        Some("tok-1"),
+    )];
+    unproved(witness(&other), "no declaration of the seat");
 }
 
 #[test]
@@ -1155,6 +1244,27 @@ fn relayed_ask(id: &str, ts: i64) -> String {
     tracked::event_line_with(&fields, "launch-1", &[("relay_origin", TARGET)])
 }
 
+/// An ask an agent opened in `ORCH`'s journal under the id of an owner ask.
+fn agent_ask(id: &str, ts: i64) -> String {
+    let fields = EventFields {
+        actor_session_id: ORCH,
+        ..EventFields::new(
+            at(ts),
+            "boss",
+            "ask",
+            "target:lead",
+            id,
+            "main",
+            "orch",
+            "main",
+            "target",
+            "",
+            "",
+        )
+    };
+    tracked::event_line(&fields)
+}
+
 #[test]
 fn a_join_cites_one_owner_opening_even_when_it_was_answered_since() {
     let reply = EventFields::new(
@@ -1184,8 +1294,16 @@ fn a_join_cites_one_owner_opening_even_when_it_was_answered_since() {
             .filter(|gap| gap.reason.starts_with("owner join not read"))
             .count()
     };
+    // The owner's own line links the relay exactly when the join is read.
+    let linked = |report: &Report| {
+        report
+            .unboarded
+            .iter()
+            .filter(|row| row.key == "ask-1" && row.detail.contains("relay-1"))
+            .count()
+    };
     let open = joined(vec![owner_ask("ask-1", 100)]);
-    assert_eq!(unread(&open), 0);
+    assert_eq!((unread(&open), linked(&open)), (0, 1));
     let answered = joined(vec![owner_ask("ask-1", 100), tracked::event_line(&reply)]);
     assert_eq!(
         unread(&answered),
@@ -1194,11 +1312,18 @@ fn a_join_cites_one_owner_opening_even_when_it_was_answered_since() {
     );
     let foreign = joined(vec![relayed_ask("ask-1", 100)]);
     assert_eq!(unread(&foreign), 1, "a relayed opening is no owner ask");
+    assert_eq!(linked(&foreign), 0);
     let repeated = joined(vec![owner_ask("ask-1", 100), owner_ask("ask-1", 101)]);
     assert_eq!(
-        unread(&repeated),
-        1,
-        "a repeated opening is no one owner ask"
+        (unread(&repeated), linked(&repeated)),
+        (1, 0),
+        "a repeated opening is no one owner ask, and the owner's line does not claim the relay"
+    );
+    let beside_an_agent = joined(vec![owner_ask("ask-1", 100), agent_ask("ask-1", 101)]);
+    assert_eq!(
+        (unread(&beside_an_agent), linked(&beside_an_agent)),
+        (1, 0),
+        "a second opening of any actor is no one owner ask"
     );
     let absent = joined(Vec::new());
     assert_eq!(unread(&absent), 1);
