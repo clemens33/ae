@@ -341,6 +341,12 @@ impl App {
         saver.finish(&text)
     }
 
+    /// Owe the durable file this run's view, changed or not: an app another app
+    /// takes over from leaves the view it has for the one that replaces it.
+    pub(super) fn owe_view(&mut self) {
+        self.view_owed = true;
+    }
+
     /// What this app hands to the one that replaces it in `pane`, at `now`:
     /// the view of its selection and panel, each bound to its recorded uuid.
     pub(super) fn handover(

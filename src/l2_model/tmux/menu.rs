@@ -544,6 +544,34 @@ pub fn switch_client_args(server: &ServerId, client: &str, session: &str) -> Vec
     args
 }
 
+/// The argv of [`jump_client_command`] for one explicit `client`: switch it to
+/// `session`, then select `pane`'s window and the pane, as one tmux command
+/// line (`;` separates the three). `None` when the client name or the pane id
+/// is not the plain text tmux printed, so no argument can smuggle a command.
+#[must_use]
+pub fn jump_client_args(
+    server: &ServerId,
+    client: &str,
+    session: &str,
+    pane: &str,
+) -> Option<Vec<String>> {
+    let client_ok = !client.is_empty()
+        && client
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'));
+    let pane_ok = pane
+        .strip_prefix('%')
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+    if !(client_ok && pane_ok) {
+        return None;
+    }
+    let mut args = switch_client_args(server, client, session);
+    for verb in ["select-window", "select-pane"] {
+        args.extend([";", verb, "-t", pane].map(ToOwned::to_owned));
+    }
+    Some(args)
+}
+
 /// The arguments that run `words` as one background shell job on `server`: the
 /// words are shell-quoted into the job's single command string.
 #[must_use]

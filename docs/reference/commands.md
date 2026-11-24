@@ -53,11 +53,14 @@ ae chat [session] [--follow] [--all]
                        The human lane of one session: lead-pair pane turns,
                        chat asks and replies, live decision cards, and every
                        seat that needs you; /open <seat> selects its pane
-ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the selected
+ae app [session] [--new]
+                       The fleet as a terminal UI: sessions in a sidebar, the selected
                        one's Agents, and its chat; typing asks at home; /open <seat>
                        opens a seat's pane, outside tmux by handing this terminal
                        to it. Plain ae opens it; a hand-typed ae app prints a
-                       one-line hint saying so
+                       one-line hint saying so. One app runs per ae home: a second
+                       one focuses it in the same tmux server and takes over from
+                       anywhere else. --new starts another app that holds no record
 ae web [--port N]      The orchestrator chat in a browser tab on this machine: a
                        foreground listener on 127.0.0.1 (default port 7480) that
                        prints a one-time link; Ctrl-C stops it
@@ -155,8 +158,12 @@ See [Chat](../chat.md) for input, replies, coverage, and the follow view.
 
 ## `ae app`
 
-`ae app [session]` draws the fleet as a terminal UI beside the selected session's
-chat; it needs a terminal on stdin and stdout. Plain `ae` is the way in
+`ae app [session] [--new]` draws the fleet as a terminal UI beside the selected session's
+chat; it needs a terminal on stdin and stdout. One app runs per ae home
+([One app per home](../app.md#one-app-per-home)): a second `ae app` inside tmux on
+the same ae-owned server switches your client to the running app and exits 0; from
+anywhere else it takes the app over, and the old app saves its view and quits.
+`--new` starts another app that holds no record and never writes the saved view. Plain `ae` is the way in
 ([tmux server](#tmux-server)); a hand-typed `ae app` that opens prints
 `ae app: plain ae opens the app` on stderr, which ae's own starts never do.
 `[workspace] chat = app` runs it in the `chat` window. See [App](../app.md) for the layout, keys and ownership.

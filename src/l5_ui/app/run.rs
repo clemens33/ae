@@ -3,9 +3,9 @@
 use std::io::IsTerminal as _;
 
 use super::{
-    App, Duration, FLIGHT_QUIT_BOUND, HINT, Instant, Keep, Keys, NO_TERMINAL, OWN, Path,
+    App, Duration, FLIGHT_QUIT_BOUND, HINT, Instant, Keep, Keys, NO_TERMINAL, Path,
     RecvTimeoutError, ServerId, TICK, Terminal, Timestamp, USAGE, Wake, Write, backend, console,
-    doors, draw_frame, forward, handover, loader, maintainer, mpsc, paneview, saved, terminal_text,
+    doors, draw_frame, forward, instance, loader, maintainer, mpsc, paneview, saved, terminal_text,
     toggle, transport, tty, upgrade,
 };
 
@@ -27,16 +27,36 @@ pub fn run(
         session,
         own,
         handed,
+        fresh,
     }) = operands(tail)
     else {
         write!(err, "{USAGE}")?;
         return Ok(crate::entry::EXIT_USAGE);
     };
-    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let root = crate::doors::state_root(crate::shape::current());
+    // A home named only to be told it was not applied; never a line's raw text.
+    let named = session
+        .as_deref()
+        .filter(|name| crate::session_launch::name::is_session_name(name))
+        .map(str::to_owned);
+    let asked = instance::Asked {
+        home: named.as_deref(),
+        handed: handed.is_some(),
+        terminal,
+    };
+    if !terminal {
+        // A start with no terminal still focuses the running app; anything
+        // else it would have done needs one.
+        if let Some(root) = root.as_deref().filter(|_| !fresh)
+            && let instance::Entry::Exit(code) = instance::enter(root, &asked, err)?
+        {
+            return Ok(code);
+        }
         write!(err, "{NO_TERMINAL}")?;
         return Ok(crate::EXIT_UNAVAILABLE);
     }
-    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
+    let Some(root) = root else {
         writeln!(err, "ae: {}", crate::shape::NO_STATE_ROOT)?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
@@ -50,6 +70,18 @@ pub fn run(
         writeln!(err, "{}", crate::board::terminal_text(&line))?;
         return Ok(crate::EXIT_UNAVAILABLE);
     }
+    // One app per state root: the start that holds the record, an app that
+    // holds nothing (`--new`, a chat window), or the end of this start.
+    let (mut guard, writes) = if fresh {
+        (None, false)
+    } else {
+        match instance::enter(&root, &asked, err)? {
+            instance::Entry::Hold(guard) => (Some(guard), true),
+            instance::Entry::Fresh => (None, false),
+            instance::Entry::Exempt | instance::Entry::NoTerminal => (None, true),
+            instance::Entry::Exit(code) => return Ok(code),
+        }
+    };
     let Some((reads, pause)) = console::term::stdin_reads_pausable() else {
         write!(err, "{NO_TERMINAL}")?;
         return Ok(crate::EXIT_UNAVAILABLE);
@@ -121,13 +153,16 @@ pub fn run(
     let mut app = App::new(home, caller, pane, Some(ask));
     app.root = Some(root);
     app.keep = keep;
-    app.saver = Some(saved::Saver::start(
-        move |text| saved::write_file(&durable, text),
-        move |why| {
-            let line = format!("ae app: could not save the view: {why}");
-            let _ = told.send(Wake::Notice(line));
-        },
-    ));
+    // An app that holds nothing writes no saved view: the instance's is the one.
+    app.saver = writes.then(|| {
+        saved::Saver::start(
+            move |text| saved::write_file(&durable, text),
+            move |why| {
+                let line = format!("ae app: could not save the view: {why}");
+                let _ = told.send(Wake::Notice(line));
+            },
+        )
+    });
     let mut keys = Keys::app();
     let (mut dirty, mut first, mut restart) = (true, None, None);
     let code = loop {
@@ -166,6 +201,13 @@ pub fn run(
         dirty |= redraw | app.lapse(Instant::now());
         app.persist_view(Instant::now());
         app.focus();
+        // A request that names this app ends it like a quit; `end` hands over.
+        if guard
+            .as_mut()
+            .is_some_and(|guard| guard.poll(Instant::now()))
+        {
+            break clipped(&mut app, terminal.backend_mut()).map(|()| 0)?;
+        }
         if reader.is_finished() {
             break 1;
         }
@@ -193,7 +235,7 @@ pub fn run(
             Step::Quit(code) => return Ok(code),
         }
     };
-    end(tty, app, upkeep, code, restart, err)
+    end(tty, app, upkeep, code, restart, guard, err)
 }
 
 /// The reader of an app for `home`, in the `own` server and pane tmux names,
@@ -218,7 +260,7 @@ fn reader_of(
     reader
 }
 
-/// What the view an exec restart handed on behind [`handover::FLAG`] gives
+/// What the view an exec restart handed on behind [`super::handover::FLAG`] gives
 /// this process: the view it keeps, or the version it was meant to be.
 pub(super) fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
     let now = Timestamp::now().epoch();
@@ -351,16 +393,18 @@ impl<W: Write> Outside for Real<'_, W> {
 
 /// `ae app`'s operands.
 pub(super) struct Operands {
+    /// [`instance::NEW_FLAG`] was given: an app that holds no record.
+    pub(super) fresh: bool,
     /// The home session as typed.
     pub(super) session: Option<String>,
-    /// [`OWN`] was given: an app start ae made itself.
+    /// [`super::OWN`] was given: an app start ae made itself.
     pub(super) own: bool,
-    /// The view an exec restart handed on behind [`handover::FLAG`].
+    /// The view an exec restart handed on behind [`super::handover::FLAG`].
     pub(super) handed: Option<String>,
 }
 
-/// `ae app`'s operands: the home session, then [`OWN`] once, then the view an
-/// exec restart handed on behind [`handover::FLAG`], last. `None` is a usage
+/// `ae app`'s operands: the home session, then [`super::OWN`] once, then the view an
+/// exec restart handed on behind [`super::handover::FLAG`], last. `None` is a usage
 /// error.
 /// The orchestrator autostart for the owner's own app, once per invocation:
 /// on a thread, so the app paints at once, and its one line arrives as a
@@ -394,20 +438,14 @@ fn kick_orchestrator(root: &Path, wake: mpsc::Sender<Wake>) {
 }
 
 pub(super) fn operands(tail: &[String]) -> Option<Operands> {
-    let (session, rest) = match tail.split_first() {
-        Some((name, rest)) if !name.starts_with('-') => (Some(name.clone()), rest),
-        _ => (None, tail),
-    };
-    let (own, rest) = match rest.split_first() {
-        Some((flag, more)) if flag == OWN => (true, more),
-        _ => (false, rest),
-    };
-    let handed = match rest {
-        [] => None,
-        [flag, text] if flag == handover::FLAG => Some(text.clone()),
-        _ => return None,
-    };
+    let instance::Start {
+        session,
+        own,
+        handed,
+        fresh,
+    } = instance::parse_start(tail)?;
     Some(Operands {
+        fresh,
         session,
         own,
         handed,
@@ -447,14 +485,30 @@ fn end(
     upkeep: maintainer::Upkeep,
     code: u8,
     restart: Option<(String, toggle::Restart)>,
+    guard: Option<instance::Guard>,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
     // The store's upkeep stops before anything else.
     upkeep.stop(maintainer::STOP_BOUND);
     drop(tty);
+    // The app another app asked to hand over leaves its view whatever it
+    // changed: the new one starts from the file, then it answers. The lock is
+    // let go last, when `guard` drops with this call.
+    let held = guard;
+    let requester = held.as_ref().and_then(instance::Guard::requester);
+    if requester.is_some() {
+        app.owe_view();
+    }
     // The last word of the durable view, once the terminal is back.
     leave_the_view(&mut app, err);
+    if let Some(held) = &held {
+        held.acknowledge();
+    }
     app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
+    if let Some(requester) = requester {
+        err.write_all(instance::took_over_line(requester).as_bytes())?;
+        return Ok(0);
+    }
     let in_tmux = app.server.is_some();
     if let Some((version, restart)) = restart {
         app.publish_view(&restart, &version);

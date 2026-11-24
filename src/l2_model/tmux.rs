@@ -40,10 +40,11 @@ pub use menu::{
     FocusVerb, Menu, MenuAction, MenuItem, attach_args, confirm_before_args,
     display_client_message_args, display_menu_args, display_menu_centred_args,
     display_menu_for_client_args, display_message_args, display_settings_menu_args, focus_args,
-    guarded_jump_client_id_command, guarded_jump_id_command, jump_client_command, jump_command,
-    menu_literal, menu_run_shell_command, run_shell_background_args, run_shell_background_command,
-    seat_jump_client_id_command, seat_jump_id_command, switch_client_args, switch_client_command,
-    switch_client_id_command, switch_command, switch_id_command,
+    guarded_jump_client_id_command, guarded_jump_id_command, jump_client_args, jump_client_command,
+    jump_command, menu_literal, menu_run_shell_command, run_shell_background_args,
+    run_shell_background_command, seat_jump_client_id_command, seat_jump_id_command,
+    switch_client_args, switch_client_command, switch_client_id_command, switch_command,
+    switch_id_command,
 };
 pub(crate) use menu::{
     MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,

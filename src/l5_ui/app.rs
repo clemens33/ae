@@ -90,6 +90,7 @@ mod flight;
 mod frame;
 pub mod handover;
 pub mod highlight;
+pub mod instance;
 mod journals;
 mod keys;
 mod lane;
@@ -194,7 +195,7 @@ pub const HINT: &str = "ae app: plain ae opens the app";
 pub const OWN: &str = "--app-own";
 
 /// The usage text.
-pub const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n";
+pub const USAGE: &str = "Usage: ae app [session] [--new]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n  --new     start another app; it does not take the app record or the saved view\n";
 
 /// How often the fleet, home and the selection are read again.
 const REFRESH: Duration = Duration::from_secs(crate::board::follow::POLL_SECS);

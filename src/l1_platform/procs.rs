@@ -46,6 +46,18 @@ impl PsArgv {
         ])
     }
 
+    /// The argv reading ONE process's start: `ps -o lstart= -p <pid>`, which
+    /// the app record and the lane lock both keep as a start identity.
+    #[must_use]
+    pub fn lstart_of(pid: u32) -> Self {
+        Self(vec![
+            "-o".to_owned(),
+            "lstart=".to_owned(),
+            "-p".to_owned(),
+            pid.to_string(),
+        ])
+    }
+
     /// The argv for the transport door to spawn.
     #[must_use]
     pub fn as_args(&self) -> &[String] {

@@ -840,7 +840,14 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// The process-table snapshot leg of the one process door — the ONLY way
 /// product code runs `ps`, the program FIXED here.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
-    match spawn("ps", argv.as_args(), &[], Streams::Captured, None) {
+    // `LC_ALL=C` so a start identity (`lstart=`) reads the same under any locale.
+    match spawn(
+        "ps",
+        argv.as_args(),
+        &[("LC_ALL", "C")],
+        Streams::Captured,
+        None,
+    ) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -2924,6 +2931,17 @@ pub fn observe_view_place(server: &ServerId, target: &str) -> Option<(String, St
 #[must_use]
 pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::switch_client_args(server, client, session)).0
+}
+
+/// Hand one exact client to one exact session and select `pane`'s window and
+/// the pane itself, as one tmux command line (the shape of
+/// [`tmux::jump_client_command`]): whether tmux ran all of it. `false` too
+/// when the client name or the pane id fails its grammar and nothing ran.
+#[must_use]
+pub fn jump_client(server: &ServerId, client: &str, session: &str, pane: &str) -> bool {
+    addressable(server)
+        && tmux::jump_client_args(server, client, session, pane)
+            .is_some_and(|args| run(PROGRAM, &args).0)
 }
 
 /// The clients attached to exactly the stamped session, listed by its `$<n>`

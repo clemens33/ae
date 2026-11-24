@@ -1523,12 +1523,45 @@ landed in a core the link did not name: that app shows the hint and never
 restarts again. Only a newer core is handed the view, since an older one may
 not know the argument.
 
+## One app per home
+
+One `ae app` runs per ae home. The running app holds a kernel lock, the file
+`app-instance.lock`, and says who it is in `app-instance`: its process id, its
+start identity (`ps -o lstart=`), the tmux server it sits on and its session,
+window and pane. A second `ae app` reads that record:
+
+- Inside tmux on the same ae-owned server, it switches your client to the running
+  app's pane and exits 0 with one line, `ae app is already open at %N; switched
+  to it`. A home you named is not applied, and the line says so.
+- From anywhere else (outside tmux, another server), it asks the running app to
+  hand over, through the file `app-takeover`. The running app saves its view,
+  acknowledges in `app-takeover-ack`, quits, prints `ae app: <pid> took over` and
+  lets go of the lock. The new app then opens with that saved view. If nothing
+  acknowledges within 5 seconds, the new app refuses and names the pid. It never
+  signals a process.
+- A record whose process is gone, or whose pid was reused by another process, is
+  reclaimed silently when the lock is free.
+- Any other doubt refuses with the reason and takes nothing: a lock held by a
+  process the record does not name, an unreadable or damaged record, or a pane
+  whose `@ae_console` stamp tmux did not answer.
+
+A pane that carries a non-empty `@ae_console` stamp, which is a session's `chat =
+app` window, neither holds nor consults the record, so each such window keeps its
+own app. Plain `ae`, `ae <name>` and a typed `ae app` are governed. An exec restart
+keeps its pid and start identity, so it keeps the record; one that finds another
+app holding the lock runs as `--new` does.
+
+`ae app --new [session]` starts another app beside the running one. It takes no
+lock and no record, reads the saved view once and never writes it. It does not
+combine with `--app-own` or `--app-view`.
+
 ## What survives a quit
 
 The app keeps its view in one private file, `app-view`, directly in the ae
 home (`~/.ae/app-view`, mode 0600), and a fresh `ae` or `ae app` restores it.
-The file belongs to the ae home and not to one terminal: when two apps run at
-once, the last write wins.
+The file belongs to the ae home and not to one terminal. One app runs per home
+([One app per home](#one-app-per-home)), so one app writes it. An app started with
+`--new` never writes it.
 
 **What it holds.** The selected session and its seat highlight, the panel open
 or closed and its mode (side with the panel holding the keys, side with the main

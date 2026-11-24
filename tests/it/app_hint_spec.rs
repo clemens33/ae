@@ -18,7 +18,7 @@ const SAYS: &str = "ae app: plain ae opens the app";
 const CLOSED_IN_TMUX: &str = "ae app closed - run: ae app (in a chat window, prefix h reopens it)";
 const CLOSED_OUTSIDE: &str = "ae app closed - run: ae app";
 const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
-const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n";
+const USAGE: &str = "Usage: ae app [session] [--new]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n  --new     start another app; it does not take the app record or the saved view\n";
 
 static SERIAL: AtomicUsize = AtomicUsize::new(0);
 
