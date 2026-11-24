@@ -680,10 +680,16 @@ impl Cycle<'_> {
         let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
         let auto = self.auto.seat_view(self.lead_pair, slot);
         let stance = crate::autoreseat::leg::orchestrator_stance(&auto, &bytes, row, Some(capture));
-        // A running model the launch record and the pane contradict is part of why the seat
-        // stays: the owner reads both models, not the pane alone.
+        // A running model that nothing proves is part of why the seat stays: the owner reads the
+        // proof's own words, and the pin the profile held when the observer first saw the pane
+        // leave it. The observer drops the launch record then, so that pin is the only
+        // durable word of what the seat was set to run; it is named as a pin, never as proof.
         let unproven = match &stance {
             Some(Stance::Keep(crate::autoreseat::Origin::Unproven(why))) => Some(why.clone()),
+            _ => None,
+        };
+        let pinned = match crate::meta::observed_pair(&bytes, slot) {
+            crate::meta::Rows::Valid(pair) => pair.model_pin,
             _ => None,
         };
         let off = stance == Some(Stance::Off);
@@ -706,6 +712,7 @@ impl Cycle<'_> {
             Some(with_unproven(
                 crate::autoreseat::observed_summary(hold),
                 unproven.as_deref(),
+                pinned.as_deref(),
             ))
         } else if list.is_empty() {
             Some(format!(
@@ -1088,13 +1095,17 @@ impl Cycle<'_> {
     }
 }
 
-/// An observed choice's hold, with the running model's proof when the launch record
-/// and the live pane contradict it: the owner reads both models.
-pub(super) fn with_unproven(said: String, unproven: Option<&str>) -> String {
-    match unproven {
-        Some(why) => format!("{said}; its running model is not proven ({why})"),
-        None => said,
-    }
+/// An observed choice's hold, with the proof that the running model is not proven
+/// and the pin the profile held when the observer first saw the pane leave it: the
+/// owner reads the model the pane draws and the model the seat was set to run.
+pub(super) fn with_unproven(said: String, unproven: Option<&str>, pinned: Option<&str>) -> String {
+    let Some(why) = unproven else {
+        return said;
+    };
+    let pin = pinned.map_or_else(String::new, |pin| {
+        format!("; its profile pinned {pin} when the choice was seen")
+    });
+    format!("{said}; its running model is not proven ({why}){pin}")
 }
 
 /// What the cycle read of the desk-stale tick: the change booked for the
