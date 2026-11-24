@@ -854,22 +854,13 @@ fn hold(file: File, root: &Path, here: &Here) -> Option<Guard> {
         .and_then(|(server, pane)| place_of(server, pane).map(|place| (server_of(server), place)));
     let (server, (session, window, pane)) =
         placed.unwrap_or_else(|| (Server::None, (String::new(), String::new(), String::new())));
-    let held = Instance {
+    let bytes = record_bytes(Instance {
         pid,
         identity: identity.clone(),
         server,
         session,
         window,
         pane,
-    };
-    let bytes = render_instance(&held).or_else(|| {
-        render_instance(&Instance {
-            server: Server::None,
-            session: String::new(),
-            window: String::new(),
-            pane: String::new(),
-            ..held
-        })
     })?;
     remove(&root.join(REQUEST));
     publish(&root.join(INSTANCE), &bytes).ok()?;
@@ -883,6 +874,20 @@ fn hold(file: File, root: &Path, here: &Here) -> Option<Guard> {
         polled: now,
         swept: false,
         honoured: None,
+    })
+}
+
+/// The record of `held`; when its place cannot be spelled, the record of the
+/// same app with no place, which still proves who holds the lock.
+fn record_bytes(held: Instance) -> Option<Vec<u8>> {
+    render_instance(&held).or_else(|| {
+        render_instance(&Instance {
+            server: Server::None,
+            session: String::new(),
+            window: String::new(),
+            pane: String::new(),
+            ..held
+        })
     })
 }
 
@@ -1405,6 +1410,257 @@ mod tests {
             enter_at(&scratch.0, &asked, &nowhere(), &mut Vec::new()),
             Ok(Entry::Hold(_))
         ));
+    }
+
+    /// The record of this very process, as a restart finds it after an exec.
+    fn own_record(root: &Scratch) {
+        let own = std::process::id();
+        let held = Instance {
+            pid: own,
+            identity: identity_of(own).expect("this process has a start identity"),
+            server: Server::None,
+            session: String::new(),
+            window: String::new(),
+            pane: String::new(),
+        };
+        std::fs::write(
+            root.0.join(INSTANCE),
+            render_instance(&held).expect("spelled"),
+        )
+        .expect("write the record");
+    }
+
+    fn restart_asked() -> Asked<'static> {
+        Asked {
+            home: None,
+            handed: true,
+            terminal: true,
+            refused: 9,
+        }
+    }
+
+    #[test]
+    fn a_restart_that_finds_its_own_record_and_a_free_lock_keeps_the_record() {
+        let root = Scratch::new();
+        own_record(&root);
+        let entry = enter_at(&root.0, &restart_asked(), &nowhere(), &mut Vec::new());
+        assert!(
+            matches!(entry, Ok(Entry::Hold(_))),
+            "an exec restart that holds nothing else is still the instance"
+        );
+    }
+
+    #[test]
+    fn a_restart_that_finds_another_app_holding_the_lock_runs_fresh_at_once() {
+        let root = Scratch::new();
+        let other = Instance {
+            pid: std::process::id().wrapping_add(1).max(2),
+            identity: "OtherStart".to_owned(),
+            server: Server::None,
+            session: String::new(),
+            window: String::new(),
+            pane: String::new(),
+        };
+        std::fs::write(
+            root.0.join(INSTANCE),
+            render_instance(&other).expect("spelled"),
+        )
+        .expect("write the record");
+        let _theirs = store::lock(&root.0.join(LOCK), Duration::ZERO).expect("another app's lock");
+        let began = Instant::now();
+        let entry = enter_at(&root.0, &restart_asked(), &nowhere(), &mut Vec::new());
+        assert!(matches!(entry, Ok(Entry::Fresh)), "a guest holds nothing");
+        assert!(began.elapsed() < SETTLE, "it does not wait for a stranger");
+    }
+
+    #[test]
+    fn a_restart_waits_for_a_lock_the_exec_carried_and_then_holds_it() {
+        let root = Scratch::new();
+        own_record(&root);
+        let carried = store::lock(&root.0.join(LOCK), Duration::ZERO).expect("a carried lock");
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(carried);
+        });
+        let began = Instant::now();
+        let entry = enter_at(&root.0, &restart_asked(), &nowhere(), &mut Vec::new());
+        let took = began.elapsed();
+        letting_go.join().expect("the lock is let go");
+        assert!(matches!(entry, Ok(Entry::Hold(_))), "it holds once free");
+        assert!(
+            took < SETTLE,
+            "and as soon as it is free, not at the end of the wait: {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_restart_refuses_after_the_wait_when_its_own_lock_is_never_let_go() {
+        let root = Scratch::new();
+        own_record(&root);
+        let _carried = store::lock(&root.0.join(LOCK), Duration::ZERO).expect("a carried lock");
+        let path = root.0.clone();
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut err = Vec::new();
+            let began = Instant::now();
+            let entry = enter_at(&path, &restart_asked(), &nowhere(), &mut err);
+            let refused = matches!(entry, Ok(Entry::Exit(9)));
+            let _ = said.send((refused, began.elapsed(), err));
+        });
+        // A wait that never ends fails here, at a bound: it must not hang the test.
+        let (refused, took, err) = heard
+            .recv_timeout(SETTLE * 4)
+            .expect("the restart gives up at its own wait, not later");
+        assert!(refused, "it refuses");
+        assert!(took >= SETTLE, "it waited the whole settle: {took:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            doubt_line(Doubt::NotHolder, std::process::id())
+        );
+    }
+
+    fn take_over_asked() -> Asked<'static> {
+        Asked {
+            home: None,
+            handed: false,
+            terminal: true,
+            refused: 9,
+        }
+    }
+
+    /// The record of the app the scratch root's guard holds.
+    fn the_holder(root: &Scratch) -> Instance {
+        match read_record(&root.0) {
+            Record::Parsed(held) => held,
+            other => panic!("the guard wrote a record: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_takeover_waits_for_the_acknowledgement_and_then_for_the_lock_to_be_let_go() {
+        let root = Scratch::new();
+        let mut old = guard_in(&root);
+        let held = the_holder(&root);
+        let old_app = std::thread::spawn(move || {
+            let began = Instant::now();
+            while !old.poll(Instant::now()) {
+                if began.elapsed() > Duration::from_secs(5) {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            old.acknowledge();
+            // The old app saves, prints its line and quits: the lock follows.
+            std::thread::sleep(Duration::from_millis(400));
+            drop(old);
+            true
+        });
+        let mut err = Vec::new();
+        let entry = take_over(&root.0, &take_over_asked(), &held, &mut err);
+        assert!(
+            old_app.join().expect("the old app ends"),
+            "it saw the request"
+        );
+        assert!(
+            matches!(entry, Ok(Entry::Hold(_))),
+            "the new app takes the place once the lock is free: {}",
+            String::from_utf8_lossy(&err)
+        );
+        assert!(err.is_empty(), "a take-over that works says nothing");
+        assert!(!present(&root, REQUEST), "and leaves no request behind");
+    }
+
+    #[test]
+    fn a_takeover_nobody_acknowledges_ends_at_the_wait_with_its_own_words() {
+        let root = Scratch::new();
+        let _old = guard_in(&root);
+        let held = the_holder(&root);
+        let path = root.0.clone();
+        let (said, heard) = std::sync::mpsc::channel();
+        let pid = held.pid;
+        std::thread::spawn(move || {
+            let mut err = Vec::new();
+            let began = Instant::now();
+            let entry = take_over(&path, &take_over_asked(), &held, &mut err);
+            let ended = matches!(entry, Ok(Entry::Exit(9)));
+            let _ = said.send((ended, began.elapsed(), err));
+        });
+        let (ended, took, err) = heard
+            .recv_timeout(Duration::from_secs(15))
+            .expect("a take-over nobody answers gives up at its own wait, not later");
+        assert!(ended, "it refuses");
+        assert!(took >= TAKEOVER_WAIT, "after the whole wait: {took:?}");
+        assert_eq!(String::from_utf8_lossy(&err), timeout_line(pid));
+        assert!(!present(&root, REQUEST), "and takes its request back");
+    }
+
+    #[test]
+    fn the_guard_looks_for_a_request_exactly_one_tick_after_its_last_look() {
+        let root = Scratch::new();
+        let mut guard = guard_in(&root);
+        let request = Request {
+            target_pid: guard.pid,
+            target_identity: guard.identity.clone(),
+            requester: 7,
+            nonce: nonce_of('f'),
+        };
+        std::fs::write(
+            root.0.join(REQUEST),
+            render_request(&request).expect("spelled"),
+        )
+        .expect("write");
+        let last = guard.polled;
+        assert!(
+            !guard.poll(last + TICK.saturating_sub(Duration::from_millis(1))),
+            "a tick has not passed"
+        );
+        assert!(guard.poll(last + TICK), "a whole tick has");
+        assert_eq!(guard.requester(), Some(7));
+    }
+
+    #[test]
+    fn a_place_tmux_gave_that_cannot_be_spelled_leaves_a_record_with_no_place() {
+        let placed = Instance {
+            pid: 7,
+            identity: "Ident".to_owned(),
+            server: Server::Socket("/tmp/s".to_owned()),
+            session: "main".to_owned(),
+            window: "@2".to_owned(),
+            pane: "%3".to_owned(),
+        };
+        assert_eq!(
+            record_bytes(placed.clone()).and_then(|bytes| parse_instance(&bytes)),
+            Some(placed.clone()),
+            "a place that can be spelled stays"
+        );
+        for bad in [
+            Instance {
+                session: "two words".to_owned(),
+                ..placed.clone()
+            },
+            Instance {
+                window: "2".to_owned(),
+                ..placed.clone()
+            },
+            Instance {
+                pane: "%x".to_owned(),
+                ..placed.clone()
+            },
+        ] {
+            let kept = record_bytes(bad.clone()).and_then(|bytes| parse_instance(&bytes));
+            assert_eq!(
+                kept,
+                Some(Instance {
+                    pid: 7,
+                    identity: "Ident".to_owned(),
+                    server: Server::None,
+                    session: String::new(),
+                    window: String::new(),
+                    pane: String::new(),
+                }),
+                "the pid and identity stay and the place goes: {bad:?}"
+            );
+        }
     }
 
     #[test]
