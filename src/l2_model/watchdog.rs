@@ -8782,4 +8782,47 @@ tail line
             assert_eq!(sighted(&changed), None, "{label}");
         }
     }
+
+    /// trustfix survivors: the permission-list grammar entry by entry. Tool
+    /// names may carry `_` and `-`, a rule may nest parentheses; a name that
+    /// starts with a digit, entries without the final "and", or an "and"
+    /// before an entry that is not the last are not the measured list.
+    #[test]
+    fn the_permission_list_grammar_is_the_measured_one() {
+        let frame =
+            include_str!("../../tests/fixtures/dialogseat/claude-2.1.330-settings-80x24.txt");
+        let header = " ⚠ This folder pre-approves 1 tool permission in .claude/settings.json:\n";
+        assert!(frame.contains(header), "setup: the one-entry header");
+        let drawn = |count: u32, list: &str| {
+            let noun = if count == 1 {
+                "permission"
+            } else {
+                "permissions"
+            };
+            let changed = frame
+                .replace(
+                    header,
+                    &format!(" ⚠ This folder pre-approves {count} tool {noun} in .claude/settings.json:\n"),
+                )
+                .replace("   Bash(ls:*)\n", &format!("   {list}\n"));
+            super::human_prompt_class(&changed, "claude").and_then(|found| found.trust)
+        };
+        for (count, list) in [
+            (1, "mcp__server__tool_name"),
+            (1, "Web-Fetch(domain:example.com)"),
+            (1, "Bash(echo (nested))"),
+            (3, "Bash(a), Bash(b), and Bash(c)"),
+        ] {
+            assert!(drawn(count, list).is_some(), "measured: {list}");
+        }
+        for (count, list) in [
+            (1, "1Bash(ls:*)"),
+            (2, "Bash(ls:*), Bash(pwd)"),
+            (3, "Bash(a), and Bash(b), and Bash(c)"),
+            (2, "Bash(a), and Bash(b)x"),
+            (1, "Bash(unclosed"),
+        ] {
+            assert!(drawn(count, list).is_none(), "not measured: {list}");
+        }
+    }
 }
