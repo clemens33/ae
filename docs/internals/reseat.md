@@ -960,8 +960,9 @@ usable candidate keeps the seat's review pair on two proven providers),
 `floor-changed` (under the lifecycle lock the lead floor no longer lets the chosen
 destination pass), `orchestrator-changed` (under the lifecycle lock `auto_reseat` or
 `auto_reseat_orchestrator`, read again, no longer lets the chosen destination
-pass the orchestrator) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
-`lock`, `observed-choice`, `pair-changed`, `floor-changed` and `orchestrator-changed` are transient classes: their record
+pass the orchestrator), `orchestrator-stays` (the leg, judging again, finds no
+move for the orchestrator) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
+`lock`, `observed-choice`, `pair-changed`, `floor-changed`, `orchestrator-changed` and `orchestrator-stays` are transient classes: their record
 is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
 
 ### Auto reseat and the orchestrator
@@ -1038,8 +1039,14 @@ the orchestrator. It only narrows `auto_reseat = all`.
 - `off` stamps every candidate refused; `on` stamps nothing and still gets the
   one owner notice when its due move yields none.
 - One owner notice per episode, whatever refused the move
-  (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`; the leg's own
-  model-guard refusals and the late hold use the same keyed receipt). When a
+  (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`). The daemon is
+  the only teller: the leg and the trigger, reaching a no-move for the orchestrator
+  through a race with it, and the late gate's `orchestrator-changed` hold, close the
+  attempt as a hold (`orchestrator-stays` or `orchestrator-changed`) that tells
+  nothing and gives its attempt back, `MAX_POLICY_HOLDS` times per key, so the
+  daemon's next verdict tells the owner once with the full body. A standing
+  observed choice is a reason too: the act that tells it journals the
+  `observed-choice` hold once per key. When a
   move is due (a usage limit past its grace, or the account at the threshold)
   and the policy produces none (`off`, nothing configured, an unproven model,
   only other models, a same-model candidate with no room, a request in flight,
@@ -1049,7 +1056,7 @@ the orchestrator. It only narrows `auto_reseat = all`.
   line carrying the episode key as its reference: that line is both the receipt
   and the delivery, a restart finds it in the journal and repeats nothing, and
   the lead pair and the spawner are told after it. It names the scope window,
-  its reset time and the reason, then `ae reseat <session> main --using <profile>`
+  its reset time and the reason, then `ae reseat <session> <seat name> --using <profile>`
   when a manual profile exists, else that no candidate is configured.
 - An unusable value means `same-model`, with one note per watchdog start.
 

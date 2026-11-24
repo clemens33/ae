@@ -625,8 +625,9 @@ impl Cycle<'_> {
     /// reason: the policy is `off`, nothing is configured, the running model is
     /// not proven, only other models are listed, a same-model candidate is
     /// refused, no candidate keeps the conversation, or a request is in flight.
-    /// `None` when no move is due or one is permitted, or when the human's own
-    /// observed choice holds it (that hold has its own record and notice). Decided
+    /// `None` when no move is due or one is permitted; the human's own observed
+    /// choice that holds it is a reason like the rest, and its `observed-choice`
+    /// hold is journaled by the act that tells it. Decided
     /// BEFORE any attempt opens, with the leg's own stance and chooser, so no
     /// retry budget is spent and a candidate that becomes usable still moves the
     /// seat. The policy `on` keeps its movement and gets the notice all the same.
@@ -672,10 +673,9 @@ impl Cycle<'_> {
             Err(_) => return None,
         };
         let row = self.roster.iter().find(|row| row.slot == slot)?;
-        // A move the human's observed choice holds is the observed hold's to say.
-        if crate::run::observed_standing(self.meta_dir, slot).is_some() {
-            return None;
-        }
+        // The human's observed choice holds the move: the notice says so, and the
+        // `observed-choice` hold is journaled by the act that tells it.
+        let observed = crate::run::observed_standing(self.meta_dir, slot);
         let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
         let auto = self.auto.seat_view(self.lead_pair, slot);
         let stance = crate::autoreseat::leg::orchestrator_stance(&auto, &bytes, row, Some(capture));
@@ -689,7 +689,9 @@ impl Cycle<'_> {
             .map(|(name, _)| name)
             .find(|name| crate::reseat::resolved(self.meta_dir, name).is_some())
             .cloned();
-        let reason = if list.is_empty() {
+        let reason = if let Some(hold) = &observed {
+            crate::autoreseat::observed_summary(hold)
+        } else if list.is_empty() {
             format!("nothing is configured to take it ({profile} has no candidate)")
         } else if off {
             "auto_reseat_orchestrator = off".to_owned()
@@ -764,17 +766,15 @@ impl Cycle<'_> {
                     row.binary.as_deref().unwrap_or_default(),
                 );
                 format!(
-                    "its usage limit is reached{}",
-                    reset.map_or_else(
-                        || notice.map(|line| format!(": {line}")).unwrap_or_default(),
-                        |reset| when(reset.at)
-                    )
+                    "its usage limit is reached{}{}",
+                    notice.map(|line| format!(" ({line})")).unwrap_or_default(),
+                    reset.map(|reset| when(reset.at)).unwrap_or_default()
                 )
             }
         };
         let action = match by_hand {
             Some(name) => format!(
-                "Move it by hand: ae reseat {} main --using {name}",
+                "Move it by hand: ae reseat {} {agent} --using {name}",
                 self.session
             ),
             None => format!("No candidate is configured: add an [auto_reseat] row for {profile}."),

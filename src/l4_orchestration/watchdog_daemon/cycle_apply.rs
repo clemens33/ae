@@ -845,6 +845,27 @@ impl Cycle<'_> {
             // ORCHESTRATOR MODEL GUARD: the one owner notice of the episode; the
             // journal's own notice is its receipt, so a restart repeats nothing.
             AutoAct::Stays { key, body, .. } => {
+                // A standing observed choice keeps its `observed-choice` diagnosis
+                // in the journal, once per key, as the leg's own hold would write it.
+                if let Some(said) = crate::autoreseat::leg::observed_ending(self.meta_dir, slot) {
+                    let reference = key.to_string();
+                    let held = events.iter().any(|event| {
+                        event.action == crate::autoreseat::HELD_ACTION
+                            && event.actor == crate::watchdog::WATCHDOG_ACTOR
+                            && event.reference.as_deref() == Some(reference.as_str())
+                            && event.summary.as_deref() == Some(said.as_str())
+                            && crate::watchdog::event_is_addressed_to(
+                                event,
+                                self.session,
+                                slot,
+                                agent,
+                            )
+                    });
+                    if !held {
+                        let action = crate::autoreseat::HELD_ACTION;
+                        journal.record_referring(action, agent, &reference, &said, err)?;
+                    }
+                }
                 crate::autoreseat::leg::tell_stays(
                     self.meta_dir,
                     (self.session, slot, agent),

@@ -267,3 +267,70 @@ fn a_return_to_the_origin_follows_the_same_rule() {
         Some("origin".to_owned())
     );
 }
+
+mod holds {
+    //! The orchestrator's own rules give a held attempt back, a bounded number of
+    //! times per key, so a policy that refuses never strands a still-limited seat.
+
+    use super::*;
+    use crate::events::Event;
+    use crate::time::Timestamp;
+
+    const SESSION: &str = "guard-session";
+    const SLOT: &str = "main";
+    const AGENT: &str = "orchestrator";
+
+    fn at(second: i64) -> Timestamp {
+        Timestamp::from_epoch(1_700_000_000 + second)
+    }
+
+    fn record(second: i64, action: &str, summary: Option<&str>) -> Event {
+        let reference = format!(r#", "ref":"{}""#, at(0));
+        let summary = summary
+            .map(|text| format!(r#", "summary":"{text}""#))
+            .unwrap_or_default();
+        Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"{AGENT}"{reference}{summary}}}"#,
+            at(second)
+        ))
+        .expect("valid synthetic journal record")
+    }
+
+    fn spent(summaries: &[Option<&str>]) -> Episode {
+        let mut journal =
+            vec![Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"watchdog","action":"{LIMIT_ACTION}","target":"{AGENT}"}}"#,
+            at(0)
+        ))
+        .expect("the limit record")];
+        for (turn, summary) in summaries.iter().enumerate() {
+            let turn = i64::try_from(turn).expect("a few turns");
+            journal.push(record(10 + turn * 20, ATTEMPT_ACTION, None));
+            journal.push(record(15 + turn * 20, HELD_ACTION, *summary));
+        }
+        episode(&journal, SESSION, SLOT, AGENT).expect("the limit episode is open")
+    }
+
+    #[test]
+    fn an_ordinary_hold_spends_its_attempt() {
+        let state = spent(&[Some("busy: held: a request is in flight")]);
+        assert_eq!(state.attempts, 1);
+        assert!(state.held);
+    }
+
+    #[test]
+    fn the_orchestrators_own_rules_give_their_attempt_back_a_bounded_number_of_times() {
+        let changed = CauseClass::OrchestratorChanged.lead("model changed");
+        let stays = CauseClass::OrchestratorStays.lead("no usable candidate");
+        for (summary, word) in [(changed, "changed"), (stays, "stays")] {
+            let state = spent(&[Some(summary.as_str())]);
+            assert_eq!(state.attempts, 0, "{word}: the first hold is free");
+            let many = vec![Some(summary.as_str()); usize::from(MAX_POLICY_HOLDS) + 1];
+            let state = spent(&many);
+            assert_eq!(
+                state.attempts, 1,
+                "{word}: only {MAX_POLICY_HOLDS} holds are free, the next spends its attempt"
+            );
+        }
+    }
+}

@@ -41,7 +41,7 @@ const UNKNOWN: &str = "unknown";
 
 /// The observed-choice hold a no-candidate ending names instead, so a seat held
 /// for its human's choice is never told it has nowhere to go (#269).
-fn observed_ending(dir: &Path, slot: &str) -> Option<String> {
+pub(crate) fn observed_ending(dir: &Path, slot: &str) -> Option<String> {
     let hold = crate::run::observed_standing(dir, slot)?;
     Some(CauseClass::ObservedChoice.lead(&super::observed_summary(&hold)))
 }
@@ -377,9 +377,7 @@ pub(crate) fn orchestrator_stance(
 // id. A seat that records none is refused by the reseat's own guard, with its
 // own words, before any model matters, so the leg does not stage a stance on it.
 pub(crate) fn records_launch(bytes: &[u8], slot: &str) -> bool {
-    crate::meta::Meta::parse(&String::from_utf8_lossy(bytes))
-        .launch_id(slot)
-        .is_some()
+    !crate::lifecycle::meta_value(bytes, &format!("launch_id.{slot}")).is_empty()
 }
 
 /// The candidates an orchestrator's seat may take, or the hold that keeps it
@@ -1946,7 +1944,9 @@ pub(crate) fn run(
     let Some((pick, tier)) = choice.pick else {
         if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
             let code = close(&argv, &agent, now, (HELD_ACTION, &why), err)?;
-            if !found.choice_held {
+            // The orchestrator's observed hold is told by the daemon's one keyed
+            // notice, with its scope and the manual move.
+            if !found.choice_held && !orchestrator {
                 let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
                 tell(&argv, now, told, &notice(ending));
             }
@@ -1954,21 +1954,22 @@ pub(crate) fn run(
         }
         let (class, why) = refusal(&choice, pair.as_ref());
         let why = tagged(&why, &cause);
+        // The orchestrator's no-move is the daemon's one keyed notice to tell: a
+        // refusal here is a race with it, a hold that costs no attempt.
+        if orchestrator {
+            let held = CauseClass::OrchestratorStays.lead(&why);
+            return close(&argv, &agent, now, (HELD_ACTION, &held), err);
+        }
         let seat_of = (argv.session.as_str(), argv.slot.as_str(), agent.as_str());
         let retell = !pair_told(&events, seat_of, class, &key, &why);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
         if retell {
-            if orchestrator && guard_refused(&choice) {
-                // The model guard's refusal is the one keyed notice of the episode.
-                tell_stays(dir, seat_of, argv.key, now, &why);
-            } else {
-                tell(
-                    &argv,
-                    now,
-                    told,
-                    &notice(super::Ending::Refused(class, &why)),
-                );
-            }
+            tell(
+                &argv,
+                now,
+                told,
+                &notice(super::Ending::Refused(class, &why)),
+            );
         }
         return Ok(code);
     };
@@ -2086,20 +2087,11 @@ pub(crate) fn run(
         Ended::Refused(class) => notice(super::Ending::Refused(class, &summary)),
         Ended::Failed => notice(super::Ending::Failed(CauseClass::Other, &summary)),
     };
-    if !text.is_empty() {
-        // A hold of the orchestrator's own model guard is told through the one
-        // keyed receipt, so the daemon's notice of the same episode repeats nothing.
-        if matches!(ended, Ended::Refused(CauseClass::OrchestratorChanged)) {
-            tell_stays(
-                dir,
-                (&argv.session, &argv.slot, &agent),
-                argv.key,
-                now,
-                &summary,
-            );
-        } else {
-            tell(&argv, now, told, &text);
-        }
+    // The late hold of the orchestrator's own rules is no notice of the leg: the
+    // daemon's next verdict tells the owner once, with the scope and the manual
+    // move, and the hold gives its attempt back.
+    if !text.is_empty() && !matches!(ended, Ended::Refused(CauseClass::OrchestratorChanged)) {
+        tell(&argv, now, told, &text);
     }
     if let Some(pair) = collapsed {
         let ending = super::Ending::PairCollapse(pair);
@@ -3127,6 +3119,12 @@ pub(crate) fn trigger(
         Plan::Refuse { key, class, why } => {
             let argv = argv(key);
             let seat_of = (own_session, slot, row.name.as_str());
+            // The orchestrator's no-move is the daemon's one keyed notice to tell: a
+            // refusal here is a race with it, a hold that costs no attempt.
+            if seat.orchestrator {
+                let held = CauseClass::OrchestratorStays.lead(&why);
+                return close(&argv, &row.name, now, (HELD_ACTION, &held), err);
+            }
             let retell = !pair_told(&events, seat_of, class, &key.to_string(), &why);
             let code = close(&argv, &row.name, now, (REFUSED_ACTION, &why), err)?;
             if retell {

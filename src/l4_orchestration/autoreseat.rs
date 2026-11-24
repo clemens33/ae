@@ -124,6 +124,9 @@ pub enum CauseClass {
     /// Under the lifecycle lock the orchestrator's policy, read again, no longer
     /// lets the destination chosen before it pass: a hold, tried again.
     OrchestratorChanged,
+    /// The orchestrator's rules, judged now, leave it where it is: a hold that
+    /// costs no attempt while the daemon tells the owner once.
+    OrchestratorStays,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -148,6 +151,7 @@ impl CauseClass {
             Self::ReturnChanged => "return-changed",
             Self::FloorChanged => "floor-changed",
             Self::OrchestratorChanged => "orchestrator-changed",
+            Self::OrchestratorStays => "orchestrator-stays",
             Self::Other => "other",
         }
     }
@@ -164,6 +168,7 @@ impl CauseClass {
                 | Self::ReturnChanged
                 | Self::FloorChanged
                 | Self::OrchestratorChanged
+                | Self::OrchestratorStays
         )
     }
 
@@ -207,6 +212,11 @@ pub const RETRY_COOLDOWN_SECS: i64 = 1800;
 /// last ends its auto path for good. Each round keeps its [`MAX_ATTEMPTS`], so
 /// one key makes at most `MAX_ROUNDS * MAX_ATTEMPTS` attempts.
 pub const MAX_ROUNDS: u8 = 3;
+/// How many holds of the orchestrator's own rules ([`CauseClass::OrchestratorChanged`])
+/// one key gives back their attempt: a policy that refuses is no failed move, so it
+/// does not spend the budget, but a daemon that never agrees with the leg cannot
+/// retry for ever.
+pub const MAX_POLICY_HOLDS: u8 = 3;
 /// The hold the daemon journals, once, when the last round was refused or
 /// failed: no further attempt, and the seat is told.
 pub const GAVE_UP_SUMMARY: &str = "other: held: gave up after repeated refused or failed moves";
@@ -1661,6 +1671,9 @@ pub struct Episode {
     /// Some hold of this key named an observed choice, so the key tells the
     /// human once however often it is tried; no later hold unsays it.
     pub choice_held: bool,
+    /// The holds of the orchestrator's own rules already given back their
+    /// attempt ([`MAX_POLICY_HOLDS`] at most).
+    policy_holds: u8,
 }
 
 impl Episode {
@@ -1729,6 +1742,7 @@ impl Episode {
             held: false,
             last_hold: None,
             choice_held: false,
+            policy_holds: 0,
         }
     }
 
@@ -1752,6 +1766,21 @@ impl Episode {
                     .summary
                     .as_deref()
                     .is_some_and(|s| s.starts_with(&lead));
+                // A hold of the orchestrator's own rules gives its attempt back,
+                // a bounded number of times: it is no move that failed.
+                let policy = [
+                    CauseClass::OrchestratorChanged.lead(""),
+                    CauseClass::OrchestratorStays.lead(""),
+                ];
+                if self.policy_holds < MAX_POLICY_HOLDS
+                    && event
+                        .summary
+                        .as_deref()
+                        .is_some_and(|s| policy.iter().any(|lead| s.starts_with(lead.as_str())))
+                {
+                    self.policy_holds += 1;
+                    self.attempts = self.attempts.saturating_sub(1);
+                }
                 self.last_hold.clone_from(&event.summary);
             }
             DONE_ACTION => self.close(Outcome::Done, event.ts),
@@ -6445,6 +6474,7 @@ mod tests {
             held: false,
             last_hold: None,
             choice_held: false,
+            policy_holds: 0,
         }
     }
 
