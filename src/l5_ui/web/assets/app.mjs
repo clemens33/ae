@@ -971,11 +971,13 @@ function App() {
   const quiet = (state && state.desk && state.desk.revisit) || [];
   // A shown topic that left the quiet list falls back to the first of it.
   const current = quiet.find((entry) => entry.slug === rv) || quiet[0] || null;
-  // The shown topic is kept as what the page displays, so a topic that left and
-  // comes back does not take the selection from the one shown meanwhile.
+  // The fallback is committed as the selection only when the selection left
+  // the list, so a topic that left and comes back does not take it back. The
+  // updater reads the selection as it stands then: a Next press made before
+  // this effect ran is kept, never overwritten with the value of an older render.
   const shownSlug = current ? current.slug : "";
   useEffect(() => {
-    setRv(shownSlug);
+    setRv((before) => (quiet.some((entry) => entry.slug === before) ? before : shownSlug));
   }, [shownSlug]);
   const nextRevisit = () => {
     if (current) {

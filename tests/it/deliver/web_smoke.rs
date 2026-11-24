@@ -1011,7 +1011,7 @@ impl Tab {
     /// Run `body` once with `want` bound: its `{ ok, saw }` decides.
     fn verdict(&mut self, check: &'static str, body: &str, want: &str) -> Result<Value, Failed> {
         let script = format!(
-            "(async () => {{ const want = {}; {PRELUDE} {body} }})()",
+            "(async () => {{ const want = {}; {PRELUDE} return await (async () => {{ {body} }})(); }})()",
             Value::str(want).render()
         );
         match self.eval(&script) {
