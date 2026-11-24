@@ -14,7 +14,8 @@
     reason = "the addendum owns a private tmux socket, a pty and scratch state"
 )]
 
-use std::fs;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::thread;
@@ -74,15 +75,17 @@ impl Server {
     }
 
     fn launch(&self, session: &str, command: &str) {
+        // Below 90x20 the sidebar is not drawn, so "Agents" never appears.
+        // 140x40 is large enough, the size the Today probe painted.
         self.tmux(&[
             "new-session",
             "-d",
             "-s",
             session,
             "-x",
-            "80",
+            "140",
             "-y",
-            "24",
+            "40",
             command,
         ]);
         self.tmux(&["set-option", "-g", "remain-on-exit", "on"]);
@@ -258,14 +261,26 @@ fn a_second_app_on_the_same_server_focuses_the_running_pane() {
     let out = server.path().join("focus-out");
     let err = server.path().join("focus-err");
     let status = server.path().join("focus-status");
-    let command = format!(
-        "{run} > {out} 2> {err}; echo $? > {status}",
+    // tmux runs a pane command with the server default shell. On the hp
+    // that shell is fish, which rejects `$?`. The script is `sh`.
+    let script = server.path().join("focus.sh");
+    let body = format!(
+        "#!/bin/sh\n{run} > {out} 2> {err}\necho $? > {status}\n",
         run = governed(&server, ""),
         out = quote(&out),
         err = quote(&err),
         status = quote(&status),
     );
-    server.tmux(&["respawn-pane", "-k", "-t", &caller, &command]);
+    fs::write(&script, body).expect("focus script");
+    fs::set_permissions(&script, Permissions::from_mode(0o755)).expect("focus script mode");
+    server.tmux(&[
+        "respawn-pane",
+        "-k",
+        "-t",
+        &caller,
+        "sh",
+        &script.display().to_string(),
+    ]);
 
     let until = Instant::now() + WAIT;
     loop {
