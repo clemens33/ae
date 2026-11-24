@@ -2929,8 +2929,8 @@ fn trustfix_measured_project_dialogs_with_mcp_name_the_source_and_send_no_keys()
         ),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let folder = fs::canonicalize(rig.root.join("other"))
-            .unwrap_or_else(|why| panic!("seat folder: {why}"));
+        // Keep the replacement inside the rule of the 34-column capture.
+        let folder = fs::canonicalize("/tmp").unwrap_or_else(|why| panic!("seat folder: {why}"));
         rig.replace_meta("work_dir.main", &folder.display().to_string());
         let frame = captured.replace(captured_folder, &format!(" {}", folder.display()));
         assert_ne!(
