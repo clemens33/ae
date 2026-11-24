@@ -168,6 +168,14 @@ fn governed(server: &Server, extra: &str) -> String {
     )
 }
 
+/// The pane command. tmux runs it as `$SHELL -c`. Fish forks `env` instead of
+/// replacing itself, so `#{pane_pid}` would be the shell and the app its
+/// child. `exec` makes the pane the app. The focus script does not use this:
+/// it must still write the exit status after `ae` returns.
+fn pane_app(server: &Server, extra: &str) -> String {
+    format!("exec {}", governed(server, extra))
+}
+
 /// A second `ae app` with no `TMUX`, on a real tty, so the path is take-over
 /// and not the no-terminal refusal.
 struct Outside {
@@ -228,7 +236,7 @@ fn absent(server: &Server, name: &str) -> bool {
 #[test]
 fn a_second_app_on_the_same_server_focuses_the_running_pane() {
     let server = Server::new("focus");
-    server.launch("app", &governed(&server, ""));
+    server.launch("app", &pane_app(&server, ""));
     let app_pane = server.pane("app");
     let record = server.wait_record();
     server.wait_paint("app");
@@ -341,7 +349,7 @@ fn wait_client(server: &Server, pane: &str) -> String {
 #[test]
 fn an_app_outside_tmux_takes_over_and_the_first_saves_and_quits() {
     let server = Server::new("take");
-    server.launch("app", &governed(&server, ""));
+    server.launch("app", &pane_app(&server, ""));
     let app_pane = server.pane("app");
     let record = server.wait_record();
     server.wait_paint("app");
@@ -396,7 +404,7 @@ fn an_app_outside_tmux_takes_over_and_the_first_saves_and_quits() {
 #[test]
 fn a_stamped_chat_window_neither_writes_nor_reads_the_instance_record() {
     let server = Server::new("stamp");
-    server.launch("app", &governed(&server, ""));
+    server.launch("app", &pane_app(&server, ""));
     let first = server.pane("app");
     let record = server.wait_record();
     server.wait_paint("app");
@@ -418,7 +426,7 @@ fn a_stamped_chat_window_neither_writes_nor_reads_the_instance_record() {
         .trim()
         .to_owned();
     server.tmux(&["set-option", "-p", "-t", &stamped, "@ae_console", STAMP]);
-    server.tmux(&["respawn-pane", "-k", "-t", &stamped, &governed(&server, "")]);
+    server.tmux(&["respawn-pane", "-k", "-t", &stamped, &pane_app(&server, "")]);
     server.wait_paint(&stamped);
 
     let again = fs::read(server.path().join(instance::INSTANCE)).expect("record stays");
@@ -443,7 +451,7 @@ fn a_stamped_chat_window_neither_writes_nor_reads_the_instance_record() {
 #[test]
 fn a_fresh_app_writes_no_view_and_holds_no_record() {
     let server = Server::new("fresh");
-    server.launch("app", &governed(&server, "--new"));
+    server.launch("app", &pane_app(&server, "--new"));
     server.wait_paint("app");
     assert!(absent(&server, instance::LOCK), "no lock");
     assert!(absent(&server, instance::INSTANCE), "no record");
