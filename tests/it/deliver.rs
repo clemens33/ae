@@ -158,7 +158,8 @@ sub draw {
 sub draw_queued {
     print "\e[H\e[2J";
     print "fake tui transcript\r\n";
-    print "\xe2\x9d\xaf Press up to edit queued messages\r\n";
+    # The hint as claude 2.1.330 draws it: the cursor cell, then a dim run.
+    print "\e[39m$ornament$nbsp\e[7mP\e[0;2mress up to edit queued messages\e[0m\r\n";
     print "$border\r\n";
     print "  fake-model  ~/x\r\n";
 }
@@ -1187,6 +1188,71 @@ fn a_send_onto_a_claude_queued_affordance_delivers_instead_of_abandoning() {
     );
 }
 
+/// The REAL claude 2.1.330 composers after a failed turn (a Mac sleep, an
+/// overload, a login, an oversized request): the box is EMPTY and the input
+/// row carries claude's own hint, a cursor cell then a dim run. RED pre-fix:
+/// the send counted the 27 hint cells as a draft and abandoned, so a seat that
+/// slept stayed stalled until a human typed.
+#[test]
+fn a_send_onto_a_claude_error_hint_composer_delivers_instead_of_abandoning() {
+    for (tag, frame) in [
+        (
+            "resend",
+            include_str!("../fixtures/claude-composer/claude-resend-try-again-2.1.330.esc"),
+        ),
+        (
+            "oncefixed",
+            include_str!("../fixtures/claude-composer/claude-once-fixed-resend-2.1.330.esc"),
+        ),
+        (
+            "rewind",
+            include_str!("../fixtures/claude-composer/claude-rewind-hint-2.1.330.esc"),
+        ),
+    ] {
+        let rig = Rig::with_frame(&format!("hint-{tag}"), "claude", frame);
+        let (code, stderr) = rig.run(
+            ae::cli::SEND,
+            &["tui", "wake up"],
+            &[("AE_SEND_DEFER_SEC", "0")],
+        );
+        assert_eq!(code, Some(0), "{tag}: {stderr}");
+        assert!(rig.submitted().ends_with("wake up"), "{tag}: the body");
+        assert_eq!(rig.enter_count(), 1, "{tag}: one normal submit");
+    }
+}
+
+/// The same words TYPED into the same box are a draft ae must never paste
+/// into (real 2.1.330 captures, the cursor at the end and at the start): the
+/// refusal carries the evidence line and nothing reaches the pane. GREEN on
+/// both sides of the fix.
+#[test]
+fn the_error_hint_words_typed_into_the_box_still_abandon_the_send() {
+    for (tag, frame) in [
+        (
+            "end",
+            include_str!("../fixtures/claude-composer/claude-typed-resend-cursor-end-2.1.330.esc"),
+        ),
+        (
+            "home",
+            include_str!("../fixtures/claude-composer/claude-typed-resend-cursor-home-2.1.330.esc"),
+        ),
+    ] {
+        let rig = Rig::with_frame(&format!("typed-{tag}"), "claude", frame);
+        let (code, stderr) = rig.run(
+            ae::cli::SEND,
+            &["tui", "overwrite me"],
+            &[("AE_SEND_DEFER_SEC", "1")],
+        );
+        assert_eq!(code, Some(1), "{tag}: {stderr}");
+        assert_eq!(
+            stderr,
+            "ae: send to tui ABANDONED — target stayed busy (composer occupied: 27 content cells on 1 row); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n",
+            "{tag}"
+        );
+        assert!(rig.wire().is_empty(), "{tag}: nothing reached the pane");
+    }
+}
+
 /// FROZEN SPEC (deliver-queued, nav, D2): the affordance plus ANY other cell
 /// is still a human draft and still defers, then abandons loudly with the
 /// byte-identical evidence line. GREEN on both sides of the fix.
@@ -1256,6 +1322,46 @@ fn the_queued_phrase_in_a_codex_box_is_still_a_draft() {
         }
     });
     assert!(seen, "the phrase in a codex box reads OCCUPIED");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "overwrite me"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "ae: send to tui ABANDONED — target stayed busy (composer occupied: 27 content cells on 1 row); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
+    );
+    assert!(
+        !rig.submitted().contains("overwrite me"),
+        "nothing was submitted over the draft"
+    );
+}
+
+/// The queue hint's words TYPED into a claude box are a draft: only the
+/// measured placeholder RENDERING (a cursor cell, then a dim run) is chrome,
+/// and a person's keystrokes are plain text. RED pre-fix: the text alone
+/// matched, so the send pasted over the draft.
+#[test]
+fn the_queued_phrase_typed_into_a_claude_box_is_a_draft() {
+    let rig = Rig::new("queued-typed", "claude", 0);
+    assert!(
+        rig.tmux(&[
+            "send-keys",
+            "-t",
+            &rig.pane,
+            "-l",
+            "Press up to edit queued messages"
+        ])
+        .0
+    );
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "the typed phrase in a claude box reads OCCUPIED");
     let (code, stderr) = rig.run(
         ae::cli::SEND,
         &["tui", "overwrite me"],

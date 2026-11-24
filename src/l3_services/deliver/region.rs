@@ -31,6 +31,9 @@ pub struct Segment {
     pub bold: bool,
     /// SGR 2 is active.
     pub dim: bool,
+    /// SGR 7 is active: claude paints its cursor cell this way, over the
+    /// first cell of a placeholder.
+    pub inverse: bool,
     /// The foreground, when the frame names one.
     pub fg: Option<Fg>,
     /// The printable run.
@@ -44,8 +47,8 @@ pub struct Segment {
 pub enum Occupancy {
     /// Real typed or staged content sits in the input box.
     Occupied,
-    /// A bare ornament, a dim placeholder suggestion only, or claude's
-    /// queued-messages affordance alone ([`queued_submission`]).
+    /// A bare ornament, a dim placeholder suggestion only, or one of claude's
+    /// measured placeholders alone ([`claude_hint`]), drawn as claude draws it.
     Idle,
     /// No live prompt in view, or nothing to read.
     Unreadable,
@@ -67,7 +70,7 @@ enum StopAt {
 pub fn parse(region: &str) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut rest = region;
-    let (mut bold, mut dim, mut line) = (false, false, 0usize);
+    let (mut bold, mut dim, mut inverse, mut line) = (false, false, false, 0usize);
     let mut fg: Option<Fg> = None;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("\u{1b}]") {
@@ -90,6 +93,7 @@ pub fn parse(region: &str) -> Vec<Segment> {
                 if params.is_empty() { "0" } else { params },
                 &mut bold,
                 &mut dim,
+                &mut inverse,
                 &mut fg,
             );
             continue;
@@ -114,6 +118,7 @@ pub fn parse(region: &str) -> Vec<Segment> {
                 segments.push(Segment {
                     bold,
                     dim,
+                    inverse,
                     fg,
                     text: chunk.to_owned(),
                     line,
@@ -180,19 +185,26 @@ fn consume_escape(mut rest: &str) -> &str {
     rest
 }
 
-/// Apply one SGR parameter list to the intensity and foreground state.
-fn apply_sgr(params: &str, bold: &mut bool, dim: &mut bool, fg: &mut Option<Fg>) {
+/// Apply one SGR parameter list to the intensity, inverse and foreground state.
+fn apply_sgr(
+    params: &str,
+    bold: &mut bool,
+    dim: &mut bool,
+    inverse: &mut bool,
+    fg: &mut Option<Fg>,
+) {
     let list: Vec<&str> = params.split(';').collect();
     let mut index = 0;
     while index < list.len() {
         let value = list[index];
         match value {
-            // 0 and its empty spelling reset the foreground too; 21 and 22
-            // turn intensity off only, and ae tracks no other attribute, so
-            // both land in one arm here.
+            // 0 and its empty spelling reset the inverse and the foreground
+            // too; 21 and 22 turn intensity off only, so both land in one arm
+            // here.
             "" | "0" => {
                 *bold = false;
                 *dim = false;
+                *inverse = false;
                 *fg = None;
             }
             "21" | "22" => {
@@ -201,6 +213,8 @@ fn apply_sgr(params: &str, bold: &mut bool, dim: &mut bool, fg: &mut Option<Fg>)
             }
             "1" => *bold = true,
             "2" => *dim = true,
+            "7" => *inverse = true,
+            "27" => *inverse = false,
             "38" => match list.get(index + 1).copied() {
                 // 38;5;N or 38;2;R;G;B: the colour is the run's identity.
                 Some("5") => {
@@ -383,6 +397,9 @@ struct Gathered {
     fenced: bool,
     /// The row the box ENDS at ([`content_end`]): codex's footer sits below it.
     end: usize,
+    /// The box holds claude's queued-messages hint and nothing else
+    /// ([`claude_hint`]): the turn ae sent is in claude's queue, not a draft.
+    queued: bool,
 }
 
 impl Gathered {
@@ -417,6 +434,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 boxed: true,
                 fenced: true,
                 end,
+                queued: false,
             };
             gathered.push(&after_first(&found.tail, '›'), composer);
             for seg in &segments[found.index + 1..] {
@@ -462,6 +480,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 boxed: fenced && segments.last().is_some_and(|last| end <= last.line),
                 fenced,
                 end,
+                queued: false,
             };
             gathered.push(
                 found
@@ -482,6 +501,12 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 }
                 gathered.push(&seg.text, seg.line);
             }
+            // claude's own hint in an EMPTY box is chrome, never a draft.
+            if let Some(hint) = claude_hint(segments, &found, end) {
+                gathered.text.clear();
+                gathered.rows.clear();
+                gathered.queued = hint.queued;
+            }
             Some(gathered)
         }
         // No grammar for this box: ae read NOTHING, so it claims nothing. Idle
@@ -492,6 +517,87 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
         // verdict.
         InputModel::Unmodelled => None,
     }
+}
+
+/// A placeholder claude draws in the input row of an EMPTY box.
+struct Hint {
+    /// The exact text, measured.
+    text: &'static str,
+    /// The turn ae sent is in claude's queue behind a running one.
+    queued: bool,
+}
+
+/// Every claude placeholder MEASURED on 2.1.330 (fixtures:
+/// `tests/fixtures/claude-composer/README.md`). A string that is not here is
+/// unmeasured, so it reads as a draft: ae never guesses a placeholder.
+const CLAUDE_HINTS: [Hint; 4] = [
+    Hint {
+        text: "Press up to edit queued messages",
+        queued: true,
+    },
+    // After a failed turn that a resend can cure (a Mac sleep, an overload).
+    Hint {
+        text: "Resend your message to try again",
+        queued: false,
+    },
+    // After a failed turn that needs a fix first (a login, a model switch).
+    Hint {
+        text: "Once fixed, resend your message",
+        queued: false,
+    },
+    // After a request claude cannot send as it is.
+    Hint {
+        text: "Run /rewind to go back",
+        queued: false,
+    },
+];
+
+/// Whether the box holds claude's own placeholder and nothing else: the ONE
+/// definition of "the hint is chrome, not a draft".
+///
+/// Both halves must hold. The row's text is exactly one measured string, and
+/// its cells carry the measured rendering: claude paints the cursor cell over
+/// the first character (inverse, or dim when no cursor is drawn) and every
+/// cell after it in SGR 2. Typed text is never dim, so the same words a person
+/// typed fail the second half and stay a draft, however the cursor sits. The
+/// hint sits on the prompt row alone: a second row, or anything beside it, is
+/// a draft too. Wrapped hints on a very narrow pane stay unread as hints.
+fn claude_hint(segments: &[Segment], found: &Prompt, end: usize) -> Option<&'static Hint> {
+    let line = segments.get(found.index)?.line;
+    let mut text = String::new();
+    // One entry per cell that is not a space, in reading order.
+    let mut inked: Vec<&Segment> = Vec::new();
+    for (offset, seg) in segments[found.index..].iter().enumerate() {
+        if seg.line >= end {
+            break;
+        }
+        let part = if offset == 0 {
+            found
+                .tail
+                .strip_prefix(found.ornament)
+                .unwrap_or(&found.tail)
+        } else {
+            seg.text.as_str()
+        };
+        if seg.line != line && !squeezed(part).is_empty() {
+            return None;
+        }
+        for ch in part.chars() {
+            if is_space(ch) || ch == '\u{a0}' {
+                text.push(' ');
+            } else {
+                text.push(ch);
+                inked.push(seg);
+            }
+        }
+    }
+    let hint = CLAUDE_HINTS
+        .iter()
+        .find(|hint| hint.text == text.trim_matches(' '))?;
+    let (cursor, rest) = inked.split_first()?;
+    let drawn = !cursor.bold && (cursor.dim || cursor.inverse);
+    let dimmed = rest.iter().all(|seg| seg.dim && !seg.bold);
+    (drawn && dimmed).then_some(hint)
 }
 
 /// One reading of the input box: the verdict, and how much content decided it.
@@ -514,12 +620,6 @@ pub fn read(region: &str, model: InputModel) -> Reading {
         gather(&parse(region), model)
     };
     match found {
-        // Chrome like the placeholder: no cell of it is ever evidence.
-        Some(found) if queued_affordance(&found, model) => Reading {
-            occupancy: Occupancy::Idle,
-            cells: 0,
-            rows: 0,
-        },
         Some(found) => {
             let cells = squeezed(&found.text).chars().count();
             Reading {
@@ -1117,17 +1217,16 @@ fn is_empty_prompt_row(row: &str) -> bool {
 /// Claude: the phrase is an affordance the TUI draws after a mid-turn submit,
 /// not draft text. It must therefore never make submit verification retry
 /// Enter, and [`read`] never counts it as a draft. It is the box's WHOLE
-/// content, read as occupancy reads it: claude draws it after an NBSP in its
-/// own dim run (measured, 2.1.280). Codex: a submit held for its startup
+/// content and drawn as a placeholder (the cursor cell, then a dim run:
+/// measured 2.1.330, the whole run dim on 2.1.280): the same words typed are
+/// a draft ([`claude_hint`]). Codex: a submit held for its startup
 /// ([`held_for_startup`]); the box keeps the held turn, so [`read`] still
 /// reports it occupied.
 #[must_use]
 pub fn queued_submission(region: &str, model: InputModel) -> bool {
     let segments = parse(region);
     match model {
-        InputModel::BorderDelimited => {
-            gather(&segments, model).is_some_and(|found| queued_affordance(&found, model))
-        }
+        InputModel::BorderDelimited => gather(&segments, model).is_some_and(|found| found.queued),
         InputModel::StyleDelimited => {
             gather(&segments, model).is_some_and(|found| held_for_startup(&segments, &found))
         }
@@ -1164,16 +1263,6 @@ fn held_for_startup(segments: &[Segment], found: &Gathered) -> bool {
     trim_posix(&row)
         .strip_prefix("Waiting for startup")
         .is_some_and(|rest| rest.starts_with(is_space) && rest.contains("esc cancel"))
-}
-
-/// Whether the gathered box holds claude's queued-messages affordance and
-/// nothing else — the ONE spelling of the phrase, asked by occupancy and by
-/// submit verification alike. Any other cell beside it is a draft. Named
-/// residual: style is not consulted, so a human draft typed as exactly this
-/// phrase, alone, reads as the affordance.
-fn queued_affordance(found: &Gathered, model: InputModel) -> bool {
-    model == InputModel::BorderDelimited
-        && trim_posix(&found.text.replace('\u{a0}', " ")) == "Press up to edit queued messages"
 }
 
 /// Everything after the first `needle` in `text`, or all of it when there is
@@ -1312,6 +1401,7 @@ mod tests {
         Fg, Occupancy, Reading, Segment, composed_ui, composer_drawn, holds_pasted, initializing,
         occupancy, parse, prompt, queued_submission, read, staged_paste,
     };
+    use crate::deliver::tests::hint_row;
     use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel, ToolKind};
 
     /// The REAL stuck composer — muse-spark-1.3 via the muse CLI, captured
@@ -1393,6 +1483,7 @@ mod tests {
         Segment {
             bold,
             dim,
+            inverse: false,
             fg: None,
             text: text.to_owned(),
             line,
@@ -1445,6 +1536,19 @@ mod tests {
             after[0].bold,
             "a real 1 AFTER the skipped arguments still counts"
         );
+    }
+
+    #[test]
+    fn inverse_video_is_tracked_and_reset_by_the_parameters_that_mean_it() {
+        let inverse =
+            |capture: &str| -> Vec<bool> { parse(capture).iter().map(|seg| seg.inverse).collect() };
+        assert_eq!(
+            inverse("\u{1b}[7ma\u{1b}[27mb\u{1b}[7mc\u{1b}[0md\u{1b}[7me\u{1b}[mf"),
+            [true, false, true, false, true, false]
+        );
+        // A 7 inside an extended colour is a colour index, not inverse.
+        assert_eq!(inverse("\u{1b}[38;5;7mx\u{1b}[48;5;7my"), [false, false]);
+        assert_eq!(inverse("\u{1b}[0;2mx"), [false]);
     }
 
     #[test]
@@ -1680,12 +1784,22 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_claude_queued_while_busy_is_submitted_however_the_row_is_styled() {
-        // Measured: `❯` NBSP, then the phrase in its OWN dim segment.
+    fn a_turn_claude_queued_while_busy_is_submitted_when_the_row_is_drawn_as_the_hint() {
+        // Measured: `❯` NBSP, then the phrase in its OWN dim segment (2.1.280),
+        // or its first cell as the cursor and the rest dim (2.1.330).
         const QUEUED: &str =
             include_str!("../../../tests/fixtures/claude-composer/claude-queued-busy.esc");
         assert!(queued_submission(QUEUED, InputModel::BorderDelimited));
         assert!(queued_submission(
+            CLAUDE_QUEUED_330,
+            InputModel::BorderDelimited
+        ));
+        assert!(queued_submission(
+            &claude_row(&hint_row("Press up to edit queued messages")),
+            InputModel::BorderDelimited
+        ));
+        // The same words typed, or with a draft beside them, are no hint.
+        assert!(!queued_submission(
             &claude_frame("Press up to edit queued messages"),
             InputModel::BorderDelimited
         ));
@@ -1708,8 +1822,20 @@ mod tests {
         };
         assert_eq!(read(QUEUED, border), idle);
         assert_eq!(
-            read(&claude_frame("Press up to edit queued messages"), border),
+            read(
+                &claude_row(&hint_row("Press up to edit queued messages")),
+                border
+            ),
             idle
+        );
+        // Typed, it is a draft: 27 cells, whatever the words say.
+        assert_eq!(
+            read(&claude_frame("Press up to edit queued messages"), border),
+            Reading {
+                occupancy: Occupancy::Occupied,
+                cells: 27,
+                rows: 1,
+            }
         );
         assert_eq!(
             read(
@@ -1732,14 +1858,170 @@ mod tests {
         );
     }
 
+    /// The REAL claude 2.1.330 frames behind the "sleep, then every send
+    /// abandons" bug (provenance: tests/fixtures/claude-composer/README.md):
+    /// the box row of an EMPTY composer after a failed turn, the queue hint
+    /// beside the cursor, and the same words TYPED as a draft.
+    const CLAUDE_TRY_AGAIN: &str =
+        include_str!("../../../tests/fixtures/claude-composer/claude-resend-try-again-2.1.330.esc");
+    const CLAUDE_ONCE_FIXED: &str = include_str!(
+        "../../../tests/fixtures/claude-composer/claude-once-fixed-resend-2.1.330.esc"
+    );
+    const CLAUDE_REWIND: &str =
+        include_str!("../../../tests/fixtures/claude-composer/claude-rewind-hint-2.1.330.esc");
+    const CLAUDE_QUEUED_330: &str =
+        include_str!("../../../tests/fixtures/claude-composer/claude-queued-busy-2.1.330.esc");
+    const CLAUDE_IDLE_330: &str =
+        include_str!("../../../tests/fixtures/claude-composer/claude-idle-2.1.330.esc");
+    const CLAUDE_TYPED_END: &str = include_str!(
+        "../../../tests/fixtures/claude-composer/claude-typed-resend-cursor-end-2.1.330.esc"
+    );
+    const CLAUDE_TYPED_HOME: &str = include_str!(
+        "../../../tests/fixtures/claude-composer/claude-typed-resend-cursor-home-2.1.330.esc"
+    );
+    /// Every placeholder string measured on 2.1.330 (the strings, not frames).
+    const MEASURED_HINTS: [&str; 4] = [
+        "Press up to edit queued messages",
+        "Resend your message to try again",
+        "Once fixed, resend your message",
+        "Run /rewind to go back",
+    ];
+
+    /// A claude frame whose box row is `row`, spelled exactly by the caller
+    /// after the measured `❯` NBSP lead-in.
+    fn claude_row(row: &str) -> String {
+        let rule = "─".repeat(60);
+        format!("transcript row\n{rule}\n\u{1b}[39m❯\u{a0}{row}\n{rule}\n  ⏵⏵ auto mode on\n")
+    }
+
+    #[test]
+    fn a_claude_hint_drawn_as_the_measured_placeholder_is_an_empty_composer() {
+        let border = InputModel::BorderDelimited;
+        let empty = Reading {
+            occupancy: Occupancy::Idle,
+            cells: 0,
+            rows: 0,
+        };
+        for (name, frame) in [
+            ("resend", CLAUDE_TRY_AGAIN),
+            ("once fixed", CLAUDE_ONCE_FIXED),
+            ("rewind", CLAUDE_REWIND),
+            ("queued 2.1.330", CLAUDE_QUEUED_330),
+            ("cursor only", CLAUDE_IDLE_330),
+        ] {
+            assert_eq!(read(frame, border), empty, "{name}");
+            assert!(!holds_pasted(frame, border, "a pasted turn"), "{name}");
+            assert!(!staged_paste(frame, border), "{name}");
+        }
+        // Only the queue hint says "claude took my turn into its queue"; an
+        // error hint after a submit means the box cleared, never "queued".
+        assert!(queued_submission(CLAUDE_QUEUED_330, border));
+        for frame in [CLAUDE_TRY_AGAIN, CLAUDE_ONCE_FIXED, CLAUDE_REWIND] {
+            assert!(!queued_submission(frame, border));
+        }
+        // The first claude capture drew the whole hint dim, no cursor cell.
+        assert_eq!(
+            read(
+                &claude_row("\u{1b}[2mPress up to edit queued messages\u{1b}[0m"),
+                border
+            ),
+            empty
+        );
+    }
+
+    #[test]
+    fn the_same_words_typed_as_a_draft_stay_occupied() {
+        let border = InputModel::BorderDelimited;
+        let draft = Reading {
+            occupancy: Occupancy::Occupied,
+            cells: 27,
+            rows: 1,
+        };
+        // Real captures: the cursor at the end, and at the start.
+        assert_eq!(read(CLAUDE_TYPED_END, border), draft);
+        assert_eq!(read(CLAUDE_TYPED_HOME, border), draft);
+        assert!(!queued_submission(CLAUDE_TYPED_END, border));
+        assert!(!queued_submission(CLAUDE_TYPED_HOME, border));
+        // Every measured hint typed by a human reads as the draft it is,
+        // however the cursor sits.
+        for text in MEASURED_HINTS {
+            let typed_end = claude_row(&format!("{text}\u{1b}[7m \u{1b}[0m"));
+            let typed_home = claude_row(&format!("\u{1b}[7m{}\u{1b}[0m{}", &text[..1], &text[1..]));
+            let plain = claude_row(text);
+            for frame in [typed_end, typed_home, plain] {
+                assert_eq!(occupancy(&frame, border), Occupancy::Occupied, "{text}");
+                assert!(!queued_submission(&frame, border), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hint_whose_text_or_rendering_is_not_the_measured_one_is_never_empty() {
+        let border = InputModel::BorderDelimited;
+        let occupied = |row: &str| occupancy(&claude_row(row), border) == Occupancy::Occupied;
+        // The text matches; ONE word of it is not dim.
+        assert!(occupied(
+            "\u{1b}[7mR\u{1b}[0;2mesend your \u{1b}[0mmessage\u{1b}[2m to try again\u{1b}[0m"
+        ));
+        // The first cell is neither the cursor nor dim.
+        assert!(occupied(
+            "R\u{1b}[2mesend your message to try again\u{1b}[0m"
+        ));
+        // Bold, or grey without dim: not the measured rendering.
+        assert!(occupied(
+            "\u{1b}[1;2mResend your message to try again\u{1b}[0m"
+        ));
+        assert!(occupied(
+            "\u{1b}[1;7mR\u{1b}[0;2mesend your message to try again\u{1b}[0m"
+        ));
+        assert!(occupied(
+            "\u{1b}[7mR\u{1b}[0;1;2mesend your message to try again\u{1b}[0m"
+        ));
+        assert!(occupied(
+            "\u{1b}[38;5;246mResend your message to try again\u{1b}[0m"
+        ));
+        // Dim and cursor-led, but not a measured string: an unmeasured
+        // sibling hint, a case change, one word more, claude's other ghost
+        // text.
+        for text in [
+            "Resend your message to try again now",
+            "resend your message to try again",
+            "Press up to edit queued messages, Enter to send them now",
+            "Press up to select a queued message, then Enter to edit it",
+            "Taking your message back…",
+            "Try \"fix lint errors\"",
+        ] {
+            assert!(occupied(&hint_row(text)), "{text}");
+        }
+        // The hint on its row with a second row of typed text under it.
+        let rule = "─".repeat(60);
+        let two_rows = format!(
+            "t\n{rule}\n\u{1b}[39m❯\u{a0}{}\nmore typed text\n{rule}\n",
+            hint_row("Resend your message to try again")
+        );
+        assert_eq!(occupancy(&two_rows, border), Occupancy::Occupied);
+        // A row of blanks under the hint holds nothing: still the empty box.
+        let blank_row = format!(
+            "t\n{rule}\n\u{1b}[39m❯\u{a0}{}\n   \n{rule}\n",
+            hint_row("Resend your message to try again")
+        );
+        assert_eq!(occupancy(&blank_row, border), Occupancy::Idle);
+        // …and a typed word beside it on the same row.
+        assert!(occupied(&format!(
+            "{}\u{1b}[0m typed",
+            hint_row("Resend your message to try again")
+        )));
+    }
+
     #[test]
     fn a_compact_dispatch_claude_queued_is_queued_and_never_held() {
-        use crate::deliver::tests::{COMPACT_DISPATCH, COMPACT_QUEUED, COMPACT_STAGED};
+        use crate::deliver::tests::{COMPACT_DISPATCH, COMPACT_STAGED, compact_queued};
         let border = InputModel::BorderDelimited;
+        let queued = compact_queued();
         assert!(holds_pasted(COMPACT_STAGED, border, COMPACT_DISPATCH));
         assert!(!queued_submission(COMPACT_STAGED, border));
-        assert!(queued_submission(COMPACT_QUEUED, border));
-        assert!(!holds_pasted(COMPACT_QUEUED, border, COMPACT_DISPATCH));
+        assert!(queued_submission(&queued, border));
+        assert!(!holds_pasted(&queued, border, COMPACT_DISPATCH));
     }
 
     #[test]

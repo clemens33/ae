@@ -3055,8 +3055,11 @@ mod tests {
             verdict(Some(&boxed("")), false),
             Some(SubmitState::Submitted)
         );
-        let queued = boxed("Press up to edit queued messages");
+        let queued = boxed(&hint_row("Press up to edit queued messages"));
         assert_eq!(verdict(Some(&queued), false), Some(SubmitState::Submitted));
+        // The same words TYPED are the human's draft, never a queued turn.
+        let typed = boxed("Press up to edit queued messages");
+        assert_eq!(verdict(Some(&typed), false), None);
         // Anything else keeps reading until the budget is spent.
         assert_eq!(verdict(Some(&boxed(text)), false), None);
         assert_eq!(verdict(None, false), None);
@@ -3116,12 +3119,33 @@ mod tests {
     }
 
     /// `ae compact`'s own dispatch into a seat whose turn is still running,
-    /// two real captures 2 s apart (plain text: these verdicts read structure
-    /// and content, never colour).
+    /// two real captures 2 s apart (plain text: the staged frame reads by
+    /// structure and content; the queued one is re-spelled by
+    /// [`compact_queued`], because its hint is a placeholder only by colour).
     pub(super) const COMPACT_STAGED: &str =
         include_str!("../../tests/fixtures/claude-composer/claude-compact-staged-2.1.280.txt");
-    pub(super) const COMPACT_QUEUED: &str =
+    const COMPACT_QUEUED_PLAIN: &str =
         include_str!("../../tests/fixtures/claude-composer/claude-compact-queued-2.1.280.txt");
+    /// The queued capture with its box row drawn the way claude 2.1.330 draws
+    /// the hint (the cursor cell, then a dim run); every other cell is the
+    /// capture's own.
+    pub(super) fn compact_queued() -> String {
+        assert!(COMPACT_QUEUED_PLAIN.contains("❯\u{a0}Press up to edit queued messages"));
+        COMPACT_QUEUED_PLAIN.replace(
+            "❯\u{a0}Press up to edit queued messages",
+            &format!(
+                "\u{1b}[39m❯\u{a0}{}",
+                hint_row("Press up to edit queued messages")
+            ),
+        )
+    }
+    /// `text` as claude 2.1.330 draws a placeholder: the cursor cell inverse,
+    /// then the remainder dim.
+    pub(super) fn hint_row(text: &str) -> String {
+        let mut chars = text.chars();
+        let first = chars.next().unwrap_or(' ');
+        format!("\u{1b}[7m{first}\u{1b}[0;2m{}\u{1b}[0m", chars.as_str())
+    }
     pub(super) const COMPACT_DISPATCH: &str = "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`";
 
     #[test]
@@ -3129,9 +3153,9 @@ mod tests {
         let border = InputModel::BorderDelimited;
         // The real sequence: still in the box, then queued. Submitted means
         // claude took the text into its queue, not that it ran.
-        let mut reads = [COMPACT_STAGED, COMPACT_QUEUED].into_iter();
+        let mut reads = [COMPACT_STAGED.to_owned(), compact_queued()].into_iter();
         let queued = settle(Duration::from_secs(10), border, COMPACT_DISPATCH, || {
-            reads.next().map(str::to_owned)
+            reads.next()
         });
         assert_eq!(queued, SubmitState::Submitted);
         // A budget that ends on the first frame is honest: the box holds it.
