@@ -2949,3 +2949,82 @@ fn trustfix_measured_project_dialogs_with_mcp_name_the_source_and_send_no_keys()
         );
     }
 }
+
+#[test]
+fn trustfix_unmeasured_warning_source_combinations_are_named_without_keys() {
+    const SETTINGS: &str =
+        include_str!("../fixtures/dialogseat/claude-2.1.330-settings-only-120x40.txt");
+    const HOOKS: &str = include_str!("../fixtures/dialogseat/claude-2.1.330-hooks-200x50.txt");
+    const LOADS: &str = "Trusting this folder loads .claude/settings.json.";
+    const LOADS_AND_RUNS: &str =
+        "Trusting this folder loads .claude/settings.json (runs commands).";
+    for (case, frame, folder, source, replacement) in [
+        (
+            "runs-without-hooks",
+            SETTINGS,
+            "/tmp/ae-harness-probe/claude-settings/project",
+            LOADS,
+            LOADS_AND_RUNS,
+        ),
+        (
+            "hooks-without-runs",
+            HOOKS,
+            "/tmp/claude-trust-probe",
+            LOADS_AND_RUNS,
+            LOADS,
+        ),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        let seat_folder =
+            fs::canonicalize("/tmp").unwrap_or_else(|why| panic!("seat folder: {why}"));
+        rig.replace_meta("work_dir.main", &seat_folder.display().to_string());
+        let changed = frame.replace(source, replacement);
+        assert_ne!(changed, frame, "{case}: change the source row only");
+        rig.repaint(&changed.replace(folder, &seat_folder.display().to_string()));
+        trustfix_named_without_keys(
+            &mut rig,
+            case,
+            &["folder trust", "dialog differs from the measured one"],
+        );
+    }
+}
+
+#[test]
+fn trustfix_folder_splits_without_a_measured_wrap_are_named_without_keys() {
+    for (case, frame, captured_folder) in [
+        (
+            "wrap-short-wide",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-settings-80x24.txt"),
+            " /tmp/claude-trust-probe",
+        ),
+        (
+            "wrap-wrong-column",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-settings-40x12.history.txt"),
+            " /tmp/ae-dialog-probe/proj\n ect",
+        ),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        let seat_folder =
+            fs::canonicalize("/tmp").unwrap_or_else(|why| panic!("seat folder: {why}"));
+        rig.replace_meta("work_dir.main", &seat_folder.display().to_string());
+        let shown = seat_folder
+            .to_str()
+            .unwrap_or_else(|| panic!("setup: UTF-8 folder name"));
+        // The fragments concatenate to the true folder, but break far before
+        // the measured 40-column wrap and in a wide capture with no wrap.
+        let (first, last) = shown.split_at(2);
+        let split = format!(" {first}\n {last}");
+        let changed = frame.replacen(captured_folder, &split, 1);
+        assert_ne!(changed, frame, "{case}: replace the folder rows");
+        rig.repaint(&changed);
+        trustfix_named_without_keys(
+            &mut rig,
+            case,
+            &[
+                "folder trust",
+                "dialog differs from the measured one",
+                "folder",
+            ],
+        );
+    }
+}
