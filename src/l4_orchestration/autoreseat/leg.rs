@@ -252,7 +252,7 @@ pub(crate) fn orchestrator_in_flight(
 /// file, a last record with no LF and a line that is not one event all refuse,
 /// because a request or a relay ae cannot read is not proof that none is open.
 /// An absent journal is an empty one, and a blank complete line is skipped.
-fn orchestrator_ledger(dir: &Path) -> Result<Vec<crate::events::Event>, String> {
+pub(crate) fn orchestrator_ledger(dir: &Path) -> Result<Vec<crate::events::Event>, String> {
     let bytes = match crate::store::open(dir).events_source() {
         crate::store::SourceRead::Ready(bytes) => bytes,
         crate::store::SourceRead::Absent => return Ok(Vec::new()),
@@ -2590,7 +2590,7 @@ fn said(argv: &Argv, now: Timestamp, text: &str) {
 /// The ONE turn a move whose conversation continued hands its seat: no seed
 /// pack does, and without a turn the seat sits idle in it. It opens with what
 /// moved ([`continuation`]).
-const CONTINUE: &str = "and your conversation came with you. Restore your state first: re-declare \
+pub(crate) const CONTINUE: &str = "and your conversation came with you. Restore your state first: re-declare \
      it, then check your pending requests (requests inbox, requests mine) and the session memo and \
      brief (memo read, ae brief). Resume only authorized outstanding work. Keep any genuine wait on \
      a human or an agent, and any parked scope, exactly as it was, and send no request again.";
@@ -2948,6 +2948,10 @@ pub(crate) fn trigger(
     let Ok(held) = crate::store::lock(&super::lock_path(dir, slot), Duration::ZERO) else {
         return decline(err, "another writer holds the seat");
     };
+    // orchself's seam: a claimed requested reseat owns the seat, under this lock.
+    if let Some(why) = crate::reseat::request::claimed_for(dir, slot) {
+        return decline(err, why);
+    }
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let Some(row) = meta.roster().iter().find(|row| row.slot == slot) else {

@@ -78,6 +78,7 @@ mod continuation;
 mod cycle_apply;
 mod cycle_observe;
 mod cycle_publish;
+mod self_reseat;
 
 /// The panes that are not agents: unstamped, tmux's own null, this daemon, the
 /// events pane, and the two older names a session can still carry.
@@ -960,7 +961,16 @@ pub enum Effect {
         owed: crate::meta::ReseatContinuation,
         /// Whether to include and book the overview in the same checked turn.
         overview: bool,
+        /// Whether the move that started `owed.launch` was the orchestrator's
+        /// own request, read with `owed` from the same meta bytes.
+        requested: bool,
     },
+    /// Claim the orchestrator's pending reseat request: the trigger through
+    /// the one exec site ([`crate::reseat::request::trigger`]).
+    SelfReseatClaim,
+    /// Deliver the orchestrator the refusal or failure its request ended in,
+    /// named by the ending record's `reference`.
+    SelfReseatNotice { reference: String, text: String },
     /// Reconcile the durable event log against a wedge alert this daemon does
     /// not remember raising — the post-restart clear.
     ReconcileWedge,
@@ -989,6 +999,8 @@ impl Effect {
                 | Self::LimitWake { .. }
                 | Self::SweepNudge
                 | Self::AnswerTrust { .. }
+                | Self::SelfReseatClaim
+                | Self::SelfReseatNotice { .. }
         ) || matches!(
             self,
             Self::ReseatContinuation {
@@ -2500,12 +2512,13 @@ impl Cycle<'_> {
         let events = read_events(self.meta_dir);
         let suspended = crate::watchdog::Suspensions::read(&events);
         let now = Timestamp::now().epoch();
-        let mut continuation = self.read_reseat_continuation();
+        let mut continuation = self.read_reseat_obligation();
+        let continuation_owed = continuation.is_some();
         // An owed continuation gets the seat's turn. Otherwise, the charter's
         // attempt owns the cycle and an unresolved charter names the remedy.
         let charter = if continuation
             .as_ref()
-            .is_some_and(|row| row.phase == crate::meta::ContinuationPhase::Owed)
+            .is_some_and(|(row, _)| row.phase == crate::meta::ContinuationPhase::Owed)
         {
             charter::Charter::Idle
         } else {
@@ -2887,7 +2900,17 @@ impl Cycle<'_> {
             if seen.sweep.is_some()
                 && let Some(owed) = continuation.take()
             {
-                continuation::book(&mut booked, &seen, owed, settling);
+                continuation::book_from(&mut booked, &seen, owed, settling);
+            }
+            if seen.sweep.is_some() && self.meta_agent {
+                let seat = (self.meta_dir, (self.session, agent));
+                self_reseat::book(
+                    &mut booked,
+                    &seen,
+                    &events,
+                    seat,
+                    (settling, continuation_owed),
+                );
             }
             // The latch this cycle started from: the carried one, or the journal's
             // standing dead alert a fresh carry was rebuilt from.
@@ -3091,6 +3114,14 @@ impl Cycle<'_> {
                 (&auto_seats, &homes),
                 &events,
                 now,
+                err,
+            )?;
+        }
+        if self.meta_agent {
+            crate::reseat::request::sweep(
+                self.meta_dir,
+                self.session,
+                Timestamp::from_epoch(now),
                 err,
             )?;
         }

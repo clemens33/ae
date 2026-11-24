@@ -70,23 +70,34 @@ pub(crate) const SEAT_CHARTER_MARKER: &str =
 pub(crate) const SEAT_CHARTER_3_MARKER: &str =
     "never end a session whose seats hold or wait for a build or test lane claim";
 
+/// The sentence a seat prompt carries from charter version 4 on, when the
+/// orchestrator seat may queue a reseat of itself ([`crate::reseat::request`]).
+pub(crate) const SEAT_CHARTER_4_MARKER: &str =
+    "queues a move of this seat to another model or account of the same tool";
+
 /// The charter version the seat template teaches. A running seat launched
 /// with an older one gets one charter update turn from its watchdog.
-pub(crate) const SEAT_CHARTER_VERSION: u32 = 3;
+pub(crate) const SEAT_CHARTER_VERSION: u32 = 4;
 
-/// The charter version a seat context or prompt `text` teaches: 3 when it
-/// carries [`SEAT_CHARTER_3_MARKER`] and [`SEAT_CHARTER_MARKER`], 2 when it
-/// carries [`SEAT_CHARTER_MARKER`] alone, else 1.
+/// The charter version a seat context or prompt `text` teaches: the count of
+/// the markers it carries in order, [`SEAT_CHARTER_MARKER`] (2),
+/// [`SEAT_CHARTER_3_MARKER`] (3) and [`SEAT_CHARTER_4_MARKER`] (4), from 1: a
+/// later marker without an earlier one teaches nothing more.
 #[must_use]
 pub(crate) fn charter_version(text: &str) -> u32 {
-    match (
-        text.contains(SEAT_CHARTER_MARKER),
-        text.contains(SEAT_CHARTER_3_MARKER),
-    ) {
-        (true, true) => 3,
-        (true, false) => 2,
-        (false, _) => 1,
+    let markers = [
+        SEAT_CHARTER_MARKER,
+        SEAT_CHARTER_3_MARKER,
+        SEAT_CHARTER_4_MARKER,
+    ];
+    let mut version = 1;
+    for marker in markers {
+        if !text.contains(marker) {
+            break;
+        }
+        version += 1;
     }
+    version
 }
 
 /// The name a seat config's refusals call it by.

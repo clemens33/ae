@@ -56,7 +56,10 @@ does, and a live seat is only reached at the dead proof.
    the account the pair selects (`leg::cover_warning_through`);
 7. the pane: not the CALLER'S own — a seat cannot reseat itself, because the
    tool running the command is the one that would be replaced under it — and
-   its stamp must agree with the roster slot.
+   its stamp must agree with the roster slot. One seat has a way round it: the
+   PROVED orchestrator seat queues its own move as a request the watchdog runs
+   after its turn ("A requested move", below); every other seat's own pane is
+   refused here unchanged.
 
 Then, under `.lifecycle.<session>.lock`:
 
@@ -1086,6 +1089,119 @@ the orchestrator. It only narrows `auto_reseat = all`.
   its reset time and the reason, then `ae reseat <session> <seat name> --using <profile>`
   when a manual profile exists, else that no candidate is configured.
 - An unusable value means `same-model`, with one note per watchdog start.
+
+#### A requested move (`reseat::request`)
+
+The orchestrator seat may ask for its OWN move: from the proved dispatcher seat,
+`ae reseat <its session> <its agent> --using <profile[@client]>` is a request, not
+a move (`src/lib.rs::run_seat_reseat`, one class read of the calling pane; an
+unproven pane of an orchestrator session is refused, every other caller goes on
+to the ordinary command and its rule 7). The command runs the checks a reseat runs
+before its lock — argv, roster, the session and agent must be its own and at
+`main`, the destination resolves and differs (`reseat::destination`, the pair
+gate included), the cover warning — and two more: the destination runs the
+seat's RECORDED binary and that adapter carries conversations as portable files
+(`reseat::portable_same_adapter`, its own rule: a keep on a nonportable tool's
+own store passes `travels` and is refused here), and the conversation must
+travel (`reseat::travels`). A cross-tool or nonportable choice refuses with
+nothing written. Any model the
+tool runs is allowed: the automatic-only checks (the observed-choice guard, the
+floor and the model guard above) do not apply to a requested move, and the
+seam is `reseat::Route` — `Automatic` gates those, `Requested` and `Automatic`
+both take the orchestrator guards above.
+
+Under `.lifecycle.<session>.lock` it re-reads the binding and writes ONE file,
+`<session dir>/reseat-request` (temp, fsync, rename, 0600), and journals
+`self-reseat-queued`; it prints `reseat queued: <profile> after this turn` and
+touches no pane. A second request replaces the first; `--cancel` (from the seat,
+or from a shell outside ae) withdraws it under the same lock
+(`self-reseat-withdrawn`). Neither touches a request the watchdog has claimed.
+
+The file is hostile persisted state: at most 1024 bytes, strict UTF-8, eight LF
+lines in order — `ae-self-reseat v1`, `session <uuid>`, `slot main`,
+`agent <name>`, `launch <uuid>` (the `launch_id.main` that asked),
+`to <profile[@client]>`, `id <uuid>`, `at <timestamp>` — one spelling per request
+(`request::parse`, fuzzed as `self_reseat_request`). Every record of a request
+carries its `id` as the reference.
+
+The watchdog, in a `meta_agent` session only:
+
+1. **Sweeps** every cycle, after the automatic step, under the seat's lock and the
+   lifecycle lock, neither waited for, and only over a journal read whole
+   (`leg::orchestrator_ledger`): a journal ae cannot read whole is no proof that
+   an attempt is absent, so nothing is decided then. A pending file that does not
+   parse is refused (`self-reseat-refused`, `damaged request: …`, referenced by
+   the digest of its bytes); one whose binding no longer names the seat (another
+   session uuid, another agent at `main`, another launch, or a session that no
+   longer records the orchestrator role) is refused as `stale request: …`. A
+   claimed file (`reseat-request.claimed`) never goes back to pending: an outcome
+   already journaled removes it; an attempt open longer than 180 s with no leg
+   holding the seat's lock is booked `self-reseat-failed`, never replayed; a
+   claim with no attempt record (interrupted before it) is refused; a damaged
+   claimed file is refused, or failed under an overdue attempt. Every record is
+   journaled BEFORE its file is removed (the store's append syncs before it
+   answers); a record the journal does not take leaves the file for the next
+   cycle, and a refusal already journaled since the seat's last queue is not
+   journaled again, so a file that could not be removed is only removed then.
+2. **Claims** at a positively idle frame of the seat (no draft, no prompt, not
+   dead, not while the wake settles, no continuation owed, no automatic move in
+   flight): through the session's `send` helper under `self-reseat-attempt`, whose
+   private leg (`request::trigger`) takes the seat's lock and the lifecycle lock
+   without waiting, reads the request, the meta and the whole journal again,
+   refuses a request already attempted, and holds while an automatic move of the
+   seat is journaled in flight, while `leg::orchestrator_in_flight` holds, while
+   one more capture is not idle (or shows a draft or a prompt only the human
+   answers), or while an attached client typed within the auto reseat input
+   grace. Then it renames the file to `reseat-request.claimed` and journals the
+   attempt; the leg starts only once the journal took it. Every hold before the
+   claim leaves the request pending for a later cycle. Past both locks it starts
+   the detached leg `_self-reseat <dir> main <id>` (`capture::self_reseat_argv`).
+   The automatic trigger yields under the same seat lock while a request is
+   claimed (`request::claimed_for`, one line in `autoreseat::leg::trigger`), so
+   neither trigger books while the other's leg has not taken the lock yet.
+3. **Moves** in the leg (`request::run_leg`), which holds the seat's lock for its
+   whole run, acts only under the open attempt its id names, and calls
+   `reseat::run_requested`: the same `move_seat` the automatic move takes, with
+   the conversation carried, the lifecycle and send locks and every late check.
+   Inside the lifecycle lock, before carry or stop, `prepare` re-binds the session
+   uuid, the agent at `main`, the launch the request names and the orchestrator
+   role (`reseat::Binding`), and asks the adapter rule again against the binary
+   the seat records now; a change refuses with nothing stopped. The leg journals ONE
+   ending under the request id — `self-reseat-done`, `self-reseat-refused`
+   (nothing was stopped: busy, a lock, a transcript that vanished, a stale
+   binding) or `self-reseat-failed` (something was stopped or written; the summary
+   names what ae now records) — says it on the owner's chat, and removes the
+   claimed file only once the journal took the ending; a lost ending leaves the
+   attempt open for the overdue rule. Every ending past the claim is terminal:
+   the watchdog never runs that request again.
+4. **Tells the seat.** A refused or failed request is owed to the seat as its next
+   idle turn (`self-reseat-notice`, the ending's reference): what happened, that it
+   will not run again, and the command to queue a new one. A requested move's
+   continuation turn says it was the seat's own request: the move's publication
+   writes `reseat_origin.main=requested:<launch>` beside the continuation row,
+   in the same meta rewrite, and the continuation owed to that launch reads it
+   (`meta::requested_continuation`); every later move of `main` rewrites or
+   clears it.
+
+The claim is the watchdog's own helper send with the private action
+`self-reseat-attempt`; the shell answers it before the services layer
+(`src/lib.rs::run_send`), so `send` names no orchestration module. The detached
+leg carries the instance selection the way the automatic leg does
+(`session_launch::capture::self_reseat_argv`, `transport::spawn_detached`, one
+row in the self-invocation census of `tests/it/aeinstance_p1_spec.rs`): it is
+the spawning process's RESOLVED executable (`shape::resolved_exe`, the exact
+versioned core, never a link), its environment is inherited unchanged, so
+`AE_HOME`, `CONFIG_FILE` and the tmux server selection reach it as they reached
+the watchdog's helper, and the leg resolves its state root from that same
+selection and refuses a `<dir>` that is not `<that root>/sessions/<name>`
+(`request::leg_argv`, canonical): a leg under another selection refuses rather
+than act on another instance's session.
+
+Stop, end and rename of the orchestrator's own session stay refused. The seat
+learns the form from charter version 4 (`config::SEAT_CHARTER_4_MARKER`, the
+"queues a move of this seat" sentence): a running orchestrator whose launch
+recorded charter 3 gets ONE charter update turn from its watchdog after the
+upgrade, and a launch stamped 4 gets none.
 
 The session's identity stays: `meta_agent`, `session_id`, the seat overlay,
 `main_pane`, the charter, the desk board, memos and the journal are not touched;

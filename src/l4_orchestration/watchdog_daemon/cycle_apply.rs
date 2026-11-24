@@ -121,8 +121,14 @@ impl Cycle<'_> {
             }
             Effect::AnswerTrust { name } => self.answer_trust(*name, on, state, err),
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
-            Effect::ReseatContinuation { owed, overview } => {
-                self.reseat_continuation(owed, *overview, on, state, err)
+            Effect::ReseatContinuation {
+                owed,
+                overview,
+                requested,
+            } => self.reseat_continuation(owed, *overview, *requested, on, state, err),
+            Effect::SelfReseatClaim => self.self_reseat_claim(on, err),
+            Effect::SelfReseatNotice { reference, text } => {
+                self.self_reseat_notice(on, (reference, text), err)
             }
             // Cycle-level by design: `run` collects it and performs the ONE
             // pass after the sweep, outside every per-pane path.

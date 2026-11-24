@@ -82,6 +82,8 @@ mod long_limit_tests;
 #[cfg(test)]
 #[path = "reseat/muse_gap_tests.rs"]
 mod muse_gap_tests;
+#[path = "reseat/request.rs"]
+pub mod request;
 
 /// The usage line.
 pub const RESEAT_USAGE: &str =
@@ -136,9 +138,12 @@ struct Parsed {
     /// leaves the seat on the profile's own account.
     client: Option<String>,
     stop: StopPolicy,
-    /// The watchdog's move, which must not drop an observed choice (#269). A
-    /// human's `--using` is a new choice and clears it.
-    automatic: bool,
+    /// Who asked for the move, which decides the gates it takes ([`Route`]).
+    route: Route,
+    /// A requested move's binding: the seat it was queued for, proven again
+    /// under the lifecycle lock before anything is checked, copied or
+    /// stopped; `None` for every other route.
+    bound: Option<Binding>,
     /// A limit episode's move, which may end the seat's background tasks on a
     /// long limit (#304); `None` for every other stop.
     long_limit: Option<LongLimit>,
@@ -148,6 +153,75 @@ struct Parsed {
     /// What the move reports to its caller beside its ending: the background
     /// tasks the stop ended, and the launch token a finished move minted.
     ended: std::cell::RefCell<Reported>,
+}
+
+/// Who asked for a move. Two questions are asked of it, never the variant
+/// itself: whether the automatic policy binds it, and whether the
+/// orchestrator's conversation guards do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// `ae reseat` by a human or a seat: a new choice.
+    Manual,
+    /// The auto reseat leg's own move.
+    Automatic,
+    /// The orchestrator seat's own queued request, run by the watchdog after
+    /// its turn ([`request`]).
+    Requested,
+}
+
+impl Route {
+    /// The automatic policy: the observed choice (#269), the pair (#305), the
+    /// lead floor (#309) and the orchestrator's model policy. A requested move
+    /// IS a choice, and none of them binds it.
+    const fn automatic_policy(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+
+    /// The orchestrator's guards: the chat admission, nothing in flight, a
+    /// conversation that travels, and the strict resume record. Every move the
+    /// watchdog makes of the orchestrator's seat takes them.
+    const fn orchestrator_guarded(self) -> bool {
+        matches!(self, Self::Automatic | Self::Requested)
+    }
+}
+
+/// The seat a requested move was queued for: its session's uuid, its slot,
+/// its agent and the launch that asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Binding {
+    pub(crate) uuid: String,
+    pub(crate) slot: String,
+    pub(crate) agent: String,
+    pub(crate) launch: String,
+}
+
+impl Binding {
+    /// What in the records `bytes` no longer matches, or `None` when the seat
+    /// is still the incarnation that asked.
+    pub(crate) fn changed(&self, bytes: &[u8]) -> Option<String> {
+        let value = |key: &str| crate::lifecycle::meta_value(bytes, key);
+        let uuid = value("session_id");
+        if crate::archive::canonical_uuid(&uuid) != self.uuid {
+            return Some(format!("the session's uuid is now '{uuid}'"));
+        }
+        let seated = value(&format!("seat.{}", self.slot));
+        if seated != self.agent {
+            return Some(format!("slot {} now seats '{seated}'", self.slot));
+        }
+        let launch = value(&format!("launch_id.{}", self.slot));
+        if launch != self.launch {
+            return Some(format!(
+                "'{}' restarted since the request (launch {launch})",
+                self.agent
+            ));
+        }
+        // The orchestrator's guards (no fresh start among them) bind only an
+        // orchestrator session: a request outlives no role.
+        if crate::meta::meta_agent_role(bytes) != crate::meta::MetaAgentRole::Role {
+            return Some("the session no longer records the orchestrator role".to_owned());
+        }
+        None
+    }
 }
 
 /// [`Parsed::ended`]: what a watchdog caller reads back after the move.
@@ -239,7 +313,8 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         profile,
         client,
         stop,
-        automatic: false,
+        route: Route::Manual,
+        bound: None,
         long_limit: None,
         expect: None,
         ended: std::cell::RefCell::default(),
@@ -1280,7 +1355,7 @@ fn stop_running_tool(
     // AN ORCHESTRATOR'S JOURNAL, read once more under the send-lock: a tracked
     // send that completed between the gate and this lock opened a request the
     // gate could not see, and the frame alone would not show it.
-    if parsed.automatic
+    if parsed.route.orchestrator_guarded()
         && crate::meta::meta_agent_role(bytes) == crate::meta::MetaAgentRole::Role
         && let Some(what) = crate::autoreseat::leg::orchestrator_exchange(
             dir,
@@ -1496,7 +1571,8 @@ pub(crate) fn restart_in_place(
         profile: crate::lifecycle::meta_value(&locked, &format!("profile.{}", target.slot)),
         client: None,
         stop: StopPolicy::Proven,
-        automatic: false,
+        route: Route::Manual,
+        bound: None,
         long_limit: None,
         expect: None,
         ended: std::cell::RefCell::default(),
@@ -1527,6 +1603,9 @@ pub(crate) fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    if tail.iter().any(|word| word == request::CANCEL_FLAG) {
+        return cancel_as_owner(root, tail, now, out, err);
+    }
     let parsed = match parse(tail) {
         Ok(parsed) => parsed,
         Err(line) => {
@@ -1544,6 +1623,55 @@ pub(crate) fn run(
             Ended::Refused(_) | Ended::Failed => EXIT_FAILED,
         },
     )
+}
+
+/// `ae reseat <session> <agent> --cancel` from outside the seat: a shell
+/// outside ae (the owner) may withdraw the orchestrator's queued request, and
+/// no other seat may. The proved seat's own withdrawal never reaches here.
+fn cancel_as_owner(
+    root: &Path,
+    tail: &[String],
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let (session, agent) = match request::cancel_names(tail) {
+        Ok(names) => names,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    match caller_of(session) {
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_FAILED);
+        }
+        Ok(caller) if !caller.display.is_empty() => {
+            writeln!(
+                err,
+                "Error: only the orchestrator seat itself, or a shell outside ae, withdraws a                  queued reseat. Nothing was changed."
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+        Ok(_) => {}
+    }
+    let sessions = crate::inventory::Roots::under(root).sessions().to_owned();
+    if !crate::session_launch::name::is_session_name(session) {
+        writeln!(
+            err,
+            "Error: no session named '{session}' that ae could read."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    let Ok(dir) = crate::doors::canonical_strict_dir(&sessions.join(session)) else {
+        writeln!(
+            err,
+            "Error: no session named '{session}' that ae could read."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    request::cancel(&dir, (session, agent), ("human", ""), now, out, err)
 }
 
 /// Move `agent` of `session` to `profile` AS THE WATCHDOG: both `reseat`
@@ -1589,7 +1717,8 @@ pub(crate) fn run_as_watchdog(
         profile,
         client,
         stop,
-        automatic: true,
+        route: Route::Automatic,
+        bound: None,
         long_limit,
         expect,
         ended: std::cell::RefCell::default(),
@@ -1599,6 +1728,56 @@ pub(crate) fn run_as_watchdog(
         display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
     };
     let ended = run_parsed(root, world, &parsed, Ok(caller), now, hook, out, err)?;
+    let reported = parsed.ended.take();
+    Ok((ended, reported))
+}
+
+/// Move the orchestrator's seat to the profile its own queued request names,
+/// AS THE WATCHDOG and through the one executor: the binding first under the
+/// lifecycle lock, then every orchestrator guard an automatic move takes, and
+/// none of the automatic policy ([`Route::Requested`]). A frame is stopped
+/// only when proven, and never on `--stop-unknown`.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`.
+pub(crate) fn run_requested(
+    root: &Path,
+    world: Option<&crate::listing::World>,
+    (session, agent, profile): (&str, &str, &str),
+    bound: Binding,
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<(Ended, Reported)> {
+    let (profile, client) = crate::session_launch::split_profile_client(profile)
+        .unwrap_or_else(|| (profile.to_owned(), None));
+    let parsed = Parsed {
+        session: session.to_owned(),
+        agent: agent.to_owned(),
+        profile,
+        client,
+        stop: StopPolicy::Proven,
+        route: Route::Requested,
+        bound: Some(bound),
+        long_limit: None,
+        expect: None,
+        ended: std::cell::RefCell::default(),
+    };
+    let caller = Caller {
+        pane: crate::doors::calling_pane_id(),
+        display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
+    };
+    let ended = run_parsed(
+        root,
+        world,
+        &parsed,
+        Ok(caller),
+        now,
+        &mut || true,
+        out,
+        err,
+    )?;
     let reported = parsed.ended.take();
     Ok((ended, reported))
 }
@@ -1653,6 +1832,41 @@ fn moving_named(dir: &Path, bytes: &[u8], name: &str, agent: &str) -> Result<Mov
              reseated."
         )),
     }
+}
+
+/// A REQUESTED move's adapter rule (lead's ruling), on its own and apart from
+/// [`travels`]: the destination runs the seat's RECORDED binary, so the same
+/// adapter, and that adapter's conversation is a portable file set. A keep on
+/// a nonportable tool's own store passes [`travels`] and is refused here. Asked
+/// when the request is queued and again under the executor's lifecycle lock.
+///
+/// # Errors
+///
+/// The refusal's words.
+pub(crate) fn portable_same_adapter(
+    dir: &Path,
+    bytes: &[u8],
+    slot: &str,
+    name: &str,
+) -> Result<(), String> {
+    let recorded = crate::lifecycle::meta_value(bytes, &format!("agent_bin.{slot}"));
+    let seated = crate::lifecycle::meta_value(bytes, &format!("seat.{slot}"));
+    let moving = moving_named(dir, bytes, name, &seated)?;
+    if recorded.is_empty() || moving.binary != recorded {
+        return Err(format!(
+            "'{name}' runs binary '{}', not the seat's recorded '{recorded}': another adapter, \
+             so the conversation would not travel",
+            moving.binary
+        ));
+    }
+    if ToolKind::from_binary_name(&recorded) != moving.tool
+        || moving.tool.adapter().carry == crate::tool::CarrySpec::NotPortable
+    {
+        return Err(format!(
+            "the adapter of '{recorded}' does not carry a conversation as portable files"
+        ));
+    }
+    Ok(())
 }
 
 /// How a move to `name` keeps the seat's conversation.
@@ -2120,6 +2334,42 @@ struct Prepared {
     checked: Option<crate::carry::Crossing>,
 }
 
+/// A REQUESTED move's own checks, first under the lifecycle lock: its binding
+/// (a relaunch, an owner's reseat or an automatic move since the request
+/// minted another launch, and the request has no authority over that
+/// incarnation), then its adapter rule against the profile as it resolves now
+/// and the binary the seat records now. Any other move passes.
+fn requested_guard(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    err: &mut impl Write,
+) -> Result<(), Halt> {
+    if let Some(why) = ask
+        .parsed
+        .bound
+        .as_ref()
+        .and_then(|bound| bound.changed(locked))
+    {
+        writeln!(
+            err,
+            "Error: stale request: {why} — nothing was stopped or reseated."
+        )?;
+        return Err(Halt::End(Ended::Refused(CauseClass::Other)));
+    }
+    if ask.parsed.route == Route::Requested {
+        let to = ask.parsed.client.as_deref().map_or_else(
+            || ask.parsed.profile.clone(),
+            |label| format!("{}@{label}", ask.parsed.profile),
+        );
+        if let Err(why) = portable_same_adapter(&seat.dir, locked, &seat.target.slot, &to) {
+            writeln!(err, "Error: {why} — nothing was stopped or reseated.")?;
+            return Err(Halt::End(Ended::Refused(CauseClass::Other)));
+        }
+    }
+    Ok(())
+}
+
 /// Under the lock and before the stop: the automatic gate, the keep question,
 /// the carry Check and the tool-change note — reads and stderr only.
 fn prepare(
@@ -2129,10 +2379,11 @@ fn prepare(
     err: &mut impl Write,
 ) -> Result<Prepared, Halt> {
     let (target, moving) = (&seat.target, &seat.moving);
+    requested_guard(ask, seat, locked, err)?;
     // THE ONE AUTOMATIC GATE, under the lock and before anything is checked,
     // copied or stopped: the persisted record at this read decides. A later
     // observation written under the meta lock alone is not seen (named residual).
-    if ask.parsed.automatic
+    if ask.parsed.route.automatic_policy()
         && let Some(hold) = crate::run::observed_standing(&seat.dir, &target.slot)
     {
         writeln!(err, "Error: {}", crate::autoreseat::observed_summary(&hold))?;
@@ -2141,7 +2392,7 @@ fn prepare(
     // THE PAIR, read again under the same lock (#305): every automatic move of
     // either half takes it, so the partner's row here is the one its own last
     // move committed. A destination that would collapse the pair holds.
-    if ask.parsed.automatic
+    if ask.parsed.route.automatic_policy()
         && let Some(why) =
             crate::autoreseat::leg::pair_changed(&seat.dir, locked, &target.slot, &moving.command)
     {
@@ -2164,7 +2415,7 @@ fn prepare(
     // THE LEAD FLOOR, read again under the same lock (#309): the global config and
     // the destination as they stand now, so a floor raised or a profile re-pinned
     // after the choice cannot carry a lead past it. A manual reseat never asks.
-    if ask.parsed.automatic {
+    if ask.parsed.route.automatic_policy() {
         let global = crate::autoreseat::settings(Some(&crate::doors::config_file(
             crate::shape::current(),
             ask.root,
@@ -2297,7 +2548,7 @@ fn carry_check(
 /// again by the same reads that decide the move itself — a keep the keep rule
 /// takes, or a carry whose Check ran — and its strict resume record staged
 /// ([`stage_guard`]). Before the stop: every refusal stops nothing. Any other
-/// seat, or a move ae was asked for, has no gate.
+/// seat, or a [`Route::Manual`] move, has no gate.
 fn orchestrator_gate(
     ask: &Ask<'_>,
     seat: &Admitted<'_>,
@@ -2305,7 +2556,7 @@ fn orchestrator_gate(
     (prior, keeping, checked): (&str, bool, bool),
     err: &mut impl Write,
 ) -> Result<Option<OrchestratorGuard>, Halt> {
-    if !ask.parsed.automatic
+    if !ask.parsed.route.orchestrator_guarded()
         || crate::meta::meta_agent_role(locked) != crate::meta::MetaAgentRole::Role
     {
         return Ok(None);
@@ -2888,7 +3139,7 @@ fn publish_move(
         crate::launch::PENDING.to_owned()
     };
     let orchestrator_continuation = staged.is_some() && target.slot == crate::watchdog::MAIN_SLOT;
-    let moved = crate::meta::publish_seat_move(
+    let moved = crate::meta::publish_seat_move_from(
         &seat.dir,
         &target.slot,
         &target.agent,
@@ -2911,6 +3162,7 @@ fn publish_move(
             orchestrator_continuation,
             pair,
         },
+        orchestrator_continuation && ask.parsed.route == Route::Requested,
     );
     if let Err(why) = moved {
         writeln!(
@@ -2925,9 +3177,10 @@ fn publish_move(
     }
     // A pair starts on EXACTLY the command its gate judged — the global
     // definitions, never a project overlay's redefinition of either name —
-    // as a spawn does, and so does a guarded automatic move of the orchestrator:
-    // the model its policy gate judged is the model that starts, whatever a
-    // config edit since the stop says. A bare move reads the seat as it always did.
+    // as a spawn does, and so does a guarded move of the orchestrator, on either
+    // watchdog route (`Route::Automatic` or `Route::Requested`): the model its
+    // gate judged is the model that starts, whatever a config edit since the
+    // stop says. A bare move reads the seat as it always did.
     ask.parsed.ended.borrow_mut().orchestrator_continuation = orchestrator_continuation;
     let snapshot = judged_command(
         moving.pair.is_some(),

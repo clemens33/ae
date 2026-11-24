@@ -53,10 +53,13 @@ pub(crate) fn worktrees_dir(root: &Path) -> PathBuf {
 pub(crate) fn lock(root: &Path, name: &str) -> io::Result<fs::File> {
     let sessions = sessions_dir(root);
     fs::create_dir_all(&sessions)?;
-    crate::store::lock(
-        &sessions.join(format!(".lifecycle.{name}.lock")),
-        LIFECYCLE_WAIT,
-    )
+    lock_in(&sessions, name, LIFECYCLE_WAIT)
+}
+
+/// The same lock, in the session directory `sessions` that holds it, waited
+/// for at most `wait`: the watchdog's own writers take it without waiting.
+pub(crate) fn lock_in(sessions: &Path, name: &str, wait: Duration) -> io::Result<fs::File> {
+    crate::store::lock(&sessions.join(format!(".lifecycle.{name}.lock")), wait)
 }
 
 /// The session-name grammar — `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`.

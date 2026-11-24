@@ -70,7 +70,9 @@ fn delivery(effect: &Effect) -> bool {
         | Effect::TargetMoved { .. }
         | Effect::LimitWake { .. }
         | Effect::SweepNudge
-        | Effect::AnswerTrust { .. } => true,
+        | Effect::AnswerTrust { .. }
+        | Effect::SelfReseatClaim
+        | Effect::SelfReseatNotice { .. } => true,
         Effect::ReseatContinuation { owed, .. } => {
             owed.phase == crate::meta::ContinuationPhase::Owed
         }

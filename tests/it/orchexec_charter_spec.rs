@@ -60,7 +60,7 @@ mod desklive_nudge {
                 meta,
                 format!(
                     "{solo}\nmeta_agent=true\nmain_pane={}\nlocal_config={}\nconfig={}\n\
-                     charter.main=3\ncharter_launch.main=tok-rig\nsweep_sec=900\n",
+                     charter.main=4\ncharter_launch.main=tok-rig\nsweep_sec=900\n",
                     rig.tool.pane,
                     overlay.display(),
                     global.display()
@@ -985,7 +985,7 @@ fn a_running_dispatcher_gets_one_charter_turn_for_its_current_launch_when_done()
     let delivered = receipt();
     assert_charter_notice(&rig.tool.dir, &delivered);
     let current = fs::read_to_string(&meta).expect("updated live meta");
-    assert!(current.lines().any(|line| line == "charter.main=3"));
+    assert!(current.lines().any(|line| line == "charter.main=4"));
     assert!(
         current
             .lines()

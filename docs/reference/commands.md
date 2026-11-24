@@ -2167,9 +2167,13 @@ before any effect. A delivery to an event-only sink records only its own event a
 target uuid. The seat reads a target's uuid from
 `ae list --all --json` right before a bound command and passes it.
 
-The seat's ae refuses rm, every other end and rename form, spawn, retire, reseat, relaunch,
-compact, every fleet form, every launch without `--no-attach`, every other stop form, `AE_SENDER_OVERRIDE` from its pane
-and every lifecycle command against its own session; the refusal of a stop of its own session
+The seat's ae refuses rm, every other end and rename form, spawn, retire, relaunch,
+compact, every fleet form, every launch without `--no-attach`, every other stop form, `AE_SENDER_OVERRIDE` from its pane,
+every reseat of another seat and every other lifecycle command against its own session.
+Its one own-seat form is `ae reseat <its session> <its agent> --using <profile[@client]>`,
+which queues a move to a profile of the same tool and prints
+`reseat queued: <profile> after this turn`; the watchdog runs it once the turn ends and the
+seat is idle, with the conversation carried, and `--cancel` withdraws it (see `reseat`); the refusal of a stop of its own session
 prints the owner's own command `ae stop orchestrator -y`. The served `_launch` entry and the
 seat's own launch, picker and settings routes stay refused. For a refused form the seat gives
 the owner the exact command to run in the owner's own terminal, then declares `done`. To create
@@ -2422,7 +2426,15 @@ it pinned a profile this seat no longer runs. `--using` therefore takes a bare p
 session. A plain shell carries no stamp and may reseat any session — that caller is the
 point of the verb, because the moment a lead's own quota dies no agent of that session can
 run anything. A seat cannot reseat **itself**: the tool running the command is the one that
-would be replaced under it.
+would be replaced under it. The orchestrator seat is the one exception, as a request:
+`ae reseat <its session> <its agent> --using <profile[@client]>` from that seat runs the
+checks, refuses a profile its conversation cannot travel to, writes
+`<session dir>/reseat-request` and prints `reseat queued: <profile> after this turn`. The
+watchdog moves the seat once the turn ends and its frame is idle, through the same move as
+an automatic reseat, and journals `self-reseat-done`, `-refused` or `-failed`; a refusal or
+failure reaches the seat as its next turn and is never retried. A second request replaces
+the first; `ae reseat <session> <agent> --cancel`, from the seat or a shell outside ae,
+withdraws a request not yet claimed (docs/internals/reseat.md, "A requested move").
 
 **Between two accounts of ONE tool, the conversation travels.** When the profile you move
 to runs the SAME binary and differs only in its config home — `opus5x` on `~/.claude` to
@@ -3186,9 +3198,10 @@ its cleanup is live session state only.
 Everything ae does is one core operation reached through a `_`-prefixed entry: `_launch`,
 `_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_relay`, `_ask`, `_review`, `_reply`,
 `_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
-`_watchdog`, `_telegram`, `_auto-reseat`, `_auto-effort`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
+`_watchdog`, `_telegram`, `_auto-reseat`, `_self-reseat`, `_auto-effort`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.
 `_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit, or off an account read at or past the seat's headroom threshold (`auto_reseat_at`, or `auto_reseat_lead_at` for the lead pair) — never run it by hand.
+`_self-reseat <dir> main <id>` is the detached leg the watchdog's claim spawns to run the orchestrator seat's queued reseat `<id>` — never run it by hand.
 `_auto-effort <dir> <slot> <episode>` is the detached leg the watchdog spawns under `auto_effort = on` to restart a lead-pair seat in place at another effort — never run it by hand either.
 
 Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with

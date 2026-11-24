@@ -11,10 +11,22 @@ use std::io::Write;
 
 /// The normal sweep still decides if an overview is due. The continuation
 /// owns its own delivery gate and uses the same turn when both are due.
+#[cfg(test)]
 pub(super) fn book(
     booked: &mut Accounting,
     seen: &Observation,
     owed: ReseatContinuation,
+    settling: bool,
+) {
+    book_from(booked, seen, (owed, false), settling);
+}
+
+/// [`book`], with the obligation's origin read from the same meta bytes
+/// ([`Cycle::read_reseat_obligation`]): it rides on the booked effect.
+pub(super) fn book_from(
+    booked: &mut Accounting,
+    seen: &Observation,
+    (owed, requested): (ReseatContinuation, bool),
     settling: bool,
 ) {
     let mut overview = false;
@@ -45,25 +57,38 @@ pub(super) fn book(
             .effects
             .retain(|effect| !effect.held_while_settling());
     }
-    booked
-        .effects
-        .push(Effect::ReseatContinuation { owed, overview });
+    booked.effects.push(Effect::ReseatContinuation {
+        owed,
+        overview,
+        requested,
+    });
 }
 
 impl Cycle<'_> {
     pub(super) fn read_reseat_continuation(&self) -> Option<ReseatContinuation> {
+        self.read_reseat_obligation().map(|(owed, _)| owed)
+    }
+
+    /// The obligation and its origin, from ONE read of the meta: whether the
+    /// move that started its launch was the orchestrator's own request (the
+    /// launch-bound row the same publication wrote). The origin travels with
+    /// the obligation through Claim and Confirm; it is never read again.
+    pub(super) fn read_reseat_obligation(&self) -> Option<(ReseatContinuation, bool)> {
         if !self.meta_agent {
             return None;
         }
         let launch = super::launch_id_for(&self.launch_ids, MAIN_SLOT)?;
         let bytes = meta::read_bytes(self.meta_dir).ok()?;
-        meta::reseat_continuation(&bytes).filter(|row| row.launch == launch)
+        let owed = meta::reseat_continuation(&bytes).filter(|row| row.launch == launch)?;
+        let requested = meta::requested_continuation(&bytes, &owed.launch);
+        Some((owed, requested))
     }
 
     pub(super) fn reseat_continuation(
         &self,
         owed: &ReseatContinuation,
         overview: bool,
+        requested: bool,
         on: &Acting<'_>,
         state: &mut PaneState,
         err: &mut impl Write,
@@ -72,7 +97,12 @@ impl Cycle<'_> {
             ContinuationFate::Carried => Fate::Carried,
             ContinuationFate::Kept => Fate::Kept,
         };
-        let (mut body, summary) = leg::continuation(fate);
+        // A requested move's continuation says it was the seat's own request.
+        let (mut body, summary) = if requested {
+            crate::reseat::request::continuation(fate)
+        } else {
+            leg::continuation(fate)
+        };
         if owed.phase == ContinuationPhase::Claimed {
             if confirmed(on.events, on.agent, &owed.launch, &summary) {
                 self.advance_continuation(owed, ContinuationStep::Confirm, err)?;

@@ -114,7 +114,7 @@ pub use l4_orchestration::orchestrator;
 pub use l4_orchestration::orchestrator_autostart;
 pub use l4_orchestration::rename;
 pub use l4_orchestration::request_verb;
-pub(crate) use l4_orchestration::reseat;
+pub use l4_orchestration::reseat;
 pub use l4_orchestration::restore;
 pub(crate) use l4_orchestration::seat_relaunch;
 pub use l4_orchestration::seatcompact;
@@ -643,6 +643,13 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         return Ok(entry::EXIT_USAGE);
     }
     let request = cli::Request::parse(args);
+    // The orchestrator seat's own reseat is a queued request, judged by its
+    // own class read ([`run_seat_reseat`]).
+    if let cli::Request::Reseat { tail } = &request
+        && let Some(code) = run_seat_reseat(tail, out, err)?
+    {
+        return Ok(code);
+    }
     // A served launch observes its caller ONCE, where `run_with` meets it
     // ([`run_served_launch`]): the class gate and the seat guard judge the
     // same observation.
@@ -661,6 +668,45 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         }
     }
     run_admitted(args, &request, out, err)
+}
+
+/// `reseat` from the orchestrator seat's session, from ONE class read of the
+/// calling pane: the PROVED seat queues its own move as a request the watchdog
+/// runs after its turn ([`reseat::request`]), and a pane of its session ae
+/// cannot prove is refused. `None` for every other caller, which goes on to
+/// `reseat` itself, whose caller rule still refuses a seat's own pane.
+fn run_seat_reseat(
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let root = state_root();
+    let class = match calling_class(observe_calling_pane(), root.as_deref(), err)? {
+        Ok(Some(class)) => class,
+        Ok(None) => return Ok(None),
+        Err(code) => return Ok(Some(code)),
+    };
+    let code = match (&class, root.as_deref()) {
+        (relay::SeatClass::Dispatcher(seat), Some(root)) => {
+            let own = |name: &str| names_own_session(Some(root), seat, name);
+            let proved = reseat::request::Seat {
+                session: &seat.session,
+                dir: &seat.dir,
+                uuid: &seat.uuid,
+                slot: &seat.slot,
+                own: &own,
+            };
+            reseat::request::run(root, &proved, tail, time::Timestamp::now(), out, err)?
+        }
+        (relay::SeatClass::Unproven(why), _) => {
+            writeln!(err, "{}", unproven_refusal("reseat", why))?;
+            entry::EXIT_USAGE
+        }
+        _ => return Ok(None),
+    };
+    err.flush()?;
+    error::with_status(code, out.flush())?;
+    Ok(Some(code))
 }
 
 /// The calling pane's one soft reading for a bound stop's fleet row: its class
@@ -4204,10 +4250,6 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
             "relaunch",
             "does not relaunch seats in this release; give the owner the command",
         )),
-        cli::Request::Reseat { .. } => Some(Outbound::Verb(
-            "reseat",
-            "does not reseat seats in this release; give the owner the command",
-        )),
         // The bound stop proves the caller, its target and every seat's
         // declaration itself, under the target's lifecycle lock.
         cli::Request::Stop { tail } if lifecycle::is_bound_stop(tail) => None,
@@ -4924,6 +4966,22 @@ fn run_send(
     let Some(viewer) = viewer else {
         return Ok(state::EXIT_FAILED);
     };
+    // The orchestrator's queued reseat, claimed through the watchdog's own
+    // helper send, which carries no seat: answered here, at the shell
+    // boundary, so the services layer names no orchestration module. The
+    // action selects the trigger, which re-derives every fact it acts on.
+    if env.action.as_deref() == Some(reseat::request::ATTEMPT_ACTION)
+        && let Ok(parsed) = send::parse(tail)
+    {
+        let now = time::Timestamp::now();
+        return Ok(reseat::request::trigger(
+            dir,
+            &parsed.target,
+            &own_session,
+            now,
+            err,
+        )?);
+    }
     Ok(send::run(
         dir,
         tail,
@@ -5295,6 +5353,9 @@ pub fn run_with(
         cli::Request::AutoReseat { tail } => with_state_root(err, |root, err| {
             autoreseat::leg::run(root, tail, time::Timestamp::now(), err)
         })?,
+        cli::Request::SelfReseat { tail } => with_state_root(err, |root, err| {
+            reseat::request::run_leg(root, tail, time::Timestamp::now(), err)
+        })?,
         cli::Request::AutoEffort { tail } => {
             with_state_root(err, |root, err| effort::leg::run(root, tail, err))?
         }
@@ -5583,7 +5644,6 @@ mod tests {
             (vec!["_retire", "/d", "n"], "retire"),
             (vec!["_compact", "/d", "lead"], "compact"),
             (vec!["_relaunch", "/d", "lead"], "relaunch"),
-            (vec!["reseat", "t", "lead", "--using", "p"], "reseat"),
             // The served underscore entry of every launch form.
             (vec!["_launch", "--no-attach"], "launch"),
             (vec!["_launch", "new", "--local"], "launch"),

@@ -11,7 +11,7 @@ pub mod orchestrator;
 pub mod orchestrator_autostart;
 pub mod rename;
 pub mod request_verb;
-pub(crate) mod reseat;
+pub mod reseat;
 pub mod restore;
 pub(crate) mod seat_relaunch;
 pub mod seatcompact;

@@ -302,6 +302,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "self_reseat_request"
+path = "fuzz_targets/self_reseat_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "challenge_summary"
 path = "fuzz_targets/challenge_summary.rs"
 test = false

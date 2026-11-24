@@ -58,8 +58,8 @@ pub(crate) struct Target {
     pub(crate) pane: String,
 }
 
-/// A detached argv minted ONLY by [`argv`], [`auto_reseat_argv`] and
-/// [`auto_effort_argv`], so the detached process door cannot be handed an
+/// A detached argv minted ONLY by [`argv`], [`auto_reseat_argv`],
+/// [`self_reseat_argv`] and [`auto_effort_argv`], so the detached process door cannot be handed an
 /// arbitrary command line.
 pub struct CaptureArgv(Vec<String>);
 
@@ -149,6 +149,23 @@ pub(crate) fn auto_reseat_argv(
             dir.display().to_string(),
             slot.to_owned(),
             key.to_string(),
+        ])
+    })
+}
+
+/// The hidden verb of the orchestrator's requested move, owned here beside
+/// its one spelling; the shell's [`crate::cli::SELF_RESEAT`] names it.
+pub(crate) const SELF_RESEAT: &str = "_self-reseat";
+
+/// The spelling of the orchestrator's requested move: `_self-reseat <dir>
+/// main <id>`, the leg the watchdog's claim starts.
+pub(crate) fn self_reseat_argv(dir: &Path, id: &str) -> Option<CaptureArgv> {
+    crate::archive::is_canonical_uuid(id).then(|| {
+        CaptureArgv(vec![
+            SELF_RESEAT.to_owned(),
+            dir.display().to_string(),
+            crate::watchdog::MAIN_SLOT.to_owned(),
+            id.to_owned(),
         ])
     })
 }

@@ -141,7 +141,7 @@ impl Cycle<'_> {
         if seat.claimed {
             return Ok(Charter::Unresolved);
         }
-        if settling || seat.running >= crate::config::SEAT_CHARTER_VERSION {
+        if settling || !behind(seat.running) {
             return Ok(Charter::Idle);
         }
         let sight = Live {
@@ -424,6 +424,12 @@ fn newest_declaration(events: &[Event], session: &str, seat: &Seat) -> Option<St
         })
         .and_then(Event::declared_state)
         .map(str::to_owned)
+}
+
+/// Whether a launch that recorded charter `running` is behind the charter
+/// this core teaches, and so owed one update turn.
+fn behind(running: u32) -> bool {
+    running < crate::config::SEAT_CHARTER_VERSION
 }
 
 /// The prompt of the seat overlay at `overlay`, when it teaches the current
@@ -898,6 +904,62 @@ mod tests {
             tool,
         };
         assert_eq!(live.frame(), Frame::Unread);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The queued self-reseat sentence raised the charter from 3 to 4: a
+    /// running launch stamped 3 is behind and gets the update turn ONCE, which
+    /// teaches the sentence and stamps 4, and a launch stamped 4 gets nothing.
+    /// The literals stand apart from [`crate::config::SEAT_CHARTER_VERSION`],
+    /// so a constant that falls back to 3 fails here.
+    #[test]
+    fn a_launch_at_charter_3_gets_the_self_reseat_charter_once_and_one_at_4_nothing() {
+        let marker = "queues a move of this seat to another model or account of the same tool";
+        assert_eq!(crate::config::charter_version(TEMPLATE), 4);
+        assert!(behind(3), "a launch stamped 3 is owed the update");
+        assert!(!behind(4), "a launch stamped 4 is owed nothing");
+        let idle = (Some("waiting-user"), Frame::Idle);
+        let dir = scratch("v3-to-v4");
+        std::fs::write(
+            dir.join("meta"),
+            "session=orch\nlaunch_id.main=tok\ncharter.main=3\ncharter_launch.main=tok\n",
+        )
+        .expect("a launch stamped at charter 3");
+        let seat = Seat {
+            running: 3,
+            ..seat_in(&dir)
+        };
+        let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
+        assert_eq!(charter, Charter::Attempted);
+        let pasted = pasted.unwrap_or_default();
+        assert!(pasted.starts_with(HEAD), "{pasted}");
+        assert!(pasted.contains(marker), "the turn teaches the sentence");
+        let after = meta(&dir);
+        assert!(after.contains("charter.main=4\n"), "{after}");
+        assert!(!after.contains("charter.main=3\n"), "{after}");
+        let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
+        assert_eq!(
+            charter,
+            Charter::Idle,
+            "the stamped launch is never claimed again"
+        );
+        assert_eq!(pasted, None);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("v4-current");
+        std::fs::write(
+            dir.join("meta"),
+            "session=orch\nlaunch_id.main=tok\ncharter.main=4\ncharter_launch.main=tok\n",
+        )
+        .expect("a launch stamped at charter 4");
+        let seat = Seat {
+            running: 4,
+            ..seat_in(&dir)
+        };
+        let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
+        assert_eq!(charter, Charter::Idle);
+        assert_eq!(pasted, None);
+        assert!(summaries(&dir).is_empty(), "nothing is journaled");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

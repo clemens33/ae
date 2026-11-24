@@ -104,10 +104,16 @@ in it is pending, or once with `--owner-input` words that name the verb `end`
 and the session. The seat never ends a session whose seats hold or wait for a
 lane claim.
 
-ae refuses rm, every other end and rename form, spawn, retire, reseat,
-relaunch, compact, every fleet form, every launch without `--no-attach` and
-every other stop form.
-Every lifecycle command against the seat's own session is refused too. The
+ae refuses rm, every other end and rename form, spawn, retire, relaunch,
+compact, every fleet form, every launch without `--no-attach`, every other
+stop form and every reseat of another seat.
+Every other lifecycle command against the seat's own session is refused too.
+The seat may move ITSELF to another model or account of the same tool:
+`ae reseat <its session> <its agent> --using <profile[@client]>` queues the
+move, prints `reseat queued: <profile> after this turn`, and the watchdog runs
+it once the turn ends and the seat is idle, with the conversation carried.
+`--cancel` withdraws a queued move; a refusal at that point comes back to the
+seat as its next turn. The
 refusal of a stop prints the owner's own command `ae stop orchestrator -y`; for
 every other refused form the seat gives the owner the command, as below.
 For a refused form the seat gives the owner the exact command to run in the

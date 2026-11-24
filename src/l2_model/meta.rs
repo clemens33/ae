@@ -2342,6 +2342,24 @@ pub(crate) enum Conversation<'a> {
 
 const RESEAT_CONTINUATION: &str = "reseat_continuation.main";
 
+/// The launch-bound origin of a continuation: `requested:<launch>` when the
+/// move that started `<launch>` was the orchestrator's own request. Written
+/// and cleared in the same publication as [`RESEAT_CONTINUATION`].
+const RESEAT_ORIGIN: &str = "reseat_origin.main";
+
+/// Whether the continuation owed to `launch` belongs to a REQUESTED move: the
+/// origin row names exactly that launch, the role is proved and `launch` is
+/// the current main launch. Anything else, damaged or superseded, reads as
+/// automatic.
+#[must_use]
+pub fn requested_continuation(text: &[u8], launch: &str) -> bool {
+    meta_agent_role(text) == MetaAgentRole::Role
+        && crate::archive::is_canonical_uuid(launch)
+        && sole_value(text, "launch_id.main") == Some(launch.as_bytes())
+        && sole_value(text, RESEAT_ORIGIN).and_then(|value| value.strip_prefix(b"requested:"))
+            == Some(launch.as_bytes())
+}
+
 /// The conversation that an automatic move retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContinuationFate {
@@ -2499,7 +2517,20 @@ fn moved_continuation(text: &str, move_to: &SeatMove<'_>) -> Option<String> {
 /// the caller builds from the same resolved account; a KEPT move leaves the
 /// recorded rows, which the caller's keep proof found equal to it. So the
 /// client is never published without its store.
+#[cfg(test)]
 pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String {
+    reseated_from(text, slot, move_to, false)
+}
+
+/// [`reseated`], for a move whose origin is `requested`: the orchestrator's
+/// own queued reseat writes the launch-bound [`RESEAT_ORIGIN`] row beside its
+/// continuation, and every other move of `main` clears it.
+pub(crate) fn reseated_from(
+    text: &str,
+    slot: &str,
+    move_to: &SeatMove<'_>,
+    requested: bool,
+) -> String {
     let mut rows: Vec<(String, Option<String>)> = vec![
         (
             format!("{PROFILE_PREFIX}{slot}"),
@@ -2524,10 +2555,13 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
         (format!("{LAUNCHED_EFFORT_PREFIX}{slot}"), None),
     ];
     if slot == crate::watchdog::MAIN_SLOT {
-        rows.push((
-            RESEAT_CONTINUATION.to_owned(),
-            moved_continuation(text, move_to),
-        ));
+        let continuation = moved_continuation(text, move_to);
+        let origin = continuation
+            .as_ref()
+            .filter(|_| requested)
+            .map(|_| format!("requested:{}", move_to.launch_id));
+        rows.push((RESEAT_CONTINUATION.to_owned(), continuation));
+        rows.push((RESEAT_ORIGIN.to_owned(), origin));
     }
     match &move_to.conversation {
         Conversation::Fresh { id, capture_floor } => {
@@ -2618,15 +2652,28 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
 ///
 /// [`RewriteError::NotWritten`] when the guard does not hold, or the lock,
 /// read, write, sync or rename failed.
+#[cfg(test)]
 pub(crate) fn publish_seat_move(
     dir: &Path,
     slot: &str,
     agent: &str,
     move_to: &SeatMove<'_>,
 ) -> Result<(), RewriteError> {
+    publish_seat_move_from(dir, slot, agent, move_to, false)
+}
+
+/// [`publish_seat_move`] for a move whose origin is `requested`
+/// ([`reseated_from`]): one rewrite publishes the launch and its origin.
+pub(crate) fn publish_seat_move_from(
+    dir: &Path,
+    slot: &str,
+    agent: &str,
+    move_to: &SeatMove<'_>,
+    requested: bool,
+) -> Result<(), RewriteError> {
     rewrite_journaled(
         dir,
-        |current| seat_move_for(current, slot, agent, move_to),
+        |current| seat_move_from(current, slot, agent, move_to, requested),
         |current| {
             effort_discard(
                 dir,
@@ -2725,12 +2772,24 @@ fn journal_records(bytes: &[u8]) -> (Vec<crate::events::Event>, bool) {
 /// The guarded replacement itself — PURE, so the guard is pinnable without a
 /// session on disk. `None` means WRITE NOTHING: either a different seat holds
 /// the slot now, or the move changes not one byte.
+#[cfg(test)]
 fn seat_move_for(current: &str, slot: &str, agent: &str, move_to: &SeatMove<'_>) -> Option<String> {
+    seat_move_from(current, slot, agent, move_to, false)
+}
+
+/// [`seat_move_for`] for a move whose origin is `requested`.
+fn seat_move_from(
+    current: &str,
+    slot: &str,
+    agent: &str,
+    move_to: &SeatMove<'_>,
+    requested: bool,
+) -> Option<String> {
     let seated = crate::lifecycle::meta_value(current.as_bytes(), &format!("{SEAT_PREFIX}{slot}"));
     if seated != agent {
         return None;
     }
-    let next = reseated(current, slot, move_to);
+    let next = reseated_from(current, slot, move_to, requested);
     (next != current).then_some(next)
 }
 
@@ -4887,6 +4946,59 @@ mod tests {
             },
             pair: None,
         }
+    }
+
+    #[test]
+    fn a_requested_move_binds_its_origin_to_the_launch_it_started() {
+        const NEW: &str = "b72543cb-c102-45c6-a4f6-81950a066560";
+        let before = format!(
+            "{}meta_agent=true\nreseat_origin.main=requested:L-OLD\n",
+            seated()
+        );
+        let mut move_to = carrying("cc-mic", "claude", "/h/b");
+        move_to.launch_id = NEW;
+        move_to.orchestrator_continuation = true;
+        let requested = super::reseated_from(&before, "main", &move_to, true);
+        assert!(super::reseat_continuation(requested.as_bytes()).is_some());
+        assert!(super::requested_continuation(requested.as_bytes(), NEW));
+        // An automatic move of the same seat clears the row it does not own.
+        let automatic = super::reseated(&requested, "main", &move_to);
+        assert!(super::reseat_continuation(automatic.as_bytes()).is_some());
+        assert!(!super::requested_continuation(automatic.as_bytes(), NEW));
+        assert_eq!(
+            crate::lifecycle::meta_value(automatic.as_bytes(), "reseat_origin.main"),
+            ""
+        );
+        // Bound to the CURRENT launch, the role and the exact value.
+        let row = |launch: &str, origin: &str, role: &str| {
+            format!("{role}launch_id.main={launch}\nreseat_origin.main={origin}\n")
+        };
+        let role = "meta_agent=true\n";
+        let origin = format!("requested:{NEW}");
+        assert!(super::requested_continuation(
+            row(NEW, &origin, role).as_bytes(),
+            NEW
+        ));
+        assert!(!super::requested_continuation(
+            row(NEW, &origin, "").as_bytes(),
+            NEW
+        ));
+        let other = "requested:0f4f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b";
+        assert!(!super::requested_continuation(
+            row(NEW, other, role).as_bytes(),
+            NEW
+        ));
+        let longer = format!("{origin}x");
+        assert!(!super::requested_continuation(
+            row(NEW, &longer, role).as_bytes(),
+            NEW
+        ));
+        assert!(!super::requested_continuation(
+            row("L-OLD", &origin, role).as_bytes(),
+            NEW
+        ));
+        let twice = format!("{}reseat_origin.main={origin}\n", row(NEW, &origin, role));
+        assert!(!super::requested_continuation(twice.as_bytes(), NEW));
     }
 
     #[test]

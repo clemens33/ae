@@ -22,6 +22,9 @@ const HEAD: &str = "CHARTER UPDATE (ae ";
 const MARKER: &str = "You are the owner's chief of staff across the ae fleet";
 const OVERLAY_LINE: &str = "The waiting-user fixture sentence comes from the running seat overlay.";
 const RELEASE_100: &str = include_str!("../fixtures/orchestrator/v2026.11.100.config");
+/// The last released overlay that teaches charter 3, before the self-reseat
+/// sentence raised it to 4.
+const RELEASE_103: &str = include_str!("../fixtures/orchestrator/v2026.11.103.config");
 const BUSY: &str = "• Working (3s · esc to interrupt)";
 const IDLE: &str = "• Fixture finished";
 const PLACEHOLDER: &str = "Ask Codex to do anything";
@@ -76,7 +79,7 @@ fn prepare_launch(rig: &Rig, global: &Path, meta: &Path) {
         meta,
         format!(
             "{solo}\nmeta_agent=true\nmain_pane={}\nlocal_config={}\nconfig={}\n\
-             charter.main=2\ncharter_launch.main=tok-rig\n",
+             charter.main=3\ncharter_launch.main=tok-rig\n",
             rig.tool.pane,
             overlay.display(),
             global.display()
@@ -152,7 +155,7 @@ fn delivery_rows(rig: &Rig) -> usize {
 
 fn assert_held(rig: &Rig) {
     let meta = read(&rig.tool.dir.join("meta"));
-    assert!(meta.lines().any(|line| line == "charter.main=2"), "{meta}");
+    assert!(meta.lines().any(|line| line == "charter.main=3"), "{meta}");
     assert!(!meta.contains("charter_pending.main="), "{meta}");
     assert!(!read(&rig.root.join("received")).contains(HEAD));
     assert!(read(&rig.root.join("enters")).is_empty());
@@ -181,7 +184,7 @@ fn assert_delivery(rig: &Rig) {
         .lines()
         .find_map(|line| line.strip_prefix("charter.main="))
         .expect("charter version stamp");
-    assert_eq!(stamp, "3", "{meta}");
+    assert_eq!(stamp, "4", "{meta}");
     assert!(
         meta.lines()
             .any(|line| line == "charter_launch.main=tok-rig")
@@ -243,10 +246,10 @@ fn waiting_user_refreshes_once_when_the_same_launch_is_idle_and_empty() {
 
     let overlay = rig.root.join("orchestrator.config");
     let updated = read(&overlay);
-    fs::write(&overlay, RELEASE_100).expect("the old on-disk charter stays at version 2");
+    fs::write(&overlay, RELEASE_103).expect("the old on-disk charter stays at version 3");
     stepper.step();
     assert_held(&rig);
-    fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 3");
+    fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 4");
     stepper.step();
     assert_delivery(&rig);
     stepper.steps(2);
@@ -298,7 +301,7 @@ fn an_unconfirmed_charter_claim_stays_bound_to_the_running_launch() {
     stepper.ready();
     stepper.steps(2);
     let current = read(&meta);
-    assert!(current.lines().any(|line| line == "charter.main=2"));
+    assert!(current.lines().any(|line| line == "charter.main=3"));
     assert!(
         current
             .lines()

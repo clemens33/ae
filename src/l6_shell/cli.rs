@@ -243,6 +243,10 @@ pub const RESEAT: &str = "reseat";
 /// `_auto-reseat <dir> <slot> <key>`. Validated by [`crate::autoreseat`].
 pub const AUTO_RESEAT: &str = "_auto-reseat";
 
+/// The watchdog's own leg that runs the orchestrator seat's queued reseat:
+/// `_self-reseat <dir> main <id>`. Validated by [`crate::reseat::request`].
+pub const SELF_RESEAT: &str = crate::session_launch::capture::SELF_RESEAT;
+
 /// The watchdog's own leg that restarts a lead-pair seat at another effort:
 /// `_auto-effort <dir> <slot> <episode>`. Validated by [`crate::effort`].
 pub const AUTO_EFFORT: &str = "_auto-effort";
@@ -809,6 +813,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `_self-reseat <dir> main <id>` — validated by [`crate::reseat::request`].
+    SelfReseat {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_auto-effort <dir> <slot> <episode>` — validated by [`crate::effort`].
     AutoEffort {
         /// Everything after the subcommand, as typed.
@@ -974,6 +983,9 @@ impl Request {
                 tail: tail.to_vec(),
             },
             AUTO_RESEAT => Self::AutoReseat {
+                tail: tail.to_vec(),
+            },
+            SELF_RESEAT => Self::SelfReseat {
                 tail: tail.to_vec(),
             },
             AUTO_EFFORT => Self::AutoEffort {
@@ -1569,6 +1581,7 @@ impl Request {
             | Self::Rename { .. }
             | Self::Reseat { .. }
             | Self::AutoReseat { .. }
+            | Self::SelfReseat { .. }
             | Self::AutoEffort { .. }
             | Self::CheckDeps { .. }
             | Self::Install { .. }
@@ -1680,7 +1693,9 @@ impl Request {
             | Self::UsageHourly { dir, .. }
             | Self::Run { dir, .. }
             | Self::ShimsRender { dir, .. } => Some(dir),
-            Self::AutoReseat { tail } | Self::AutoEffort { tail } => tail.first().map(Path::new),
+            Self::AutoReseat { tail } | Self::SelfReseat { tail } | Self::AutoEffort { tail } => {
+                tail.first().map(Path::new)
+            }
             Self::Version
             | Self::Help
             | Self::Next { .. }

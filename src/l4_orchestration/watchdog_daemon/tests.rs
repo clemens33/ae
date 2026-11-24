@@ -10932,7 +10932,7 @@ fn a_continuation_drops_its_joined_overview_when_a_delivery_landed_since_its_obs
         .expect("another writer delivered an overview after the observation");
     let mut err = Vec::new();
     cycle
-        .reseat_continuation(&owed, true, &on, &mut PaneState::default(), &mut err)
+        .reseat_continuation(&owed, true, false, &on, &mut PaneState::default(), &mut err)
         .expect("the continuation turn");
     #[allow(
         clippy::disallowed_methods,

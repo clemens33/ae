@@ -114,13 +114,14 @@ const NEEDLES: [&str; 6] = [
     "run_autoupgrade_detached",
     "spawn_detached(",
 ];
-const CENSUS: [(&str, [usize; 6]); 23] = [
+const CENSUS: [(&str, [usize; 6]); 24] = [
     ("src/l2_model/archive/retained.rs", [0, 1, 0, 0, 0, 0]),
     ("src/l4_orchestration/autoreseat/leg.rs", [1, 0, 0, 0, 0, 1]),
     ("src/l3_services/autoupgrade.rs", [0, 0, 2, 0, 2, 0]),
     ("src/l5_ui/console/toggle.rs", [1, 0, 0, 0, 0, 0]),
     ("src/l5_ui/doctor.rs", [3, 0, 0, 0, 0, 0]),
     ("src/l4_orchestration/effort/leg.rs", [1, 0, 0, 0, 0, 1]),
+    ("src/l4_orchestration/reseat/request.rs", [1, 0, 0, 0, 0, 1]),
     ("src/lib.rs", [2, 0, 0, 0, 0, 0]),
     ("src/l4_orchestration/lifecycle.rs", [4, 0, 4, 4, 0, 0]),
     ("src/l4_orchestration/lifecycle/end.rs", [3, 0, 3, 1, 0, 0]),

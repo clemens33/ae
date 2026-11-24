@@ -12,6 +12,10 @@ fuzz_target!(|data: &[u8]| {
     let _ = std::hint::black_box(ae::meta::Meta::parse(&text));
     let _ = std::hint::black_box(ae::meta::meta_agent_role(data));
     let _ = std::hint::black_box(ae::meta::reseat_continuation(data));
+    // The launch-bound origin row a requested move publishes beside it.
+    if let Some(owed) = ae::meta::reseat_continuation(data) {
+        let _ = std::hint::black_box(ae::meta::requested_continuation(data, &owed.launch));
+    }
     let _ = std::hint::black_box(ae::rename::parse_intent(data));
     // The PREDECESSOR row is a second grammar on top of the meta parse: each
     // element says which tool owns the conversation, and a hand edit or a
