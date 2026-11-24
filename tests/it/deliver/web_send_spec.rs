@@ -947,3 +947,10 @@ fn reads_and_duplicate_retries_continue_during_a_send_and_follow_reopens_after_f
     assert_eq!(rig.enter_count(), 4);
     assert_eq!(openings(&rig).last(), Some(&fresh));
 }
+
+#[allow(
+    clippy::expect_used,
+    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+)]
+#[path = "web_verdict_spec.rs"]
+mod web_verdict_spec;

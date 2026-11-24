@@ -318,3 +318,10 @@ fn topic_detail_and_state_share_a_snapshot_and_keep_independent_etags() {
     assert_eq!(row(&next_state).get_str("title"), Some("New release"));
     assert_eq!(injection.calls.load(Ordering::SeqCst), calls + 1);
 }
+
+#[allow(
+    clippy::expect_used,
+    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+)]
+#[path = "web_revisit_spec.rs"]
+mod web_revisit_spec;

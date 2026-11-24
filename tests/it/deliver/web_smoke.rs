@@ -152,6 +152,18 @@ const SPOT: &str = "const el = want === 'box' ? box() : want === 'row' ? row() :
      Math.round(r.top + r.height / 2); const hit = document.elementFromPoint(x, y); return { ok: \
      !!hit && (hit === el || el.contains(hit)), x, y, saw: { x, y, hit: tag(hit) } };";
 
+/// The press point of the element `want` selects, and whether a press there
+/// lands on it: its centre, or 4 px in from its top-left corner when it covers
+/// the whole viewport (an overlay's centre is its content). The overlay itself
+/// must receive the press; any other element may receive it through a child.
+const SPOT_SELECTOR: &str = "const el = document.querySelector(want); if (!el) { return { ok: \
+     false, saw: 'no ' + want }; } el.scrollIntoView({ block: 'nearest' }); const r = \
+     el.getBoundingClientRect(); const covers = r.left <= 0 && r.top <= 0 && r.right >= \
+     innerWidth && r.bottom >= innerHeight; const x = covers ? Math.round(r.left) + 4 : \
+     Math.round(r.left + r.width / 2); const y = covers ? Math.round(r.top) + 4 : \
+     Math.round(r.top + r.height / 2); const hit = document.elementFromPoint(x, y); return { ok: \
+     !!hit && (hit === el || (!covers && el.contains(hit))), x, y, saw: { x, y, hit: tag(hit) } };";
+
 /// Before every document: count CSP violations where the checks read them.
 const WATCH: &str = "window.__aeCsp = []; document.addEventListener('securitypolicyviolation', \
      (e) => window.__aeCsp.push(e.violatedDirective + ' ' + e.blockedURI));";
@@ -170,11 +182,6 @@ const CELLS: [Cell; 4] = [
         dark: false,
     },
     Cell {
-        width: 1440,
-        height: 900,
-        dark: true,
-    },
-    Cell {
         width: 360,
         height: 740,
         dark: false,
@@ -184,10 +191,15 @@ const CELLS: [Cell; 4] = [
         height: 740,
         dark: true,
     },
+    Cell {
+        width: 1440,
+        height: 900,
+        dark: true,
+    },
 ];
 
 /// The one cell that sends.
-const SEND_CELL: usize = 1;
+const SEND_CELL: usize = 3;
 
 impl Cell {
     fn wide(self) -> bool {
@@ -298,7 +310,8 @@ fn smoke_rig() -> Rig {
         format!(
             "2026-11-22T10:00:00Z\ttui\ttopic-{SLUG}\ttitle: {HOSTILE} | state: needs | what: \
              {HOSTILE_WHAT}\n2026-11-22T10:01:00Z\ttui\ttopic-calm\ttitle: Calm topic | state: \
-             moving\n"
+             moving\n{}",
+            web_walk_browser_spec::EXTRA_MEMOS
         ),
     )
     .unwrap_or_else(|error| panic!("write memo: {error}"));
@@ -408,6 +421,7 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
     ok("theme", cell);
     tab.holds("fits", FITS, "")?;
     ok("fits", cell);
+    web_walk_browser_spec::check_revisit(tab, cell)?;
     tab.click("typed", "box")?;
     tab.call(
         "Input.insertText",
@@ -436,6 +450,8 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
     if send {
         sent(tab, rig)?;
         ok("sent", cell);
+        web_walk_browser_spec::check_walk(tab, rig, cell)?;
+        web_walk_browser_spec::check_edges(tab, rig, cell)?;
     }
     tab.flush();
     if !tab.problems.is_empty() {
@@ -1011,6 +1027,19 @@ impl Tab {
     /// move, press and release, after proving the press lands on it.
     fn click(&mut self, check: &'static str, target: &str) -> Checked {
         let spot = self.verdict(check, SPOT, target)?;
+        self.press(check, &spot)
+    }
+
+    /// A real left click on the element `selector` selects (see
+    /// [`SPOT_SELECTOR`]): its centre, or 4 px inside the top-left corner of an
+    /// overlay, after proving the press lands on it.
+    fn click_selector(&mut self, check: &'static str, selector: &str) -> Checked {
+        let spot = self.verdict(check, SPOT_SELECTOR, selector)?;
+        self.press(check, &spot)
+    }
+
+    /// Pointer move, press and release at the `x` and `y` of `spot`.
+    fn press(&mut self, check: &'static str, spot: &Value) -> Checked {
         let (Some(Value::Num(x)), Some(Value::Num(y))) = (spot.get("x"), spot.get("y")) else {
             return Err(Failed::new(check, format!("no spot: {}", spot.render())));
         };
@@ -1113,3 +1142,6 @@ fn base64_decode(text: &str) -> Vec<u8> {
     }
     out
 }
+
+#[path = "web_walk_browser_spec.rs"]
+mod web_walk_browser_spec;
