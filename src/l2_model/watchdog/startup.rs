@@ -95,6 +95,10 @@ fn joined(rows: &[&str]) -> String {
         .join(" ")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one top-to-bottom match of the measured block, rule to hint; a split hides the row order"
+)]
 fn trust_warnings(
     window: &[&str],
     adapter: &ToolAdapter,
@@ -152,8 +156,12 @@ fn trust_warnings(
     }
 
     let mut report = Vec::new();
-    let plain = match between {
-        [] => true,
+    let warned = match between {
+        [] => Warned {
+            plain: true,
+            permissions: false,
+            hooks: false,
+        },
         [group] => permission_warnings(&joined(group), warnings, &mut report)?,
         _ => return None,
     };
@@ -164,17 +172,14 @@ fn trust_warnings(
         .options
         .iter()
         .position(|option| *option == trust.yes)?;
-    let refusal = if !plain {
-        Some("the permission list is not the measured list".to_owned())
-    } else if !warnings.answers.contains(&settings.as_str()) {
-        Some(format!(
-            "\"{}\" loads more than .claude/settings.json",
-            crate::event_text::clip_head(&settings, 100)
-        ))
-    } else {
-        None
-    };
-    let (sighting, differs) = match (drawn_folder(folder_run), refusal) {
+    let (sighting, differs) = match (
+        drawn_folder(
+            folder_run,
+            window[start].trim_end().chars().count(),
+            warnings.wraps,
+        ),
+        refusal(warned, home, warnings, &settings),
+    ) {
         (Some(folder), None) => (
             Some(TrustSighting {
                 folder,
@@ -261,8 +266,16 @@ fn trust_choices(rows: &[&str], choices: &[&str], marker: char) -> Option<usize>
 /// permission list is plain drawn text, the one condition under which the
 /// block may be answered: no control, invisible or bidi-format character,
 /// and the vendor notice exactly once after it.
-fn permission_warnings(group: &str, spec: TrustWarnings, report: &mut Vec<String>) -> Option<bool> {
-    let mut plain = true;
+fn permission_warnings(
+    group: &str,
+    spec: TrustWarnings,
+    report: &mut Vec<String>,
+) -> Option<Warned> {
+    let mut warned = Warned {
+        plain: true,
+        permissions: false,
+        hooks: false,
+    };
     let remaining = if let Some(permissions) = group.strip_prefix(spec.permissions) {
         let (count, permissions) = permissions.split_once(" tool permission")?;
         let count = count.parse::<u32>().ok()?;
@@ -272,7 +285,8 @@ fn permission_warnings(group: &str, spec: TrustWarnings, report: &mut Vec<String
         // The list before this sentence can echo repository commands. Report
         // the vendor's warning and count without copying any list entry.
         let (list, remaining) = permissions.rsplit_once(spec.permission_notice)?;
-        plain = drawn_text(list)
+        warned.permissions = true;
+        warned.plain = drawn_text(list)
             && !list.contains(spec.permission_notice)
             && measured_list(list.trim(), count);
         let line = format!(
@@ -289,22 +303,58 @@ fn permission_warnings(group: &str, spec: TrustWarnings, report: &mut Vec<String
             return None;
         }
         report.push(spec.hooks.to_owned());
+        warned.hooks = true;
     }
-    Some(plain)
+    Some(warned)
+}
+
+/// Which warnings a settings block draws, and whether its permission list is
+/// the measured one (`plain`; true when there is none).
+#[derive(Clone, Copy)]
+struct Warned {
+    plain: bool,
+    permissions: bool,
+    hooks: bool,
+}
+
+/// Why `auto_trust` does not answer a measured settings block, if it does
+/// not: a permission list outside the measured grammar, a source row that
+/// loads more than `.claude/settings.json`, or rows never captured together.
+fn refusal(warned: Warned, home: bool, warnings: TrustWarnings, settings: &str) -> Option<String> {
+    if !warned.plain {
+        Some("the permission list is not the measured list".to_owned())
+    } else if !warnings.answers.iter().any(|known| known.loads == settings) {
+        Some(format!(
+            "\"{}\" loads more than .claude/settings.json",
+            crate::event_text::clip_head(settings, 100)
+        ))
+    } else if !warnings.answers.iter().any(|known| {
+        known.home == home
+            && known.permissions == warned.permissions
+            && known.hooks == warned.hooks
+            && known.loads == settings
+    }) {
+        Some("these warning and source rows were never measured together".to_owned())
+    } else {
+        None
+    }
 }
 
 /// The folder a settings block names: one row, or a path claude wrapped over
-/// several rows (measured at 40 columns: `/tmp/ae-dialog-probe/proj` over
-/// `ect`), rejoined only when every row is one whitespace-free fragment. The
-/// result must still equal the seat's folder canonically before any key.
-fn drawn_folder(rows: &[&str]) -> Option<String> {
+/// exactly two rows at a wrap column measured for this frame `width`
+/// (`TrustWarnings::wraps`), both whitespace-free fragments (lead ruling
+/// 2026-11-24). The result must still equal the seat's folder canonically
+/// before any key; any other join is named.
+fn drawn_folder(rows: &[&str], width: usize, wraps: &[(usize, usize)]) -> Option<String> {
     match rows {
         [row] => Some(row.trim().to_owned()),
-        _ => rows
-            .iter()
-            .map(|row| row.trim())
-            .all(|row| !row.is_empty() && !row.contains(char::is_whitespace))
-            .then(|| rows.iter().map(|row| row.trim()).collect()),
+        [head, tail] => {
+            let (head, tail) = (head.trim(), tail.trim());
+            let fragment = |row: &str| !row.is_empty() && !row.contains(char::is_whitespace);
+            (fragment(head) && fragment(tail) && wraps.contains(&(width, head.chars().count())))
+                .then(|| format!("{head}{tail}"))
+        }
+        _ => None,
     }
 }
 

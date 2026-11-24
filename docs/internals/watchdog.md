@@ -750,7 +750,12 @@ row names `.claude/settings.json` alone ("Trusting this folder loads .claude/set
 "… (runs commands)."), with or without the permissions and hooks warnings, at home or not. The
 sighting names its `TrustVariant` (`Plain`, `Home`, `Settings`, `HomeSettings`): `trust_block`
 reads the first two, `startup::read` the settings ones, and `answer_prompt` takes a sighting from
-either. Every proof of `autotrust::due` above still holds; the config home is not consulted. A
+either. Only the warning and source combinations captured as one frame are answered
+(`TrustWarnings::answers`), the permission list must parse as the measured entry list with its
+count, and a folder wrapped over two rows is joined only at a wrap column measured for that frame
+width (`TrustWarnings::wraps`); anything else is named with its reason (lead ruling 2026-11-24).
+The raw warning text rides in `TrustSighting::block`, so both reads and the read after the arrow
+must show the same body. Every proof of `autotrust::due` above still holds; the config home is not consulted. A
 home-folder Yes lasts one claude session, so every new or reseated seat in `HOME` is answered
 again. Residual, accepted by the owner: a seat on another config home (the `claude-mic` or
 `claude-p` login) that is answered in `HOME` loads `~/.claude/settings.json` and its hooks as

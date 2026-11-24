@@ -876,6 +876,20 @@ pub(crate) enum StartupEvidence {
     },
 }
 
+/// One settings-warning combination claude drew in one captured frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SettingsShape {
+    /// The access paragraph is the home-folder one.
+    pub(crate) home: bool,
+    /// The permissions warning is drawn.
+    pub(crate) permissions: bool,
+    /// The hooks warning is drawn.
+    pub(crate) hooks: bool,
+    /// The source row, exactly.
+    pub(crate) loads: &'static str,
+}
+
+/// Claude's settings warnings, measured on 2.1.330.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrustWarnings {
     pub(crate) permissions: &'static str,
@@ -883,9 +897,14 @@ pub(crate) struct TrustWarnings {
     pub(crate) permission_notice: &'static str,
     pub(crate) hooks: &'static str,
     pub(crate) loads: &'static [&'static str],
-    /// The `loads` rows `auto_trust` answers (owner ruling 2026-11-23): those
-    /// naming `.claude/settings.json` alone. Any other measured row is named.
-    pub(crate) answers: &'static [&'static str],
+    /// The settings blocks `auto_trust` answers (owner ruling 2026-11-23,
+    /// lead ruling 2026-11-24): exactly the combinations captured as one
+    /// frame, whose source row names `.claude/settings.json` alone. A
+    /// combination synthesized from separately measured rows is named.
+    pub(crate) answers: &'static [SettingsShape],
+    /// The folder wraps measured as (frame width, cells of the first row's
+    /// path fragment): a path wrapped anywhere else is named.
+    pub(crate) wraps: &'static [(usize, usize)],
 }
 
 /// An information panel a harness draws in place of its composer until a key
@@ -1016,10 +1035,37 @@ const CLAUDE_SETTINGS_TRUST: StartupDialog = StartupDialog {
             "Trusting this folder loads .claude/settings.json (runs commands).",
             "Trusting this folder loads .claude/settings.json (runs commands) and .mcp.json here or above (MCP servers).",
         ],
+        // tests/fixtures/dialogseat/claude-2.1.330-settings-only-120x40.txt,
+        // -settings-80x24.txt and -hooks-80x50.txt; the home row is
+        // tests/fixtures/claude-trust/claude-home-trust-2.1.330-hooks-108x44.txt.
         answers: &[
-            "Trusting this folder loads .claude/settings.json.",
-            "Trusting this folder loads .claude/settings.json (runs commands).",
+            SettingsShape {
+                home: false,
+                permissions: false,
+                hooks: false,
+                loads: "Trusting this folder loads .claude/settings.json.",
+            },
+            SettingsShape {
+                home: false,
+                permissions: true,
+                hooks: false,
+                loads: "Trusting this folder loads .claude/settings.json.",
+            },
+            SettingsShape {
+                home: false,
+                permissions: true,
+                hooks: true,
+                loads: "Trusting this folder loads .claude/settings.json (runs commands).",
+            },
+            SettingsShape {
+                home: true,
+                permissions: false,
+                hooks: true,
+                loads: "Trusting this folder loads .claude/settings.json (runs commands).",
+            },
         ],
+        // -settings-40x12.history.txt and -mcp40-34x12.history.txt.
+        wraps: &[(40, 25), (34, 32)],
     }),
 };
 
