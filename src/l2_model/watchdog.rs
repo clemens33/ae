@@ -384,15 +384,11 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
 }
 
 /// The observation the answer sequence reads, including its post-key clear
-/// check: a measured trust sighting from either reader first, else whatever
-/// prompt is drawn, so a block that is still up never reads as clear.
+/// check. It is [`human_prompt_class`] itself, so the watchdog's sighting and
+/// the answer's reads carry the same variant and `block` for one frame, and a
+/// block that is still up never reads as clear.
 pub(crate) fn answer_prompt(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
-    let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
-    let legacy = legacy_prompt(buf, adapter);
-    if legacy.as_ref().is_some_and(|prompt| prompt.trust.is_some()) {
-        return legacy;
-    }
-    startup::read(buf, adapter).or(legacy)
+    human_prompt_class(buf, agent_bin)
 }
 
 fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanPrompt> {
@@ -8538,5 +8534,195 @@ tail line
             "the rule on the window's first row"
         );
         assert_eq!(claude(&pad(1)), None, "one row further up it is out");
+    }
+
+    /// trustfix survivors: the measured home block with claude's hooks rows
+    /// (claude 2.1.330, captured) is the `HomeSettings` sighting and reports
+    /// exactly those two rows; the plain home block reports none.
+    #[test]
+    fn the_home_hooks_block_reports_its_hooks_and_source_rows() {
+        let hooks = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-hooks-108x44.txt"
+        );
+        let found = super::human_prompt_class(hooks, "claude").expect("named");
+        let sighting = found.trust.as_ref().expect("a measured home block");
+        assert_eq!(sighting.variant, super::TrustVariant::HomeSettings);
+        assert_eq!(sighting.folder, "/tmp/claude-home-trust-probe");
+        assert_eq!(
+            sighting.block,
+            "⚠ This folder configures hooks that can run commands without asking, declared in .claude/settings.json\n\
+             Trusting this folder loads .claude/settings.json (runs commands).",
+            "the settings reader owns the home hooks block"
+        );
+        assert_eq!(
+            super::answer_prompt(hooks, "claude").and_then(|prompt| prompt.trust),
+            found.trust,
+            "the answer reads the sighting the watchdog named"
+        );
+        assert_eq!(
+            found.warnings,
+            [
+                "⚠ This folder configures hooks that can run commands without asking, declared in .claude/settings.json",
+                "Trusting this folder loads .claude/settings.json (runs commands).",
+            ]
+        );
+        let plain = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-default-108x44.txt"
+        );
+        let found = super::human_prompt_class(plain, "claude").expect("named");
+        assert_eq!(
+            found.trust.as_ref().map(|sighting| sighting.variant),
+            Some(super::TrustVariant::Home)
+        );
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    }
+
+    /// trustfix survivors: the operator line of a differing block names its
+    /// reason and where to answer it, then each warning; a measured block keeps
+    /// the label and action line.
+    #[test]
+    fn the_startup_notice_names_a_differing_block_with_its_reason() {
+        let mut prompt = super::HumanPrompt {
+            kind: super::DialogKind::FolderTrust,
+            warnings: vec!["w1".to_owned()],
+            question: "q".to_owned(),
+            keys: "k".to_owned(),
+            trust: None,
+            dismiss: false,
+            differs: Some("dialog differs from the measured one (claude 2.1.330): x".to_owned()),
+        };
+        assert_eq!(
+            prompt.startup_notice().as_deref(),
+            Some(
+                "folder trust: dialog differs from the measured one (claude 2.1.330): x; \
+                 attach to answer it in the pane — w1"
+            )
+        );
+        prompt.differs = None;
+        assert_eq!(
+            prompt.startup_notice().as_deref(),
+            Some("folder trust — attach to review and answer — w1")
+        );
+        prompt.kind = super::DialogKind::InformationPanel;
+        assert_eq!(prompt.startup_notice(), None);
+    }
+
+    /// trustfix survivors: a home block that is not measured is named against
+    /// its closest measured shape: the plain one when the access paragraph is
+    /// not the home one, the hooks shape when it draws more paragraphs than the
+    /// bare home block, else the bare home block.
+    #[test]
+    fn a_differing_home_block_is_named_against_its_closest_shape() {
+        let home = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-default-108x44.txt"
+        );
+        let hooks = include_str!(
+            "../../tests/fixtures/claude-trust/claude-home-trust-2.1.330-hooks-108x44.txt"
+        );
+        let reason = |label: &str, frame: &str| {
+            super::human_prompt_class(frame, "claude")
+                .and_then(|found| found.differs)
+                .unwrap_or_else(|| panic!("{label}: named with a reason"))
+        };
+        let access = home.replace(
+            " Claude Code'll be able to read, edit, and execute files here. This is your home folder, so Yes lasts for\n this session only.",
+            " Claude Code'll be able to read files here.",
+        );
+        assert_ne!(access, home, "setup: the access paragraph changed");
+        let why = reason("access", &access);
+        assert!(
+            why.contains("not \"Claude Code'll be able to read, edit, and execute files here.\""),
+            "against the plain block: {why}"
+        );
+        let longer = hooks.replace(
+            "configures hooks that can run",
+            "configures hooks that may run",
+        );
+        assert_ne!(longer, hooks, "setup: the hooks row changed");
+        let why = reason("longer", &longer);
+        assert!(
+            why.contains("not \"⚠ This folder configures hooks that can run"),
+            "against the hooks shape: {why}"
+        );
+        let same = home.replace(" Security guide", " Security guides");
+        assert_ne!(same, home, "setup: the last paragraph changed");
+        let why = reason("same", &same);
+        assert!(
+            why.contains("reads \"Security guides\", not \"Security guide\""),
+            "against the bare home block: {why}"
+        );
+    }
+
+    /// trustfix survivor: a settings block with a second run of rows between
+    /// the folder and the question is not the measured layout and is never a
+    /// sighting, even when both runs look like folders.
+    #[test]
+    fn a_second_folder_run_is_never_a_settings_sighting() {
+        let frame =
+            include_str!("../../tests/fixtures/dialogseat/claude-2.1.330-settings-80x24.txt");
+        let measured = super::human_prompt_class(frame, "claude").expect("named");
+        assert!(
+            measured.trust.is_some(),
+            "control: the measured block is a sighting"
+        );
+        let doubled = frame.replace(
+            " /tmp/claude-trust-probe\n",
+            " /tmp/claude-trust-probe\n\n /tmp/claude-trust-probe/other\n",
+        );
+        assert_ne!(doubled, frame, "setup: a second run was drawn");
+        let found = super::human_prompt_class(&doubled, "claude");
+        assert_eq!(found.and_then(|found| found.trust), None);
+        let intro = frame.replace("well-known open source", "well known open source");
+        assert_ne!(intro, frame, "setup: the intro paragraph changed");
+        let found = super::human_prompt_class(&intro, "claude");
+        assert_eq!(found.and_then(|found| found.trust), None, "a changed intro");
+        let option = frame.replace("Yes, I trust this folder", "Yes, trust this folder");
+        assert_ne!(option, frame, "setup: an option row changed");
+        let found = super::human_prompt_class(&option, "claude");
+        assert_eq!(
+            found.and_then(|found| found.trust),
+            None,
+            "a changed option"
+        );
+    }
+
+    /// trustfix survivor: an `.mcp.json` source is the decisive reason, ahead
+    /// of the elided permission list the same capture draws.
+    #[test]
+    fn an_mcp_source_is_named_before_its_elided_list() {
+        let frame =
+            include_str!("../../tests/fixtures/dialogseat/claude-2.1.330-mcp40-80x24.history.txt");
+        let found = super::human_prompt_class(frame, "claude").expect("named");
+        assert_eq!(found.trust, None);
+        let why = found.differs.expect("named with a reason");
+        assert!(
+            why.contains("loads more than .claude/settings.json") && why.contains(".mcp.json"),
+            "{why}"
+        );
+    }
+
+    /// trustfix survivors: rows measured only apart, here the hooks warning
+    /// and its "(runs commands)" source without the permissions warning they
+    /// were captured with, are named and never answered (lead ruling
+    /// 2026-11-24).
+    #[test]
+    fn rows_never_captured_together_are_named() {
+        let frame = include_str!("../../tests/fixtures/dialogseat/claude-2.1.330-hooks-80x50.txt");
+        let control = super::human_prompt_class(frame, "claude").expect("named");
+        assert!(
+            control.trust.is_some(),
+            "control: the captured block is a sighting"
+        );
+        let start = frame
+            .find(" ⚠ This folder pre-approves")
+            .expect("setup: permissions");
+        let hooks = frame
+            .find(" ⚠ This folder configures hooks")
+            .expect("setup: hooks");
+        let synthesized = format!("{}{}", &frame[..start], &frame[hooks..]);
+        let found = super::human_prompt_class(&synthesized, "claude").expect("named");
+        assert_eq!(found.trust, None);
+        let why = found.differs.expect("named with a reason");
+        assert!(why.contains("never measured together"), "{why}");
     }
 }
