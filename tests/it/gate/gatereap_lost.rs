@@ -122,7 +122,8 @@ fn drive(driver: &str, tag: &str, arm: &str) -> (crate::cli::OwnedScratch, std::
         .arg(arm)
         .env("AE_LOST_REAP", &reap)
         .env("AE_LOST_JUSTFILE", &justfile)
-        .env("AE_LANE_MIN_FREE_GIB", "0");
+        .env("AE_LANE_MIN_FREE_GIB", "0")
+        .env("AE_LANE_MAX_TEMP_C", "0");
     let out = base.join("driver.out");
     let err = base.join("driver.err");
     let status = raw::run(&invocation, &base, &out, &err)

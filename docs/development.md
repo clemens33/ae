@@ -135,7 +135,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just test` / `just rust-check` | **the whole gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test`. The hp runs it for every release ([Release proof](#release-proof)) |
 | `just test-affected [base=<ref>] [print=yes]` | **the merge gate** (M1, one hop): `rust-fmt-check` + `rust-lint` + `rust-fuzz-check`, then every unit test, the `doors`, `floor` and `gate` guard modules and the integration modules the change reaches, through the lane's filtered arm, plus the doctests when a `src/` file changed and `just check` when `install` changed. The whole lane when the selector cannot place the change. A clean committed tree that does not move, no receipt. `print=yes` measures the working tree, prints the selection and runs nothing (see [The merge gate](#the-merge-gate)) |
 | `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
-| `just lane-lock claim <name> [secs]` / `release <name>` / `cancel-wait <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held). `claim` refuses, taking no lock, when a volume it is about to fill has less than `AE_LANE_MIN_FREE_GIB` free (see The lane lock). `cancel-wait <name>` stops a claim that is still waiting, never a holder (see The lane lock) |
+| `just lane-lock claim <name> [secs]` / `release <name>` / `cancel-wait <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held). `claim` refuses, taking no lock, when a volume it is about to fill has less than `AE_LANE_MIN_FREE_GIB` free (see The lane lock). `claim` and `release` print the package temperature and throttle count, and a claim cools before it takes a free gate while the package is above `AE_LANE_MAX_TEMP_C` (default 75 °C, at most 10 min; see The lane lock). `cancel-wait <name>` stops a claim that is still waiting, never a holder (see The lane lock) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt`, including the separate fuzz crate with the product rustfmt, without the fuzz nightly |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint`, cargo at nice 10 with `CARGO_BUILD_JOBS` from the one sizing helper below |
@@ -215,6 +215,19 @@ exit 2. Anything the check cannot read (cargo metadata fails, a path with a back
 line without its numbers) refuses too. A path that does not exist yet is measured through its
 nearest existing ancestor and is not created. `lane-lock release`, `status` and `cancel-wait`
 never check the disk, so a full disk never stops a holder from giving its lock back.
+
+**The thermal line and the cool-down (`AE_LANE_MAX_TEMP_C`).** The hp is a laptop that throttled for hours under
+back-to-back gates, so `claim` and `release` each print one line after their result line:
+`lane-lock: thermal at claim|release: package <T> C, package_throttle_count <N>`. Both values come
+from read-only sysfs (the `coretemp` hwmon's `temp1_input` and cpu0's `package_throttle_count`); a
+value that cannot be read, as on macOS, prints `unknown` and never changes an exit status. Before a
+claim takes a free gate that the queue lets it take, it waits while the package reads above
+`AE_LANE_MAX_TEMP_C` whole degrees (default 75, `0` turns the wait off, anything else but a whole
+number refuses with exit 2): in steps of 30 s, at most 600 s, then one line says `claiming anyway`.
+An unknown reading never waits. The wait holds no gate, happens once per claim, counts against the
+`secs` budget, and stays cancellable by `cancel-wait`. A claim behind a holder or a queue name waits
+for the gate first and cools after, so the reading is the box after the holder, not while the holder
+heats it. `AE_LANE_COOL_STEP_SECS`, `AE_LANE_COOL_CAP_SECS` and `AE_LANE_SYSFS_ROOT` are test seams.
 
 **Cancel a waiting claim (`just lane-lock cancel-wait <name>`).** A claim that waits is the recipe
 shell itself, and stopping it by a process list or a signal needs a pid set. The recipe keeps no

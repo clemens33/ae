@@ -43,6 +43,7 @@ mod affected;
 mod bashfloor;
 mod gatereap_lost;
 mod lanesafe_spec;
+mod lanetemp_spec;
 mod macos_subset;
 #[allow(
     clippy::expect_used,
@@ -10053,7 +10054,8 @@ fn run_in_env(
     let mut invocation = Invocation::new(program)
         .env("HOME", scratch)
         .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"))
-        .env("AE_LANE_MIN_FREE_GIB", "0");
+        .env("AE_LANE_MIN_FREE_GIB", "0")
+        .env("AE_LANE_MAX_TEMP_C", "0");
     for (key, value) in env {
         invocation = invocation.env(key, value);
     }

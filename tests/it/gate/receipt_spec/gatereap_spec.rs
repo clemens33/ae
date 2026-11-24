@@ -244,6 +244,7 @@ fn process_case(recipe: &str, action: &str, mode: &str, held: bool) {
         .env("TMPDIR", &*old.base)
         .env("AE_TEST_TMPDIR", &*old.base)
         .env("AE_LANE_MIN_FREE_GIB", "0")
+        .env("AE_LANE_MAX_TEMP_C", "0")
         .env("GIT_CONFIG_GLOBAL", old.base.join("gitconfig"))
         .env("AE_SPEC_REC", old.base.join("rec"))
         .env("AE_SPEC_CLIFF", old.base.join("cliff-argv"))

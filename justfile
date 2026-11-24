@@ -978,6 +978,22 @@ test-affected *args:
 # the checkout's, the shared lock directory's or cargo's volume is short of AE_LANE_MIN_FREE_GIB
 # (default 20): a claim refused so takes no lock (DISKFREE).
 #
+# THERMAL (the hp is a laptop that throttled for hours under back-to-back gates). `claim` and `release`
+# each print one line after their result line, `lane-lock: thermal at claim|release: package <T> C,
+# package_throttle_count <N>`, read-only from sysfs: the package is `temp1_input` (millidegrees) of
+# the hwmon whose `name` is `coretemp`, the count is cpu0's `thermal_throttle/package_throttle_count`.
+# What cannot be read (macOS, no coretemp, no file, a non-number) prints `unknown` and never changes an
+# exit status. The owner and binding lines stay as they are. Before a claim takes a FREE gate that the
+# queue lets it take, it COOLS: while the package reads above AE_LANE_MAX_TEMP_C (default 75, whole
+# degrees, 0 = off) it waits in AE_LANE_COOL_STEP_SECS steps (default 30) for at most
+# AE_LANE_COOL_CAP_SECS (default 600), then says `claiming anyway` in one line and goes on. An unknown
+# reading never waits. It happens once per claim, holds no gate, counts against the `wait-secs` budget
+# (a claim of 0 still cools once, then tries once), and registers and sleeps like a waiting claim, so
+# `cancel-wait` still stops it; a claim behind a holder or a queue name does not cool, it cools when
+# the gate is free, so the reading is the box after the holder, not while the holder heats it. The
+# step, the cap and AE_LANE_SYSFS_ROOT (the root of `/sys`, default `/`) are test seams; a bad value of
+# any of them refuses with exit 2 before any effect.
+#
 # CANCEL-WAIT (ae-feedback 65). A waiting claim registers an incarnation directory
 # `<main checkout>/.local/locks/waiting/w.XXXXXX` (mktemp: a path no later claim can recreate)
 # holding exactly one state file, `waiting`, `acquiring` or `cancelled`, of one line
@@ -1243,6 +1259,96 @@ LANE_LOCK := DISKFREE + "\n" + '''
         r_ident="${BASH_REMATCH[3]}"
         r_host="${BASH_REMATCH[4]}"
     }
+    # THERMAL (see the header). thermal_read fills t_milli (the package in millidegrees, "" when it
+    # cannot be read) and t_count (the cpu0 package throttle count, `unknown` when it cannot be read).
+    # Every read is guarded: no reading can fail a claim, a release or the cool-down.
+    # AE_LANE_SYSFS_ROOT is the root of `/sys` and a test seam. A hwmon entry is a symlink.
+    thermal_root="${AE_LANE_SYSFS_ROOT:-/}"
+    thermal_root="${thermal_root%/}"
+    thermal_read() {
+        local dir raw
+        t_milli=""
+        t_count=unknown
+        # A relative root would resolve against the directory `release` has just removed: read nothing.
+        [[ -z "$thermal_root" || "$thermal_root" == /* ]] || return 0
+        for dir in "$thermal_root"/sys/class/hwmon/hwmon*; do
+            [[ -r "$dir/name" && -r "$dir/temp1_input" ]] || continue
+            [[ "$(cat "$dir/name" 2>/dev/null || true)" == coretemp ]] || continue
+            raw="$(cat "$dir/temp1_input" 2>/dev/null || true)"
+            if [[ "$raw" =~ ^[0-9]{1,7}$ ]]; then
+                t_milli=$((10#$raw))
+                break
+            fi
+        done
+        raw="$(cat "$thermal_root/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count" 2>/dev/null || true)"
+        if [[ "$raw" =~ ^[0-9]{1,18}$ ]]; then t_count="$raw"; fi
+        return 0
+    }
+    # `package 61.2 C` from t_milli, or `package unknown`.
+    thermal_temp() {
+        if [[ -n "$t_milli" ]]; then
+            echo "package $((t_milli / 1000)).$((t_milli % 1000 / 100)) C"
+        else
+            echo "package unknown"
+        fi
+    }
+    # The log line of a claim or a release: `thermal_line claim|release`.
+    thermal_line() {
+        thermal_read
+        echo "lane-lock: thermal at $1: $(thermal_temp), package_throttle_count $t_count"
+    }
+    # The settings of the cool-down, refused with exit 2 like the disk floor when malformed.
+    thermal_settings() {
+        max_temp="${AE_LANE_MAX_TEMP_C:-75}"
+        cool_step="${AE_LANE_COOL_STEP_SECS:-30}"
+        cool_cap="${AE_LANE_COOL_CAP_SECS:-600}"
+        if [[ -n "$thermal_root" && "$thermal_root" != /* ]]; then
+            echo "lane-lock: refused: AE_LANE_SYSFS_ROOT is an absolute path, got '$thermal_root'" >&2
+            exit 2
+        fi
+        if [[ ! "$max_temp" =~ ^(0|[1-9][0-9]{0,2})$ ]]; then
+            echo "lane-lock: refused: AE_LANE_MAX_TEMP_C is whole degrees Celsius without a leading zero (0 turns the wait off), got '$max_temp'" >&2
+            exit 2
+        fi
+        if [[ ! "$cool_step" =~ ^[1-9][0-9]{0,3}$ ]]; then
+            echo "lane-lock: refused: AE_LANE_COOL_STEP_SECS is whole seconds from 1 without a leading zero, got '$cool_step'" >&2
+            exit 2
+        fi
+        if [[ ! "$cool_cap" =~ ^(0|[1-9][0-9]{0,4})$ ]]; then
+            echo "lane-lock: refused: AE_LANE_COOL_CAP_SECS is whole seconds without a leading zero, got '$cool_cap'" >&2
+            exit 2
+        fi
+    }
+    # THE COOL-DOWN. Sets cooled=1 and cool_slept=1 when it slept at all. It runs at most once per
+    # claim, only where the claim is about to take a free gate, and holds no gate. The first sleep
+    # registers the claim as WAITING (wait_register) and every sleep is a `nap`, so `cancel-wait`
+    # finds and stops it; the caller then `continue`s, and the loop's own wait_leave moves the claim
+    # to ACQUIRING before the attempt. A reading that is gone or at most the threshold ends it quietly.
+    cooled=0
+    cool_slept=0
+    cool_down() {
+        local began now left limit
+        cooled=1
+        ((max_temp > 0)) || return 0
+        limit=$((max_temp * 1000))
+        began="$(date +%s)"
+        while :; do
+            thermal_read
+            if [[ -z "$t_milli" ]] || ((t_milli <= limit)); then return 0; fi
+            now="$(date +%s)"
+            left=$((cool_cap - (now - began)))
+            if ((left <= 0)); then
+                echo "lane-lock: cooling stopped after $((now - began))s at $(thermal_temp), above $max_temp C (AE_LANE_MAX_TEMP_C); claiming anyway" >&2
+                return 0
+            fi
+            if ((cool_slept == 0)); then
+                wait_register
+                cool_slept=1
+            fi
+            echo "lane-lock: cooling, ${left}s left: $(thermal_temp) is above $max_temp C (AE_LANE_MAX_TEMP_C)" >&2
+            if ((left < cool_step)); then nap "$left"; else nap "$cool_step"; fi
+        done
+    }
     case "$verb" in
         status)
             if [[ ! -e "$gate" && ! -L "$gate" ]]; then
@@ -1318,6 +1424,7 @@ LANE_LOCK := DISKFREE + "\n" + '''
             [[ "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]] || refuse "the owner line is removed, but $gate is no longer the directory this release entered; left alone"
             rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
             echo "lane-lock: released by $name"
+            thermal_line release
             ;;
         cancel-wait)
             # Validate first, move second (CANCEL-WAIT above). No signal is sent and no process table is read.
@@ -1390,6 +1497,7 @@ LANE_LOCK := DISKFREE + "\n" + '''
             echo "lane-lock: cancelled the waiting claim of $name (pid $r_pid); it will not claim"
             ;;
         claim)
+            thermal_settings
             disk_floor lane-lock "$locks"
             mkdir -p "$locks"
             start="$(date +%s)"
@@ -1412,6 +1520,13 @@ LANE_LOCK := DISKFREE + "\n" + '''
                     wait_leave
                 fi
                 if [[ ! -s "$next_file" || "$(cat "$next_file")" == "$name" ]]; then
+                    # The cool-down: the queue lets this name through and the gate is free, so this is
+                    # the moment the box is measured (see THERMAL). After a sleep the pass starts over,
+                    # which re-checks the disk, leaves WAITING and looks at the queue and the gate again.
+                    if ((cooled == 0)) && [[ ! -e "$gate" && ! -L "$gate" ]]; then
+                        cool_down
+                        if ((cool_slept)); then continue; fi
+                    fi
                     # A standing gate is held and is not asked about: a `mkdir` that is not atomic reports
                     # success for it. Two claimants can still both pass this look and both `mkdir`; the
                     # exclusive owner create picks one, and the other reads it like any holder.
@@ -1421,6 +1536,7 @@ LANE_LOCK := DISKFREE + "\n" + '''
                     fi
                     if [[ "$made" == yes ]] && claim_owner; then
                         echo "lane-lock: claimed by $name"
+                        thermal_line claim
                         bind_claim
                         [[ ! -s "$next_file" ]] || echo "note: $next_file still names $(cat "$next_file"); the lead clears it"
                         exit 0
