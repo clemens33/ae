@@ -233,7 +233,7 @@ fn a_socket_path_is_lowercase_hex_and_round_trips_including_a_space() {
             Some(bytes.as_slice()),
             "{path}"
         );
-        assert!(bytes.ends_with(b"\n") && !bytes[..bytes.len() - 1].contains(&b"\n"));
+        assert!(bytes.ends_with(b"\n") && !bytes[..bytes.len() - 1].contains(&b'\n'));
     }
 }
 
