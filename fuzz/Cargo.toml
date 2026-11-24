@@ -323,6 +323,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "app_instance"
+path = "fuzz_targets/app_instance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ask_unframe"
 path = "fuzz_targets/ask_unframe.rs"
 test = false
