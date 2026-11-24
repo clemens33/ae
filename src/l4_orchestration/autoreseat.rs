@@ -121,6 +121,9 @@ pub enum CauseClass {
     /// Under the lifecycle lock the lead floor, read again, no longer lets the
     /// destination chosen before it pass: a hold, tried again (#309).
     FloorChanged,
+    /// Under the lifecycle lock the orchestrator's policy, read again, no longer
+    /// lets the destination chosen before it pass: a hold, tried again.
+    OrchestratorChanged,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -144,6 +147,7 @@ impl CauseClass {
             Self::PairChanged => "pair-changed",
             Self::ReturnChanged => "return-changed",
             Self::FloorChanged => "floor-changed",
+            Self::OrchestratorChanged => "orchestrator-changed",
             Self::Other => "other",
         }
     }
@@ -159,6 +163,7 @@ impl CauseClass {
                 | Self::PairChanged
                 | Self::ReturnChanged
                 | Self::FloorChanged
+                | Self::OrchestratorChanged
         )
     }
 

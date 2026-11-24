@@ -837,6 +837,45 @@ pub(crate) fn floor_changed(
     ))
 }
 
+// ORCHESTRATOR MODEL GUARD: THE LATE POLICY GATE, asked by an automatic reseat
+// under the session's lifecycle lock and before any stop, over `settings` (the
+// GLOBAL config, read again under that lock), `locked` (the meta read under it)
+// and `capture`, a fresh read of the seat's pane: why a move of the
+// orchestrator's main seat to `destination` no longer passes its policy, or
+// `None` when it does, the policy is `on`, or the seat is no orchestrator. A
+// policy flipped to `off`, a model proved again against the locked launch
+// record, or a profile re-pinned since the choice cannot carry the seat past
+// it. A return follows the same rule, and a manual reseat never asks.
+pub(crate) fn orchestrator_changed(
+    settings: &Settings,
+    (dir, locked): (&Path, &[u8]),
+    slot: &str,
+    destination: &super::Model,
+    capture: Option<&str>,
+) -> Option<String> {
+    if slot != "main" || crate::meta::meta_agent_role(locked) != crate::meta::MetaAgentRole::Role {
+        return None;
+    }
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(locked));
+    let row = meta.roster().iter().find(|row| row.slot == slot)?;
+    let why = match orchestrator_stance(settings, locked, row, (dir, capture))? {
+        super::Stance::Off => format!("{} is off now", super::ORCHESTRATOR_KEY),
+        super::Stance::Keep(super::Origin::Unproven(why)) => {
+            format!("its running model is no longer proven ({why})")
+        }
+        super::Stance::Keep(super::Origin::Proven { id, tool }) => {
+            if destination.pin.as_deref() == Some(id.as_str()) && destination.tool == Some(tool) {
+                return None;
+            }
+            let model = destination.pin.as_deref().unwrap_or(UNKNOWN);
+            format!("the destination model {model} is not its running model {id}")
+        }
+    };
+    Some(format!(
+        "auto reseat: the orchestrator policy changed before the stop: {why} — nothing was stopped"
+    ))
+}
+
 /// The model a resolved command pins and the tool that reads it; no pin when
 /// the command pins none or does not read.
 fn model_of_command(command: &str) -> super::Model {

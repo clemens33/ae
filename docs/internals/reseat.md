@@ -958,8 +958,9 @@ seat's persisted observed model or effort choice stands), `pair-provider` (no
 usable candidate keeps the seat's review pair on two proven providers),
 `pair-changed` (under the lifecycle lock the chosen destination no longer does),
 `floor-changed` (under the lifecycle lock the lead floor no longer lets the chosen
-destination pass) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
-`lock`, `observed-choice`, `pair-changed` and `floor-changed` are transient classes: their record
+destination pass), `orchestrator-changed` (under the lifecycle lock `auto_reseat_orchestrator`,
+read again, no longer lets the chosen destination pass the orchestrator) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
+`lock`, `observed-choice`, `pair-changed`, `floor-changed` and `orchestrator-changed` are transient classes: their record
 is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
 
 ### Auto reseat and the orchestrator

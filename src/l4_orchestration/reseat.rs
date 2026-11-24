@@ -2195,6 +2195,20 @@ fn prepare(
             writeln!(err, "Error: {why}")?;
             return Err(Halt::End(Ended::Refused(CauseClass::FloorChanged)));
         }
+        // THE ORCHESTRATOR'S POLICY, read again under the same lock: a policy
+        // flipped to `off`, or a model that is no longer the running one, since
+        // the choice cannot carry the orchestrator past `auto_reseat_orchestrator`.
+        let fresh = crate::transport::capture_pane(&target.server, &target.pane);
+        if let Some(why) = crate::autoreseat::leg::orchestrator_changed(
+            &global,
+            (&seat.dir, locked),
+            &target.slot,
+            &destination,
+            fresh.as_deref(),
+        ) {
+            writeln!(err, "Error: {why}")?;
+            return Err(Halt::End(Ended::Refused(CauseClass::OrchestratorChanged)));
+        }
     }
     let prior = crate::lifecycle::meta_value(locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A
