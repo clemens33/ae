@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -40,8 +40,13 @@ pub const EXPIRED: &str = "expired draft id: send it as a new message";
 pub const MISMATCH: &str = "this draft id was sent with other text or route";
 /// The answer to a route that is no longer the orchestrator's.
 pub const CHANGED: &str = "the orchestrator changed, reload";
+/// The answer to a decision answer whose item left the board or whose text
+/// changed since the page showed it.
+pub const DECISION_CHANGED: &str = "the decision changed, reload";
 /// The answer while the queue is full or admission is closed.
 pub const BUSY: &str = "busy, retry";
+/// The most Unicode scalar values of an answer to a decision.
+pub const ANSWER_MAX: usize = 120;
 /// The words of a pasted ask whose submit was not confirmed.
 const UNCERTAIN: &str = "uncertain: pasted, its submit not confirmed; not resent";
 /// The most bytes of refusal words a claim keeps.
@@ -186,6 +191,8 @@ pub(crate) struct Job {
     text: String,
     seat: String,
     to: String,
+    /// The decision this draft answers, proved again at carry time.
+    decide: Option<Decide>,
 }
 
 /// Admission and the drafts in flight: queued or carrying, by claim name,
@@ -220,22 +227,101 @@ pub(crate) struct Sending {
     jobs: SyncSender<Job>,
 }
 
+/// The decision a draft answers: a DECIDE item of the board and the bind the
+/// page was given for the text it showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Decide {
+    /// The item's canonical id, `D67`.
+    item: String,
+    /// 64 lowercase hex.
+    bind: String,
+}
+
+impl Decide {
+    /// Exactly `item` and `bind`, each a string, no duplicate: the item a
+    /// canonical DECIDE id and the bind 64 lowercase hex.
+    fn parse(value: Value) -> Option<Self> {
+        let Value::Obj(fields) = value else {
+            return None;
+        };
+        let mut found: [Option<String>; 2] = [None, None];
+        for (key, value) in fields {
+            let at = ["item", "bind"].iter().position(|name| *name == key)?;
+            let Value::Str(text) = value else { return None };
+            let slot = found.get_mut(at)?;
+            if slot.replace(text).is_some() {
+                return None;
+            }
+        }
+        let [Some(item), Some(bind)] = found else {
+            return None;
+        };
+        let id = crate::desk::parse_id(&item)?;
+        (id.section == crate::desk::Section::Decide
+            && id.to_string() == item
+            && auth::is_hex(&bind, 64))
+        .then_some(Self { item, bind })
+    }
+
+    /// Whether `text` is this decision's line: the item, one space and an
+    /// answer of 1 to [`ANSWER_MAX`] Unicode scalar values that holds no
+    /// control character, no line or paragraph separator and no space at
+    /// either end. The server never strips: the page sends the answer whole.
+    fn line_ok(&self, text: &str) -> bool {
+        let Some(answer) = text
+            .strip_prefix(self.item.as_str())
+            .and_then(|rest| rest.strip_prefix(' '))
+        else {
+            return false;
+        };
+        !answer.is_empty()
+            && answer == answer.trim()
+            && answer.chars().count() <= ANSWER_MAX
+            && !answer
+                .chars()
+                .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+    }
+}
+
+/// The shape a hostile body reads as: its text and, for a decision, the item
+/// and the bind. Only the shape check; the fuzz target holds it to its grammar.
+#[must_use]
+pub fn draft_shape(body: &[u8]) -> Option<(String, Option<(String, String)>)> {
+    let draft = Draft::parse(body)?;
+    Some((
+        draft.text,
+        draft.decide.map(|decide| (decide.item, decide.bind)),
+    ))
+}
+
 /// A draft as a page posts it.
 struct Draft {
     text: String,
     route: String,
     nonce: String,
+    decide: Option<Decide>,
 }
 
 impl Draft {
-    /// Exactly `text` (non-empty), `route` (64 lowercase hex) and `nonce`,
-    /// each a string; anything else is no draft.
+    /// `text` (non-empty), `route` (64 lowercase hex) and `nonce`, each a
+    /// string, and optionally `decide` naming the decision the text answers;
+    /// anything else is no draft.
     fn parse(body: &[u8]) -> Option<Self> {
         let Ok(Value::Obj(fields)) = http::parse_json_body(body) else {
             return None;
         };
         let mut found: [Option<String>; 3] = [None, None, None];
+        let mut decide: Option<Decide> = None;
+        let mut named = false;
         for (key, value) in fields {
+            if key == "decide" {
+                if named {
+                    return None;
+                }
+                named = true;
+                decide = Some(Decide::parse(value)?);
+                continue;
+            }
             let at = ["text", "route", "nonce"]
                 .iter()
                 .position(|name| *name == key)?;
@@ -248,7 +334,18 @@ impl Draft {
         let [Some(text), Some(route), Some(nonce)] = found else {
             return None;
         };
-        (!text.is_empty() && auth::is_hex(&route, 64)).then_some(Self { text, route, nonce })
+        if text.is_empty() || !auth::is_hex(&route, 64) {
+            return None;
+        }
+        if decide.as_ref().is_some_and(|decide| !decide.line_ok(&text)) {
+            return None;
+        }
+        Some(Self {
+            text,
+            route,
+            nonce,
+            decide,
+        })
     }
 }
 
@@ -331,6 +428,14 @@ impl Sending {
         if !gate.open {
             return Response::refusal(503, BUSY);
         }
+        // A point-in-time proof, as the route's is: the board still holds the
+        // item with the text the page showed. A refusal here made no claim and
+        // spent no draft id.
+        if let Some(decide) = &draft.decide
+            && !self.decision_stands(&facts.dir, decide)
+        {
+            return Response::refusal(409, DECISION_CHANGED);
+        }
         gate.pending
             .insert(name.clone(), (payload.clone(), draft.route.clone()));
         let job = Job {
@@ -340,6 +445,7 @@ impl Sending {
             text: draft.text,
             seat: facts.seat,
             to: facts.to,
+            decide: draft.decide,
         };
         match self.jobs.try_send(job) {
             Ok(()) => queued(),
@@ -348,6 +454,21 @@ impl Sending {
                 Response::refusal(503, BUSY)
             }
         }
+    }
+
+    /// Whether the board of the seat at `dir` holds `decide`'s item with the
+    /// very text its bind was made for. An unreadable board, no board and a
+    /// missing item all say no. The read is one lock-free file of at most
+    /// `desk::STORED_CAP` bytes, so no board write waits behind it and it may
+    /// run under the gate or the admission lock.
+    fn decision_stands(&self, dir: &Path, decide: &Decide) -> bool {
+        let Ok(Some(desk)) = crate::deskstore::read(dir) else {
+            return false;
+        };
+        desk.items.iter().any(|item| {
+            item.id.to_string() == decide.item
+                && state::decide_bind_holds(&self.key, &decide.item, &item.text, &decide.bind)
+        })
     }
 
     /// The answer a claim already gives `name`: `None` when there is none.
@@ -482,7 +603,7 @@ impl Sending {
             Err(why) => return Some((Word::Refused, words_of(&why))),
         };
         let mut held = crate::events::Held::default();
-        let changed = Cell::new(false);
+        let turned = Cell::new(Turned::Nothing);
         let mut admitted_route: Option<(RouteFacts, RoleRoute)> = None;
         // Under the admission lock: the displayed route proved afresh, then its
         // very pair bound as the app binds a confirmed redirect, whose pin the
@@ -495,17 +616,26 @@ impl Sending {
                     let role = RoleRoute::bind(&self.root, &now.to, &now.dir, proof, pair)?;
                     Some((now, role))
                 });
-            if bound.is_none() {
-                changed.set(true);
+            let Some((now, role)) = bound else {
+                turned.set(Turned::Route);
                 return Err(CHANGED.to_owned());
+            };
+            // The decision proved again beside the route, under the same
+            // lock: a board replaced since the queue check settles the draft
+            // as changed before any input.
+            if let Some(decide) = &job.decide
+                && !self.decision_stands(&now.dir, decide)
+            {
+                turned.set(Turned::Decision);
+                return Err(DECISION_CHANGED.to_owned());
             }
-            admitted_route = bound;
+            admitted_route = Some((now, role));
             Ok(())
         };
         let admitted = match submit::admit_external(&mut held, &facts.dir, &facts.to, id, owns) {
             Ok(Admission::Fresh(admitted)) => admitted,
             Ok(Admission::Recorded(outcome)) => return Some(settled(outcome, None, "")),
-            Err(why) => return Some(admission_refusal(changed.get(), &why)),
+            Err(why) => return Some(admission_refusal(turned.get(), &why)),
         };
         let Some((facts, role)) = admitted_route else {
             return Some((Word::Changed, String::new()));
@@ -656,7 +786,13 @@ fn answer(claim: &Claim) -> Response {
         return unknown(Some(&claim.id));
     };
     if outcome.word == Word::Changed {
-        return Response::refusal(409, CHANGED);
+        // A moved route settles with no words; a moved decision with its own.
+        let words = if outcome.words.is_empty() {
+            CHANGED
+        } else {
+            outcome.words.as_str()
+        };
+        return Response::refusal(409, words);
     }
     Response::json(
         200,
@@ -681,13 +817,26 @@ fn reread(claim: &Claim, again: Lookup) -> Response {
     }
 }
 
+/// What the admission lock found moved since the draft was queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turned {
+    /// Nothing proved moved: a refusal is the admission's own.
+    Nothing,
+    /// The route no longer names the seat the draft was bound to.
+    Route,
+    /// The decision's item left the board or its text changed.
+    Decision,
+}
+
 /// What a refused admission settles as: changed with no words when the route
-/// moved under the admission lock (`changed`), so nothing is carried to it and
-/// the page asks for a reload; refused with what the admission said otherwise.
-fn admission_refusal(changed: bool, why: &str) -> (Word, String) {
-    match why {
-        _ if changed => (Word::Changed, String::new()),
-        why => (Word::Refused, words_of(why)),
+/// moved under the admission lock, changed with the decision's words when the
+/// board moved, so nothing is carried and the page asks for a reload; refused
+/// with what the admission said otherwise.
+fn admission_refusal(turned: Turned, why: &str) -> (Word, String) {
+    match turned {
+        Turned::Route => (Word::Changed, String::new()),
+        Turned::Decision => (Word::Changed, words_of(DECISION_CHANGED)),
+        Turned::Nothing => (Word::Refused, words_of(why)),
     }
 }
 
@@ -761,7 +910,8 @@ mod tests {
     use super::super::clock::{Clock, ManualClock};
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
-        Receipt, Sending, Sends, admission_refusal, keep, reread, settled, told, words_of, worker,
+        Receipt, Sending, Sends, Turned, admission_refusal, keep, reread, settled, told, words_of,
+        worker,
     };
 
     #[test]
@@ -782,6 +932,91 @@ mod tests {
         ] {
             assert!(Draft::parse(bad.as_bytes()).is_none(), "{bad}");
         }
+    }
+
+    /// A draft that names a decision: exactly `item` and `bind` beside the
+    /// three strings, the text the item, one space and an answer of 1 to 120
+    /// scalar values that is its own trim and holds no control, line or
+    /// paragraph break.
+    #[test]
+    fn a_decision_draft_is_the_item_one_space_and_a_bounded_answer() {
+        let route = "a".repeat(64);
+        let bind = "b".repeat(64);
+        let body = |text: &str, decide: &str| {
+            format!(
+                r#"{{"text":{},"route":"{route}","nonce":"n","decide":{decide}}}"#,
+                crate::json::Value::str(text).render()
+            )
+        };
+        let named = |item: &str, bind: &str| format!(r#"{{"item":"{item}","bind":"{bind}"}}"#);
+        let good = named("D67", &bind);
+        let parsed = Draft::parse(body("D67 1", &good).as_bytes());
+        assert_eq!(
+            parsed.and_then(|draft| draft.decide),
+            Some(super::Decide {
+                item: "D67".to_owned(),
+                bind: bind.clone()
+            })
+        );
+        let edge = "\u{1f9ed}".repeat(super::ANSWER_MAX);
+        for text in [
+            format!("D67 {edge}"),
+            "D67 \u{feff}one\u{feff}".to_owned(),
+            "D67 one\u{a0}two".to_owned(),
+            "D67 a | #b".to_owned(),
+        ] {
+            assert!(
+                Draft::parse(body(&text, &good).as_bytes()).is_some(),
+                "{text:?}"
+            );
+        }
+        let long = "\u{1f9ed}".repeat(super::ANSWER_MAX + 1);
+        for text in [
+            format!("D67 {long}"),
+            "D67 ".to_owned(),
+            "D67".to_owned(),
+            "D67  1".to_owned(),
+            "D67 1 ".to_owned(),
+            "D67 \u{3000}1".to_owned(),
+            " D67 1".to_owned(),
+            "D68 1".to_owned(),
+            "D670 1".to_owned(),
+            "D67 one\ntwo".to_owned(),
+            "D67 one\u{1}two".to_owned(),
+            "D67 one\u{7f}two".to_owned(),
+            "D67 one\u{85}two".to_owned(),
+            "D67 one\u{2028}two".to_owned(),
+            "D67 one\u{2029}two".to_owned(),
+        ] {
+            assert!(
+                Draft::parse(body(&text, &good).as_bytes()).is_none(),
+                "{text:?}"
+            );
+        }
+        for decide in [
+            named("D067", &bind),
+            named("C1", &bind),
+            named("D100", &bind),
+            named("d67", &bind),
+            named("D67", &"B".repeat(64)),
+            named("D67", &"b".repeat(63)),
+            r#"{"item":"D67"}"#.to_owned(),
+            format!(r#"{{"item":"D67","bind":"{bind}","more":"x"}}"#),
+            format!(r#"{{"item":"D67","item":"D67","bind":"{bind}"}}"#),
+            r#"{"item":"D67","bind":1}"#.to_owned(),
+            "null".to_owned(),
+            r#""D67""#.to_owned(),
+            "[]".to_owned(),
+        ] {
+            assert!(
+                Draft::parse(body("D67 1", &decide).as_bytes()).is_none(),
+                "{decide}"
+            );
+        }
+        let twice = format!(
+            r#"{{"text":"D67 1","route":"{route}","nonce":"n","decide":{good},"decide":{good}}}"#
+        );
+        assert!(Draft::parse(twice.as_bytes()).is_none());
     }
 
     #[test]
@@ -844,6 +1079,7 @@ mod tests {
             text: "hi".to_owned(),
             seat: "tui".to_owned(),
             to: "sample".to_owned(),
+            decide: None,
         });
         // The store is readable again and holds no claim under the name.
         std::fs::remove_file(root.join("web")).unwrap_or_else(|error| panic!("web: {error}"));
@@ -928,6 +1164,7 @@ mod tests {
             text: "hi".to_owned(),
             seat: "tui".to_owned(),
             to: "sample".to_owned(),
+            decide: None,
         };
         sending.jobs.send(job).is_ok() && beat.recv_timeout(Duration::from_secs(30)).is_ok()
     }
@@ -1142,16 +1379,21 @@ mod tests {
     }
 
     /// A refused admission: a route that moved under the admission lock answers
-    /// changed with no words, so nothing is carried and the page asks for a
-    /// reload; any other refusal answers refused with the admission's words.
+    /// changed with no words, a board that moved answers changed with the
+    /// decision's words, so nothing is carried and the page asks for a reload;
+    /// any other refusal answers refused with the admission's words.
     #[test]
     fn a_route_that_moved_under_the_admission_lock_answers_changed() {
         assert_eq!(
-            admission_refusal(true, "the orchestrator changed, reload"),
+            admission_refusal(Turned::Route, "the orchestrator changed, reload"),
             (Word::Changed, String::new())
         );
         assert_eq!(
-            admission_refusal(false, "five asks are open: answer one first"),
+            admission_refusal(Turned::Decision, super::DECISION_CHANGED),
+            (Word::Changed, super::DECISION_CHANGED.to_owned())
+        );
+        assert_eq!(
+            admission_refusal(Turned::Nothing, "five asks are open: answer one first"),
             (
                 Word::Refused,
                 "five asks are open: answer one first".to_owned()

@@ -32,6 +32,10 @@
 //! `AE_WEB_SMOKE_PLANT=walk` serves `app.mjs` with the walk's Keep sending the
 //! Ask line. That run must fail at `walk-keep (1440x900 dark)`: `just web-smoke
 //! plant-walk` passes only when it fails there and nowhere else.
+//! `AE_WEB_SMOKE_PLANT=undo` serves `app.mjs` with the Undo of a counting owner
+//! line hiding the line but leaving its countdown to send it one second after
+//! its deadline. That run must fail at `s3a-undo (1440x900 dark)`: `just
+//! web-smoke plant-undo` passes only when it fails there and nowhere else.
 
 use std::collections::BTreeMap;
 use std::hash::BuildHasher as _;
@@ -86,6 +90,12 @@ const ROW_PLANTED: &str = "onClick=${() => choose(row.slug)}";
 /// serves instead: the same button, which sends the Ask line.
 const WALK_GUARD: &str = "onClick=${() => act(\"keep\")}";
 const WALK_PLANTED: &str = "onClick=${() => act(\"ask\")}";
+
+/// An owner line's Undo as `app.mjs` serves it: the countdown is stopped and the
+/// line is idle. The undo plant serves the same Undo with the countdown left
+/// running, so the line is sent a second after its deadline.
+const UNDO_GUARD: &str = "clearTimeout(r.timer);\n      r.phase = \"idle\";";
+const UNDO_PLANTED: &str = "r.phase = \"idle\";\n      setTimeout(() => {\n        r.phase = \"count\";\n        api.fire(key);\n      }, Math.max(0, r.deadline - Date.now()) + 1000);";
 
 /// What each check's script sees: `tag` names an element, `row` finds the
 /// smoke topic's first row, `box` is the draft box.
@@ -281,8 +291,11 @@ fn planted() -> Option<&'static str> {
         None => None,
         Some("focus") => Some("focus"),
         Some("walk") => Some("walk"),
+        Some("undo") => Some("undo"),
         Some(other) => {
-            panic!("web-smoke: {PLANT}={other:?}; the planted faults are `focus` and `walk`")
+            panic!(
+                "web-smoke: {PLANT}={other:?}; the planted faults are `focus`, `walk` and `undo`"
+            )
         }
     }
 }
@@ -917,6 +930,7 @@ impl Tab {
         };
         let (guard, planted, what) = match self.fault {
             Some("walk") => (WALK_GUARD, WALK_PLANTED, "walk Keep buttons"),
+            Some("undo") => (UNDO_GUARD, UNDO_PLANTED, "owner line Undo cancels"),
             _ => (ROW_GUARD, ROW_PLANTED, "topic row focus guards"),
         };
         let sites = text.matches(guard).count();
@@ -953,7 +967,13 @@ impl Tab {
             ]),
         );
         self.planted += 1;
-        if self.fault == Some("walk") {
+        if self.fault == Some("undo") {
+            println!(
+                "web-smoke plant: /assets/app.mjs served without the owner line's stopped \
+                 countdown (Undo hides the line and the countdown still sends it, 1 site); \
+                 s3a-undo must fail"
+            );
+        } else if self.fault == Some("walk") {
             println!(
                 "web-smoke plant: /assets/app.mjs served without the walk's own Keep line (Keep \
                  sends the Ask line, 1 site); walk-keep must fail"

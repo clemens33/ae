@@ -3,6 +3,7 @@
 use ae::json::Value;
 use ae::web::claim::{self as web_claim, Word};
 use ae::web::http::{self, Method, Parsed};
+use ae::web::send;
 use libfuzzer_sys::fuzz_target;
 
 // `ae web`'s readers of untrusted bytes. The first byte picks one,
@@ -13,7 +14,11 @@ use libfuzzer_sys::fuzz_target;
 //   body is announced only by a POST and never beyond the cap; field names are
 //   lowercase tokens, and re-reading the head alone gives the same answer. A
 //   refusal is one of the statuses the subset answers.
-// * 1: a JSON request body; only an object is accepted.
+// * 1: a JSON request body; only an object is accepted. A body that reads as a
+//   draft has text; a draft that answers a decision names a canonical decision
+//   item and a bind of 64 lowercase hex, and its text is that item, one space and
+//   an answer of 1 to 120 scalar values with no control, line or paragraph break
+//   and no space at either end.
 // * 2: one web claim file as the disk holds it, possibly hand-edited. An
 //   accepted record is at most 4 KiB, its two hashes are 64 lowercase hex,
 //   its id is a request id, a refusal carries its words, and its encoding
@@ -78,6 +83,45 @@ fn body(data: &[u8]) {
     if let Ok(value) = std::hint::black_box(http::parse_json_body(data)) {
         assert!(matches!(value, Value::Obj(_)), "only an object is accepted");
     }
+    draft(data);
+}
+
+fn draft(data: &[u8]) {
+    let Some((text, decision)) = std::hint::black_box(send::draft_shape(data)) else {
+        return;
+    };
+    assert!(!text.is_empty(), "a draft has text");
+    let Some((item, bind)) = decision else {
+        return;
+    };
+    assert!(
+        bind.len() == 64
+            && bind
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "a bind is 64 lowercase hex: {bind:?}"
+    );
+    let number = item
+        .strip_prefix('D')
+        .and_then(|digits| digits.parse::<u8>().ok());
+    assert!(
+        number.is_some_and(|n| (1..=99).contains(&n) && item == format!("D{n}")),
+        "an item is a canonical decision id: {item:?}"
+    );
+    let answer = text
+        .strip_prefix(item.as_str())
+        .and_then(|rest| rest.strip_prefix(' '));
+    assert!(
+        answer.is_some_and(|answer| {
+            let scalars = answer.chars().count();
+            (1..=120).contains(&scalars)
+                && answer == answer.trim()
+                && !answer
+                    .chars()
+                    .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+        }),
+        "a decision draft is the item, one space and a bounded answer: {text:?}"
+    );
 }
 
 fn claim(data: &[u8]) {

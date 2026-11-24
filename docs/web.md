@@ -59,7 +59,8 @@ The column beside the chat lists the orchestrator's topics: **Needs you**, **Mov
 - **Last reviewed** is the time of the topic's newest record, whatever it carries.
 - A topic needs you when its state is `needs` or when something waits for you on it: a DECIDE item
   on the orchestrator's board, or your own open ask from `ae chat`, whose text tags it with
-  `#<slug>`. A DECIDE item without a tag is listed under **Untagged decisions**.
+  `#<slug>`. Every DECIDE item, tagged or not, is listed under **Decisions** with its own answer
+  line (see [Owner lines](#owner-lines-from-the-desk)); the card of a tagged topic shows the same line.
 - A checkpoint without a readable state is shown as an unreadable checkpoint with its raw text.
 - A memo over 8 MiB shows none of its topics, and the column names it until `ae web` restarts.
   Archives that are being written, damaged or not proven to come from the seat are counted, not
@@ -157,6 +158,44 @@ focus.
   switch is printed once per version
   (`ae web: cannot follow version <v>: <why>; still serving <old>`) and the old core keeps serving.
 
+## Owner lines from the desk
+
+Two more lines go to the orchestrator's main seat through the same send path, the same draft id and
+the same admission as the composer, so the cap of five open asks holds and a cap refusal shows
+verbatim.
+
+- **Answer a decision.** Each DECIDE item of the board has an answer box under **Decisions** and on
+  the card of the topic it tags. The page sends one chat line, `D<n> <answer>`: for example the
+  item `D67` and the answer `1` send `D67 1`. The answer is 1 to 120 Unicode scalar values, with no
+  control character, line break or paragraph break, and no space at either end (the page trims it
+  as Rust's `str::trim` does). **Answer** stays off while the box is empty or invalid.
+- **Ask for a new topic.** The box under the topic search takes a title of 1 to 80 scalar values
+  and suggests a slug: umlauts folded, lowercase, every other run of characters one hyphen, at most
+  48 characters. **Edit slug** turns the slug into a field of its own, and it stays one. The line is
+  `#<slug> new <title>`, shown before it is sent. A slug that does not fit `[a-z0-9][a-z0-9-]*` or
+  that is a topic already cannot be sent. After a receipt the page shows `asked for #<slug>` until
+  that topic appears in the column, or for 10 minutes at most.
+- **Undo, 5 s.** A press sends nothing. The line counts down for 5 s with an **Undo**, and only
+  then does the page ask for a draft id and post. An Undo, a hidden page, a changed orchestrator
+  route, a changed decision and a new topic whose slug has become a topic cancel the line before
+  it is sent. The press keeps the route it was
+  made against and never retargets.
+- **Proof against the board.** The state names each decision with a `bind`, an HMAC under the
+  listener's key over the item and its stored text. The post carries `decide:{item,bind}` and the
+  line must be exactly `<item> <answer>`. The server refuses with `409 the decision changed,
+  reload` and claims nothing when the board no longer holds the item with that text. The send
+  worker proves it again beside the route, so a board replaced while the draft waited settles as
+  changed and nothing reaches the seat. Both are point-in-time proofs: the board can still change
+  between the last proof and the seat reading the line. A card whose text differs from the
+  board's shows its text with **Answer** off until the next refresh.
+- **Check again.** A lost receipt keeps the body and the draft id. **Check again** posts the same
+  body once more and the claim answers with the outcome that landed.
+
+These lines do nothing until the orchestrator's charter teaches them. The charter addition
+(`.local/aeweb-s3/charter-addendum.md`) waits for the owner's decision D20, so a release of this
+slice is inert until then: the page sends the lines and the orchestrator reads them as plain chat
+text, and a decision stays on the board and a topic is not created.
+
 ## Security
 
 - The listener binds `127.0.0.1` alone and answers only the `Host` values `127.0.0.1:<port>`,
@@ -220,10 +259,17 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   when another one leaves and returns; and a changed orchestrator route stops new sends while the
   open attempt checks its receipt with its first body. The checks replace only the replies of
   `/api/send` and the route id of `/api/state`.
+- After the four cells, a compose cell runs the owner lines on a second scratch listener, on the
+  two phone sizes and then in 1440x900 dark (`s3a-*` checks): touch targets of at least 44 px and
+  16 px inputs, the line and slug rules against the same cases as the server, Undo and a hidden
+  page, a card that is behind the board, a board that changes during the countdown, a route that
+  changes, a lost receipt and Check again, the chip of a new topic and a cap refusal.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
 guard that keeps the focus in the draft. The recipe passes only when that run fails at
 `focus-kept (1440x900 light)` and at no other check. `just web-smoke plant-walk` serves `app.mjs`
 with the walk's Keep sending the Ask line and passes only when the run fails at `walk-keep
-(1440x900 dark)` and at no other check.
+(1440x900 dark)` and at no other check. `just web-smoke plant-undo` serves `app.mjs` with the Undo
+of an owner line hiding the line while its countdown still sends it one second late, and passes
+only when the run fails at `s3a-undo (1440x900 dark)` and at no other check.

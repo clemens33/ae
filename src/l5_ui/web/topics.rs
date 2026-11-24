@@ -45,6 +45,18 @@ pub struct Wait {
     pub text: String,
     /// The ask's request id; a DECIDE item has none.
     pub id: Option<String>,
+    /// The board id of a DECIDE item, `D67`; an ask has none.
+    pub item: Option<crate::desk::Id>,
+}
+
+/// One DECIDE item of the board as the page may answer it: its id, the stored
+/// text a `bind` signs, and the topics its text tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecideItem {
+    pub item: crate::desk::Id,
+    /// The item's text as the board stores it, never a rendered form.
+    pub text: String,
+    pub tags: Vec<String>,
 }
 
 /// The archives left out, by reason.
@@ -67,6 +79,8 @@ pub struct Column {
     pub waits: BTreeMap<String, Vec<Wait>>,
     /// DECIDE items without a tag.
     pub untagged: Vec<Wait>,
+    /// Every DECIDE item once, in board order, tagged or not.
+    pub decide: Vec<DecideItem>,
     /// What could not be read, one line each.
     pub gaps: Vec<String>,
     pub skipped: Skipped,
@@ -359,7 +373,13 @@ fn decide_waits(seat: &Seat, column: &mut Column) {
             kind: WaitKind::Decide,
             text: item.text.clone(),
             id: None,
+            item: Some(item.id),
         };
+        column.decide.push(DecideItem {
+            item: item.id,
+            text: item.text.clone(),
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+        });
         join(column, &tags, wait, true);
     }
 }
@@ -409,6 +429,7 @@ fn ask_waits(seat: &Seat, column: &mut Column) {
             kind: WaitKind::Ask,
             text: text.lines().next().unwrap_or_default().to_owned(),
             id: Some(id.to_owned()),
+            item: None,
         };
         join(column, &tags, wait, false);
     }
@@ -532,6 +553,7 @@ mod tests {
                     kind: WaitKind::Decide,
                     text: format!("decide #{slug}"),
                     id: None,
+                    item: None,
                 };
                 (slug.to_owned(), vec![wait])
             })

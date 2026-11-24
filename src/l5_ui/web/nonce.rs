@@ -84,7 +84,7 @@ fn signed(body: &[u8]) -> Vec<u8> {
 }
 
 /// The bytes of lowercase hex `text`, or `None` for any other character.
-fn unhex(text: &str) -> Option<Vec<u8>> {
+pub(super) fn unhex(text: &str) -> Option<Vec<u8>> {
     let digit = |byte: u8| match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),

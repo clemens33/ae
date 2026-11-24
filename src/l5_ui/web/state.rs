@@ -331,7 +331,7 @@ pub fn render(read: Arc<Read>, version: &str, read_at: i64, key: &[u8; 32]) -> S
     }
     let cut = chat.cut.saturating_add(over);
     let _ = write!(out, "],\"cut\":{cut}}},\"desk\":");
-    desk(&mut out, &read.desk);
+    desk(&mut out, &read.desk, key);
     out.push_str(",\"route\":");
     match &read.route {
         Some(facts) => {
@@ -375,8 +375,9 @@ fn body(out: &mut String, text: &str) {
 }
 
 /// The desk column: all six groups in their fixed order, each with its cards,
-/// then the untagged waits, the gaps and the archive counts left out.
-fn desk(out: &mut String, desk: &topics::Column) {
+/// then the untagged waits, every DECIDE item with its bind and the limits of
+/// what the page may compose, the gaps and the archive counts left out.
+fn desk(out: &mut String, desk: &topics::Column, key: &[u8; 32]) {
     use std::fmt::Write as _;
 
     out.push_str("{\"groups\":[");
@@ -406,6 +407,14 @@ fn desk(out: &mut String, desk: &topics::Column) {
     }
     out.push_str("],\"untagged\":");
     waits(out, &desk.untagged);
+    out.push_str(",\"decide\":");
+    decisions(out, &desk.decide, key);
+    let _ = write!(
+        out,
+        ",\"compose\":{{\"slug_max\":{},\"title_max\":{TITLE_MAX},\"answer_max\":{}}}",
+        crate::topic::SLUG_MAX,
+        super::send::ANSWER_MAX,
+    );
     out.push_str(",\"revisit\":");
     revisit(out, desk);
     out.push_str(",\"gaps\":[");
@@ -483,7 +492,73 @@ fn row(out: &mut String, card: &Card, joined: &[Wait]) {
     out.push('}');
 }
 
-/// The waits as a JSON array: kind, text and the ask's id.
+/// The longest title the page composes for a new topic, in Unicode scalar
+/// values. The server names it; the page owns the rule.
+const TITLE_MAX: usize = 80;
+
+/// What signs a decision's bind before its facts.
+const DECIDE_DOMAIN: &[u8] = b"ae-web decide 1\0";
+
+/// The bind of DECIDE item `item` whose stored text is `text` under listener
+/// key `key`: HMAC-SHA256 over the domain, the id, a NUL and the text, as 64
+/// lowercase hex. A decision replaced under the same id has another bind, and
+/// another listener has its own.
+#[must_use]
+pub(crate) fn decide_bind(key: &[u8; 32], item: &str, text: &str) -> String {
+    let signer = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    super::auth::hex(ring::hmac::sign(&signer, &decide_message(item, text)).as_ref())
+}
+
+/// Whether `bind` is [`decide_bind`] of `item` and `text`: the hex is decoded
+/// and the tag verified by the HMAC itself, as a nonce is, so no comparison of
+/// secret bytes is written here. Anything that is not 64 lowercase hex digits
+/// fails.
+#[must_use]
+pub(crate) fn decide_bind_holds(key: &[u8; 32], item: &str, text: &str, bind: &str) -> bool {
+    let Some(tag) = super::nonce::unhex(bind) else {
+        return false;
+    };
+    let signer = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    ring::hmac::verify(&signer, &decide_message(item, text), &tag).is_ok()
+}
+
+/// The bytes a bind signs: the domain, the item, a NUL and the stored text.
+fn decide_message(item: &str, text: &str) -> Vec<u8> {
+    let mut message = DECIDE_DOMAIN.to_vec();
+    message.extend_from_slice(item.as_bytes());
+    message.push(0);
+    message.extend_from_slice(text.as_bytes());
+    message
+}
+
+/// The DECIDE items as a JSON array in board order: the id, the text, the
+/// topics it tags and the bind the page sends back with its answer.
+fn decisions(out: &mut String, items: &[topics::DecideItem], key: &[u8; 32]) {
+    out.push('[');
+    for (at, each) in items.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        let id = each.item.to_string();
+        out.push_str("{\"item\":");
+        string(out, &id);
+        out.push_str(",\"text\":");
+        body(out, &each.text);
+        out.push_str(",\"tags\":[");
+        for (place, tag) in each.tags.iter().enumerate() {
+            if place > 0 {
+                out.push(',');
+            }
+            string(out, tag);
+        }
+        out.push_str("],\"bind\":");
+        string(out, &decide_bind(key, &id, &each.text));
+        out.push('}');
+    }
+    out.push(']');
+}
+
+/// The waits as a JSON array: kind, text, the ask's id and the DECIDE item's.
 fn waits(out: &mut String, waits: &[Wait]) {
     out.push('[');
     for (at, wait) in waits.iter().enumerate() {
@@ -498,6 +573,10 @@ fn waits(out: &mut String, waits: &[Wait]) {
         match &wait.id {
             Some(id) => label(out, id),
             None => out.push_str("null"),
+        }
+        if let Some(item) = wait.item {
+            out.push_str(",\"item\":");
+            string(out, &item.to_string());
         }
         out.push('}');
     }
@@ -1087,6 +1166,7 @@ mod tests {
             kind: WaitKind::Ask,
             text: text.to_owned(),
             id: Some(format!("r-{text}")),
+            item: None,
         };
         let mut column = topics::Column {
             groups: Group::ALL
@@ -1094,6 +1174,17 @@ mod tests {
                 .map(|group| (*group, Vec::new()))
                 .collect(),
             untagged: vec![wait("three"), wait("four")],
+            decide: [1, 2]
+                .into_iter()
+                .map(|number| topics::DecideItem {
+                    item: crate::desk::Id {
+                        section: crate::desk::Section::Decide,
+                        number,
+                    },
+                    text: format!("choose #a #b {number}"),
+                    tags: vec!["a".to_owned(), "b".to_owned()],
+                })
+                .collect(),
             gaps: vec!["the first gap".to_owned(), "the second gap".to_owned()],
             ..topics::Column::default()
         };
@@ -1104,7 +1195,7 @@ mod tests {
             .waits
             .insert("alpha".to_owned(), vec![wait("one"), wait("two")]);
         let mut out = String::new();
-        desk(&mut out, &column);
+        desk(&mut out, &column, &[7; 32]);
         let parsed = json::parse(&out).unwrap_or_else(|error| panic!("{error}: {out}"));
         let groups = array(parsed.get("groups"));
         let rows = array(groups.first().and_then(|each| each.get("rows")));
@@ -1112,6 +1203,13 @@ mod tests {
         let waits = array(rows.first().and_then(|each| each.get("waits")));
         assert_eq!(waits.len(), 2, "the waits of one card: {out}");
         assert_eq!(array(parsed.get("untagged")).len(), 2, "untagged: {out}");
+        let decide = array(parsed.get("decide"));
+        assert_eq!(decide.len(), 2, "decide: {out}");
+        assert_eq!(
+            array(decide.first().and_then(|each| each.get("tags"))).len(),
+            2,
+            "the tags of one decision: {out}"
+        );
         assert_eq!(array(parsed.get("gaps")).len(), 2, "gaps: {out}");
     }
 

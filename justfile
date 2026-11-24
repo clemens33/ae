@@ -4515,7 +4515,9 @@ harness-smoke mode="":
 # path, never a PATH lookup. Screenshots and the log land in .local/web-smoke/<UTC stamp>/.
 # `just web-smoke plant` serves app.mjs without the topic row's focus guard and passes only
 # when the run fails at focus-kept and at no other check; `just web-smoke plant-walk` serves the
-# walk's Keep sending the Ask line and passes only when the run fails at walk-keep. tests/it/gate.rs
+# walk's Keep sending the Ask line and passes only when the run fails at walk-keep;
+# `just web-smoke plant-undo` serves the owner line's Undo with its countdown left running and
+# passes only when the run fails at s3a-undo. tests/it/gate.rs
 # pins the filter, the gate variable and both run lines byte for byte: change them together.
 web-smoke mode="":
     #!/usr/bin/env bash
@@ -4524,7 +4526,8 @@ web-smoke mode="":
         "") plant="" ;;
         plant) plant=focus ;;
         plant-walk) plant=walk ;;
-        *) echo "usage: just web-smoke [plant|plant-walk]" >&2; exit 2 ;;
+        plant-undo) plant=undo ;;
+        *) echo "usage: just web-smoke [plant|plant-walk|plant-undo]" >&2; exit 2 ;;
     esac
     chrome="${AE_WEB_SMOKE_CHROME:-}"
     if [[ -z "$chrome" ]]; then
@@ -4551,10 +4554,11 @@ web-smoke mode="":
     cat "$out/run.log"
     # The plant passes only when the run failed, said the fault was served, and every failure it
     # reports is the one check its fault must break: the focus check of the first cell, or the
-    # walk's Keep check of the one cell that sends.
+    # walk's Keep check of the one cell that sends, or the owner line's undo check of the compose cell.
     case "$plant" in
         focus) check='focus-kept (1440x900 light)' ;;
         walk) check='walk-keep (1440x900 dark)' ;;
+        undo) check='s3a-undo (1440x900 dark)' ;;
     esac
     caught="web-smoke FAILED at $check: "
     if ((status != 0)) \

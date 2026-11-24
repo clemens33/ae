@@ -173,7 +173,7 @@ function TopicRow({ row, group, chosen, choose }) {
   </button>`;
 }
 
-function Desk({ desk, chosen, choose, revisit }) {
+function Desk({ desk, chosen, choose, revisit, lines, route }) {
   const [query, setQuery] = useState("");
   const rows = (name) => {
     const found = desk.groups.find((group) => group.group === name);
@@ -198,9 +198,19 @@ function Desk({ desk, chosen, choose, revisit }) {
   return html`<nav class="col" aria-label="Topics">
     <div class="grp need"><span>${GROUPS.needs_you}</span><span>${rows("needs_you").length}</span></div>
     ${listed("needs_you")}
-    ${desk.untagged.length
-      ? html`<div class="grp need"><span>Untagged decisions</span><span>${desk.untagged.length}</span></div>
-          ${desk.untagged.map((wait, at) => html`<p class="wait" key=${"u" + at}>${wait.text}</p>`)}`
+    ${desk.decide.length
+      ? html`<div class="grp need"><span>Decisions</span><span>${desk.decide.length}</span></div>
+          ${desk.decide.map(
+            (row) => html`<${DecisionAnswer}
+              key=${row.item}
+              lines=${lines}
+              route=${route}
+              item=${row.item}
+              text=${row.text}
+              decision=${row}
+              compose=${desk.compose || COMPOSE}
+            />`,
+          )}`
       : null}
     <div class="grp"><span>${GROUPS.moving}</span><span>${rows("moving").length}</span></div>
     ${listed("moving")}
@@ -216,6 +226,7 @@ function Desk({ desk, chosen, choose, revisit }) {
       value=${query}
       onInput=${(event) => setQuery(event.currentTarget.value)}
     />
+    <${NewTopic} lines=${lines} route=${route} desk=${desk} />
     ${all}
     ${desk.gaps.map((gap, at) => html`<p class="note" key=${"g" + at}>${gap}</p>`)}
     ${left > 0
@@ -252,7 +263,7 @@ function Source({ origin }) {
   </span>`;
 }
 
-function Card({ card, close, closeLine, outcome }) {
+function Card({ card, close, closeLine, outcome, lines, route, decide, compose }) {
   const fields = card.fields;
   // Only Quiet, Moving and Parked cards can be closed from here; a card with a
   // wait shows the button disabled and says why, a closed or unreadable one
@@ -270,7 +281,19 @@ function Card({ card, close, closeLine, outcome }) {
       return waits.length
         ? html`<div class="fld need" key=${kind}>
             <h3>${name}</h3>
-            <ul>${waits.map((wait, at) => html`<li key=${kind + at}>${wait.text}${wait.id ? html` <span class="mute sm">${wait.id}</span>` : null}</li>`)}</ul>
+            <ul class=${kind === "decide" ? "dqs" : ""}>${waits.map((wait, at) =>
+              html`<li key=${kind + at}>${kind === "decide" && wait.item
+                ? html`<${DecisionAnswer}
+                    lines=${lines}
+                    route=${route}
+                    item=${wait.item}
+                    text=${wait.text}
+                    decision=${decide.find((row) => row.item === wait.item && row.text === wait.text) || null}
+                    compose=${compose}
+                    mark=${wait.id}
+                  />`
+                : html`${wait.text}${wait.id ? html` <span class="mute sm">${wait.id}</span>` : null}`}</li>`,
+            )}</ul>
           </div>`
         : null;
     })}
@@ -352,7 +375,7 @@ function line(kind, words) {
 // A new draft: the draft id (nonce) is minted and the exact body, text, route
 // and id, is fixed. Resolves to { body } or, when no draft could be made, to
 // { note } saying why; nothing was sent then.
-async function draft(route, text) {
+async function draft(route, text, decide) {
   const answer = await api("nonce");
   if (answer.status !== 200) {
     return { note: line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)) };
@@ -362,7 +385,11 @@ async function draft(route, text) {
   if (!nonce) {
     return { note: line("error", "ae web gave no draft id") };
   }
-  return { body: JSON.stringify({ text, route: route.id, nonce }) };
+  const body = { text, route: route.id, nonce };
+  if (decide) {
+    body.decide = decide;
+  }
+  return { body: JSON.stringify(body) };
 }
 
 // One carry: posts the exact body again and again until the server answers
@@ -401,6 +428,581 @@ async function carry(body, show) {
   } catch (_) {
     return { open: true, note: line("error", UNREACHABLE + "; Check again asks once more") };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Two owner lines sent from the desk: the answer to a decision (`D67 <answer>`)
+// and a new topic (`#<slug> new <title>`). Each is pressed, counted down for
+// UNDO_MS with an Undo, and only then drafted and carried; nothing is minted or
+// posted before the deadline. A press captures the route and, for a decision,
+// the bind of the text shown, and they are never retargeted. A changed route or
+// decision, a hidden page and an Undo cancel the line before it is sent.
+
+const UNDO_MS = 5000;
+const TICK_MS = 250;
+// How long a topic asked for is shown as asked: a row that shows up ends it sooner.
+const ASKED_MS = 10 * 60 * 1000;
+const SLUG_FOLD = { "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss" };
+const ONE_LINE = "One line only: no line break or control character.";
+const COMPOSE = { slug_max: 48, title_max: 80, answer_max: 120 };
+
+// The characters Rust's str::trim strips: the Unicode White_Space set. U+FEFF
+// is not in it, so String.trim, which strips it, is never used for a line.
+function isRustSpace(code) {
+  return (
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x20 ||
+    code === 0x85 ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000
+  );
+}
+
+function rustTrim(text) {
+  const chars = Array.from(text);
+  let from = 0;
+  let to = chars.length;
+  while (from < to && isRustSpace(chars[from].codePointAt(0))) {
+    from += 1;
+  }
+  while (to > from && isRustSpace(chars[to - 1].codePointAt(0))) {
+    to -= 1;
+  }
+  return chars.slice(from, to).join("");
+}
+
+// A typed line part as the page sends it: 1 to `max` Unicode scalar values with
+// no control character, line break or paragraph break once trimmed. The raw text
+// is checked first, so a break or control character at either end is refused as
+// it is anywhere else and never trimmed away; a refused text is returned empty.
+// The problem is empty for an empty text, which only disables the button.
+function lineText(raw, max) {
+  if (REASON_BAD.test(raw)) {
+    return { text: "", problem: ONE_LINE };
+  }
+  const text = rustTrim(raw);
+  const length = Array.from(text).length;
+  if (length > max) {
+    return { text, problem: "At most " + max + " characters; this has " + length + "." };
+  }
+  return { text, problem: "" };
+}
+
+// A slug as ae::topic::is_slug takes it: a lowercase letter or digit first,
+// then lowercase letters, digits and hyphens, at most `max` bytes.
+function slugOk(slug, max) {
+  return slug.length <= max && /^[a-z0-9][a-z0-9-]*$/.test(slug);
+}
+
+// The slug a title suggests: umlauts folded, lowercase, every other run of
+// characters one hyphen, no hyphen at either end, cut at `max`.
+function deriveSlug(title, max) {
+  let folded = "";
+  for (const ch of rustTrim(title).toLowerCase()) {
+    folded += SLUG_FOLD[ch] || ch;
+  }
+  const slug = folded.replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "");
+  return slug.slice(0, max).replace(/-+$/, "");
+}
+
+const BLANK = Object.freeze({
+  phase: "idle",
+  fields: Object.freeze({}),
+  note: null,
+  line: "",
+  item: "",
+  bind: "",
+  deadline: 0,
+});
+
+// The lines in flight, one record per key: "<item> <bind>" for a decision and
+// "topic" for a new topic. A record is idle (editable), count (undo window),
+// send (drafting or carrying), open (no receipt: the same body is asked again)
+// or sent (a decision already answered). The decision's text is part of its
+// key, so a board that changed the text starts a new record: an answer, a
+// receipt or a Check again never lands on text it was not made for. The
+// Decisions block and the card of one decision share one record.
+function makeLines(live, redraw) {
+  const rec = (key, item, bind) => {
+    if (!live.recs.has(key)) {
+      live.recs.set(key, { ...BLANK, fields: {}, item: item || "", bind: bind || "" });
+    }
+    return live.recs.get(key);
+  };
+  const current = (item) => live.decide.find((row) => row.item === item) || null;
+  const ticking = () => {
+    const counting = [...live.recs.values()].some((r) => r.phase === "count");
+    if (counting && !live.tick) {
+      live.tick = setInterval(redraw, TICK_MS);
+    } else if (!counting && live.tick) {
+      clearInterval(live.tick);
+      live.tick = 0;
+    }
+  };
+  // A record whose text left the board: it ends with what it could say.
+  const supersede = (key, r) => {
+    clearTimeout(r.timer);
+    live.recs.delete(key);
+    if (r.phase === "count") {
+      live.said.set(r.item, line("error", "Cancelled: the decision changed, reload."));
+    } else if (r.phase === "open" || r.phase === "send") {
+      live.said.set(
+        r.item,
+        line("error", "An earlier answer to " + r.item + " may have reached the orchestrator: the decision changed, reload."),
+      );
+    } else if (r.phase === "idle" && r.fields.answer) {
+      live.said.set(r.item, line("error", "The decision changed: your answer was cleared."));
+    }
+    ticking();
+    redraw();
+  };
+  const api = {
+    key: (item, bind) => item + " " + bind,
+    get: (key) => live.recs.get(key) || BLANK,
+    said: (item) => live.said.get(item) || null,
+    asked: () => live.asked.filter((one) => Date.now() - one.at < ASKED_MS && !live.known.has(one.slug)).map((one) => one.slug),
+    set(key, name, value, owner) {
+      api.setMany(key, { [name]: value }, owner);
+    },
+    setMany(key, fields, owner) {
+      const r = rec(key, owner ? owner.item : "", owner ? owner.bind : "");
+      if (r.phase !== "idle") {
+        return;
+      }
+      r.fields = { ...r.fields, ...fields };
+      r.note = null;
+      live.said.delete(r.item);
+      redraw();
+    },
+    press(key, text, decide, slug) {
+      const r = rec(key, decide ? decide.item : "", decide ? decide.bind : "");
+      if (r.phase !== "idle") {
+        return;
+      }
+      if (!live.route) {
+        r.note = line("error", "No proven orchestrator to send to");
+        redraw();
+        return;
+      }
+      r.phase = "count";
+      r.line = text;
+      r.decide = decide;
+      r.slug = slug || "";
+      r.route = live.route;
+      r.deadline = Date.now() + UNDO_MS;
+      r.note = null;
+      r.body = "";
+      live.said.delete(r.item);
+      r.timer = setTimeout(() => api.fire(key), UNDO_MS);
+      ticking();
+      redraw();
+    },
+    // The line is dropped before anything was sent; `why` is null for an Undo.
+    cancel(key, why) {
+      const r = live.recs.get(key);
+      if (!r || r.phase !== "count") {
+        return;
+      }
+      clearTimeout(r.timer);
+      r.phase = "idle";
+      r.note = why ? line("error", "Cancelled: " + why) : line("wait", "Undone: nothing was sent.");
+      ticking();
+      redraw();
+    },
+    cancelAll(why) {
+      for (const key of [...live.recs.keys()]) {
+        api.cancel(key, why);
+      }
+    },
+    async fire(key) {
+      const r = live.recs.get(key);
+      if (!r || r.phase !== "count") {
+        return;
+      }
+      const left = r.deadline - Date.now();
+      if (left > 0) {
+        r.timer = setTimeout(() => api.fire(key), left);
+        return;
+      }
+      if (document.hidden) {
+        api.cancel(key, "the page was hidden.");
+        return;
+      }
+      if (!live.route || live.route.id !== r.route.id) {
+        api.cancel(key, "the orchestrator changed, reload.");
+        return;
+      }
+      if (r.slug && live.known.has(r.slug)) {
+        api.cancel(key, "#" + r.slug + " is a topic already.");
+        return;
+      }
+      const row = r.decide ? current(r.decide.item) : null;
+      if (r.decide && (!row || row.bind !== r.decide.bind)) {
+        supersede(key, r);
+        return;
+      }
+      r.phase = "send";
+      r.note = line("wait", "sending");
+      ticking();
+      redraw();
+      try {
+        const made = await draft(r.route, r.line, r.decide);
+        if (!made.body) {
+          r.phase = "idle";
+          r.note = made.note;
+          redraw();
+          return;
+        }
+        r.body = made.body;
+        await api.carry(r);
+      } catch (_) {
+        r.phase = r.body ? "open" : "idle";
+        r.note = line("error", UNREACHABLE + (r.body ? "; Check again asks once more" : ""));
+        redraw();
+      }
+    },
+    // The frozen body, posted again until the server answers it. `r` is the
+    // record the attempt belongs to, so a record that has left the board is
+    // only ever updated, never shown again.
+    async carry(r) {
+      const done = await carry(r.body, (note) => {
+        r.note = note;
+        redraw();
+      });
+      if (done.receipt) {
+        const shown = receiptNote(done.receipt);
+        if (shown.kind === "refused") {
+          // Nothing was sent: the draft stays to be edited and sent as a new one.
+          r.phase = "idle";
+          r.note = shown;
+        } else if (r.decide) {
+          r.phase = "sent";
+          r.note =
+            shown.kind === "sent"
+              ? { kind: "sent", label: "", words: 'Answered "' + r.line + '": waiting for the orchestrator.', id: shown.id }
+              : shown;
+        } else {
+          // A new topic is done with: the form is free for the next one.
+          r.phase = "idle";
+          r.note = shown;
+          r.fields = {};
+          if (shown.kind === "sent" && r.slug && !live.known.has(r.slug)) {
+            live.asked = live.asked.filter((one) => one.slug !== r.slug);
+            live.asked.push({ slug: r.slug, at: Date.now() });
+            api.sweepAsked();
+          }
+        }
+      } else if (done.spent) {
+        r.phase = "idle";
+        r.note = done.note;
+      } else {
+        r.phase = "open";
+        r.note = done.note;
+      }
+      redraw();
+    },
+    async check(key) {
+      const r = live.recs.get(key);
+      if (!r || r.phase !== "open") {
+        return;
+      }
+      r.phase = "send";
+      r.note = line("wait", "asking again");
+      redraw();
+      try {
+        await api.carry(r);
+      } catch (_) {
+        r.phase = "open";
+        r.note = line("error", UNREACHABLE + "; Check again asks once more");
+        redraw();
+      }
+    },
+    // The asked topics that now have a row or have waited too long stop being
+    // kept, and a timer redraws the page at the oldest one's expiry, because a
+    // quiet page gets no new snapshot to do it.
+    sweepAsked() {
+      clearTimeout(live.askedTimer);
+      const now = Date.now();
+      live.asked = live.asked.filter((one) => now - one.at < ASKED_MS && !live.known.has(one.slug));
+      if (live.asked.length) {
+        const due = Math.min(...live.asked.map((one) => one.at + ASKED_MS)) - now;
+        live.askedTimer = setTimeout(() => {
+          api.sweepAsked();
+          redraw();
+        }, Math.max(due, 0) + 10);
+      }
+    },
+    // A new snapshot: a counting line whose route moved is cancelled, a record
+    // whose decision text left the board ends, an asked topic that now has a
+    // row (or has waited too long) stops being shown.
+    reconcile() {
+      for (const [key, r] of [...live.recs]) {
+        if (r.phase === "count" && (!live.route || live.route.id !== r.route.id)) {
+          api.cancel(key, "the orchestrator changed, reload.");
+        } else if (r.phase === "count" && r.slug && live.known.has(r.slug)) {
+          api.cancel(key, "#" + r.slug + " is a topic already.");
+        }
+        const row = r.item ? current(r.item) : null;
+        if (r.item && (!row || row.bind !== r.bind)) {
+          supersede(key, r);
+        }
+      }
+      for (const item of [...live.said.keys()]) {
+        if (!current(item)) {
+          live.said.delete(item);
+        }
+      }
+      api.sweepAsked();
+    },
+  };
+  return api;
+}
+
+// The lines in flight for the whole page, and what moves them: every snapshot
+// reconciles them, and a page that is hidden drops every counting line.
+function useLines(state) {
+  const [, setVersion] = useState(0);
+  const box = useRef(null);
+  if (box.current === null) {
+    const live = { recs: new Map(), said: new Map(), asked: [], askedTimer: 0, known: new Set(), tick: 0, route: null, decide: [] };
+    live.api = makeLines(live, () => setVersion((n) => n + 1));
+    box.current = live;
+  }
+  const live = box.current;
+  const desk = state && state.desk ? state.desk : null;
+  live.route = state ? state.route : null;
+  live.decide = desk && desk.decide ? desk.decide : [];
+  live.known = new Set(desk ? desk.groups.flatMap((group) => group.rows.map((row) => row.slug)) : []);
+  useEffect(() => {
+    live.api.reconcile();
+  }, [state]);
+  useEffect(() => {
+    const hide = () => {
+      if (document.hidden) {
+        live.api.cancelAll("the page was hidden.");
+      }
+    };
+    document.addEventListener("visibilitychange", hide);
+    return () => document.removeEventListener("visibilitychange", hide);
+  }, []);
+  return live.api;
+}
+
+// What one line control says: a paste it refused, the countdown with the seat
+// the line will reach, or the note the last attempt left (or, for a record
+// that has none yet, what its predecessor on this item said).
+function lineNote(r, pasted, said) {
+  if (pasted) {
+    return line("error", pasted);
+  }
+  if (r.phase === "count") {
+    const left = Math.max(1, Math.ceil((r.deadline - Date.now()) / 1000));
+    return line("wait", 'Sending "' + r.line + '" to ' + r.route.seat + " in " + r.route.to + ", " + left + " s left");
+  }
+  return r.note || (r.phase === "idle" ? said : null);
+}
+
+function Note({ note, counting }) {
+  return note
+    ? html`<p class=${"receipt k-" + note.kind} data-role="status" role=${counting ? null : "status"}>
+        ${note.label ? html`<b>${note.label}</b>${note.words ? " " : ""}` : null}${note.words}
+        ${note.id ? html` <span class="mute sm">${note.id}</span>` : null}
+      </p>`
+    : null;
+}
+
+// A paste that holds a line break or a control character is refused whole,
+// before the input ever sees it. True when it was refused.
+const PASTE_REFUSED = "Paste cancelled: the text holds a line break or control character.";
+
+function refusesPaste(event) {
+  const clip = event.clipboardData ? event.clipboardData.getData("text") : "";
+  if (REASON_BAD.test(clip)) {
+    event.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+// The controls of one line: the status, the Undo of a counting line and the
+// Check again of an open one.
+function LineActions({ lines, id, r, pasted, said, focus }) {
+  return html`<${Note} note=${lineNote(r, pasted, said)} counting=${r.phase === "count"} />
+    ${r.phase === "count"
+      ? html`<button
+          type="button"
+          class="dq-btn"
+          data-action="undo"
+          onClick=${() => {
+            lines.cancel(id, null);
+            if (focus.current) {
+              focus.current.focus();
+            }
+          }}
+        >
+          Undo
+        </button>`
+      : null}
+    ${r.phase === "open"
+      ? html`<button type="button" class="dq-btn" data-action="check" onClick=${() => lines.check(id)}>
+          Check again
+        </button>`
+      : null}`;
+}
+
+// One decision of the board with its answer line. `decision` is the board's own
+// row for it, and the control is live only when its text is the text shown
+// here: a card that is behind the board shows its text with Answer off.
+function DecisionAnswer({ lines, route, item, text, decision, compose, mark }) {
+  const aligned = Boolean(decision) && decision.text === text;
+  const key = aligned ? lines.key(item, decision.bind) : "";
+  const r = aligned ? lines.get(key) : BLANK;
+  const [pasted, setPasted] = useState("");
+  const input = useRef(null);
+  const raw = r.fields.answer || "";
+  const checked = lineText(raw, compose.answer_max);
+  const idle = r.phase === "idle";
+  const ready = aligned && idle && Boolean(route) && checked.text !== "" && checked.problem === "";
+  const submit = (event) => {
+    event.preventDefault();
+    if (ready) {
+      lines.press(key, item + " " + checked.text, { item, bind: decision.bind });
+    }
+  };
+  return html`<form class="decision-answer dq" data-item=${item} onSubmit=${submit}>
+    <p class="dq-text"><span class="mute sm">${item}</span> ${text}${mark ? html` <span class="mute sm">${mark}</span>` : null}</p>
+    <div class="dq-row">
+      <input
+        ref=${input}
+        class="dq-input"
+        type="text"
+        data-field="answer"
+        aria-label=${"Answer to " + item}
+        placeholder="Answer"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="send"
+        value=${raw}
+        readOnly=${!idle}
+        disabled=${!aligned}
+        onInput=${(event) => {
+          setPasted("");
+          lines.set(key, "answer", event.currentTarget.value, { item, bind: decision.bind });
+        }}
+        onPaste=${(event) => {
+          if (refusesPaste(event)) {
+            setPasted(PASTE_REFUSED);
+          }
+        }}
+      />
+      <button type="submit" class="dq-go" data-action="answer" disabled=${!ready}>Answer</button>
+    </div>
+    ${aligned && idle && checked.problem ? html`<p class="dq-hint" data-role="problem">${checked.problem}</p>` : null}
+    ${aligned
+      ? html`<${LineActions} lines=${lines} id=${key} r=${r} pasted=${pasted} said=${lines.said(item)} focus=${input} />`
+      : html`<p class="dq-hint" data-role="problem">This text is not the board's now: waiting for the next refresh.</p>`}
+  </form>`;
+}
+
+// A request for a new topic: a title, the slug it suggests (or one typed) and
+// the exact line the orchestrator will read.
+function NewTopic({ lines, route, desk }) {
+  const compose = desk.compose || COMPOSE;
+  const r = lines.get("topic");
+  const [pasted, setPasted] = useState("");
+  const input = useRef(null);
+  const idle = r.phase === "idle";
+  const manual = Boolean(r.fields.manual);
+  const checked = lineText(r.fields.title || "", compose.title_max);
+  const derived = deriveSlug(checked.text, compose.slug_max);
+  const slug = manual ? r.fields.slug || "" : derived;
+  const taken = desk.groups.some((group) => group.rows.some((row) => row.slug === slug));
+  let problem = checked.problem;
+  if (!problem && checked.text) {
+    if (!slugOk(slug, compose.slug_max)) {
+      problem = "The slug is lowercase letters, digits and hyphens, starting with a letter or digit, at most " + compose.slug_max + ".";
+    } else if (taken) {
+      problem = "#" + slug + " is a topic already.";
+    }
+  }
+  const ready = idle && Boolean(route) && checked.text !== "" && !problem;
+  const preview = checked.text && slugOk(slug, compose.slug_max) ? "#" + slug + " new " + checked.text : "";
+  const submit = (event) => {
+    event.preventDefault();
+    if (ready) {
+      lines.press("topic", preview, null, slug);
+    }
+  };
+  const onPaste = (event) => {
+    if (refusesPaste(event)) {
+      setPasted(PASTE_REFUSED);
+    }
+  };
+  const asked = lines.asked();
+  return html`<form class="new-topic dq" onSubmit=${submit}>
+    <div class="dq-row">
+      <input
+        ref=${input}
+        class="dq-input"
+        type="text"
+        data-field="title"
+        aria-label="Title of a new topic"
+        placeholder="New topic: title"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="send"
+        value=${r.fields.title || ""}
+        readOnly=${!idle}
+        onInput=${(event) => {
+          setPasted("");
+          lines.set("topic", "title", event.currentTarget.value);
+        }}
+        onPaste=${onPaste}
+      />
+      <button type="submit" class="dq-go" data-action="new-topic" disabled=${!ready}>Ask</button>
+    </div>
+    ${manual
+      ? html`<input
+          class="dq-input dq-slug"
+          type="text"
+          data-field="slug"
+          aria-label="Slug of a new topic"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          value=${slug}
+          readOnly=${!idle}
+          onInput=${(event) => {
+            setPasted("");
+            lines.set("topic", "slug", event.currentTarget.value);
+          }}
+          onPaste=${onPaste}
+        />`
+      : null}
+    <p class="dq-preview" data-role="preview">${preview}</p>
+    ${checked.text && !manual
+      ? html`<button
+          type="button"
+          class="dq-btn"
+          data-action="edit-slug"
+          disabled=${!idle}
+          onClick=${() => lines.setMany("topic", { manual: true, slug: derived })}
+        >
+          Edit slug
+        </button>`
+      : null}
+    ${idle && problem ? html`<p class="dq-hint" data-role="problem">${problem}</p>` : null}
+    <${LineActions} lines=${lines} id="topic" r=${r} pasted=${pasted} said=${null} focus=${input} />
+    ${asked.map((name) => html`<p class="dq-asked" data-role="asked" key=${name}>asked for #${name}</p>`)}
+  </form>`;
 }
 
 // The owner's composer. One draft id (nonce) per draft, and one attempt per
@@ -843,10 +1445,8 @@ function Walk({ walk, route, state, stop }) {
     setPasted("");
   };
   const onPaste = (event) => {
-    const text = event.clipboardData ? event.clipboardData.getData("text") : "";
-    if (REASON_BAD.test(text)) {
-      event.preventDefault();
-      setPasted("Paste cancelled: the text holds a line break or control character.");
+    if (refusesPaste(event)) {
+      setPasted(PASTE_REFUSED);
     }
   };
   const onReasonKey = (event) => {
@@ -954,6 +1554,7 @@ function Walk({ walk, route, state, stop }) {
 
 function App() {
   const [state, setState] = useState(null);
+  const lines = useLines(state);
   const [problem, setProblem] = useState("");
   const tag = useRef("");
   // The topic open in the card, its last answer and that answer's tag; the
@@ -1166,7 +1767,7 @@ function App() {
     ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>
       ${state && state.desk
-        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} revisit=${revisitProps} />`
+        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} revisit=${revisitProps} lines=${lines} route=${state.route} />`
         : html`<nav class="col" aria-label="Topics"></nav>`}
       <section class="chat" aria-label="Chat">
         ${current && !attached && !walk
@@ -1181,6 +1782,10 @@ function App() {
             close=${close}
             closeLine=${startClose}
             outcome=${closed && closed.slug === card.slug ? closed.text : ""}
+            lines=${lines}
+            route=${state ? state.route : null}
+            decide=${state && state.desk ? state.desk.decide : []}
+            compose=${(state && state.desk && state.desk.compose) || COMPOSE}
           />`
         : null}
     </main>
