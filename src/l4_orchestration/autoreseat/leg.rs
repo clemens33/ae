@@ -1901,6 +1901,13 @@ pub(crate) fn run(
     let list = match eligible {
         Ok(list) => list,
         Err((class, summary)) => {
+            // A request in flight is no failed move of the orchestrator: its hold
+            // gives its attempt back and the key waits before trying again.
+            let summary = if orchestrator && class == CauseClass::Busy {
+                CauseClass::OrchestratorStays.lead(class.details(&summary))
+            } else {
+                summary
+            };
             let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
             // The orchestrator's holds are told by the daemon's one keyed notice.

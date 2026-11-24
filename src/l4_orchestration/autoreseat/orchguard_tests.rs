@@ -319,19 +319,45 @@ mod holds {
     }
 
     #[test]
-    fn the_orchestrators_own_rules_give_their_attempt_back_a_bounded_number_of_times() {
+    fn the_orchestrators_own_rules_give_every_attempt_back_and_never_strand_the_key() {
         let changed = CauseClass::OrchestratorChanged.lead("model changed");
         let stays = CauseClass::OrchestratorStays.lead("no usable candidate");
         for (summary, word) in [(changed, "changed"), (stays, "stays")] {
-            let state = spent(&[Some(summary.as_str())]);
-            assert_eq!(state.attempts, 0, "{word}: the first hold is free");
-            let many = vec![Some(summary.as_str()); usize::from(MAX_POLICY_HOLDS) + 1];
+            let many = vec![Some(summary.as_str()); 6];
             let state = spent(&many);
-            assert_eq!(
-                state.attempts, 1,
-                "{word}: only {MAX_POLICY_HOLDS} holds are free, the next spends its attempt"
-            );
+            assert_eq!(state.attempts, 0, "{word}: no number of holds spends one");
+            assert!(state.held, "{word}");
+            assert_eq!(state.terminal, None, "{word}");
         }
+    }
+
+    #[test]
+    fn a_policy_hold_makes_its_key_wait_and_then_it_tries_again() {
+        let clear = Pane {
+            frame: Frame::Clear,
+            human_prompt: false,
+            client_input: None,
+        };
+        let stays = CauseClass::OrchestratorStays.lead("no usable candidate");
+        let state = spent(&[Some(stays.as_str()); 5]);
+        let held_at = state.policy_hold_at.expect("the hold is dated").epoch();
+        let until = held_at + POLICY_HOLD_WAIT_SECS;
+        assert_eq!(
+            decide(Some(&state), 0, &clear, until - 1),
+            Decision::Wait { due_at: until },
+            "the key waits after a policy hold"
+        );
+        assert_eq!(
+            decide(Some(&state), 0, &clear, until),
+            Decision::Attempt,
+            "and the next attempt is not used up however many holds came before"
+        );
+        let busy = spent(&[Some("busy: held: a request is in flight"); 2]);
+        assert_eq!(
+            decide(Some(&busy), 0, &clear, busy.key.epoch() + 100_000),
+            Decision::Rest,
+            "an ordinary hold keeps spending its attempt"
+        );
     }
 }
 

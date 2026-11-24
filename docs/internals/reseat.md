@@ -1040,13 +1040,19 @@ the orchestrator. It only narrows `auto_reseat = all`.
   one owner notice when its due move yields none.
 - One owner notice per episode, whatever refused the move
   (`Cycle::orchestrator_stays`, `AutoAct::Stays`, `leg::tell_stays`). The daemon is
-  the only teller: the leg and the trigger, reaching a no-move for the orchestrator
-  through a race with it, and the late gate's `orchestrator-changed` hold, close the
-  attempt as a hold (`orchestrator-stays` or `orchestrator-changed`) that tells
-  nothing and gives its attempt back, `MAX_POLICY_HOLDS` times per key, so the
-  daemon's next verdict tells the owner once with the full body. A standing
-  observed choice is a reason too: the act that tells it journals the
-  `observed-choice` hold once per key. When a
+  the only teller of a transient hold of the orchestrator: the leg and the trigger
+  say nothing when they find a busy request, an observed choice or no move through
+  a race with it, and neither does the late gate's `orchestrator-changed` hold. A
+  no-move or a request in flight closes the attempt as a hold
+  (`orchestrator-stays`), which gives an OPEN attempt back however often it comes
+  (the trigger's hold before admission opens none and refunds none) and makes the
+  key wait `POLICY_HOLD_WAIT_SECS` before it tries again, so a policy that clears
+  is followed by the move and no number of holds strands the episode. The
+  daemon's next verdict tells the owner once with the full body. A seat that
+  records no launch or conversation is such a no-move for the verdict too: the
+  stage guard refuses it whatever the policy says, and the detached leg keeps its
+  own diagnostic. A standing observed choice is a reason too: the act that tells
+  it journals the `observed-choice` hold once per key. When a
   move is due (a usage limit past its grace, or the account at the threshold)
   and the policy produces none (`off`, nothing configured, an unproven model,
   only other models, a same-model candidate with no room, a request in flight,

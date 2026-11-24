@@ -689,12 +689,18 @@ impl Cycle<'_> {
             .map(|(name, _)| name)
             .find(|name| crate::reseat::resolved(self.meta_dir, name).is_some())
             .cloned();
+        // The stage guard refuses every automatic move of a seat that records no
+        // launch or conversation, whatever the policy and the candidates say.
+        let guarded = crate::autoreseat::leg::records_launch(&bytes, slot)
+            && !crate::lifecycle::meta_value(&bytes, &format!("harness_session.{slot}")).is_empty();
         let reason = if let Some(hold) = &observed {
             crate::autoreseat::observed_summary(hold)
         } else if list.is_empty() {
             format!("nothing is configured to take it ({profile} has no candidate)")
         } else if off {
             "auto_reseat_orchestrator = off".to_owned()
+        } else if !guarded {
+            "it records no launch or conversation to guard".to_owned()
         } else {
             let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
             let left_on_headroom =

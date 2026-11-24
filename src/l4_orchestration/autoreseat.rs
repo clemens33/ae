@@ -212,11 +212,12 @@ pub const RETRY_COOLDOWN_SECS: i64 = 1800;
 /// last ends its auto path for good. Each round keeps its [`MAX_ATTEMPTS`], so
 /// one key makes at most `MAX_ROUNDS * MAX_ATTEMPTS` attempts.
 pub const MAX_ROUNDS: u8 = 3;
-/// How many holds of the orchestrator's own rules ([`CauseClass::OrchestratorChanged`])
-/// one key gives back their attempt: a policy that refuses is no failed move, so it
-/// does not spend the budget, but a daemon that never agrees with the leg cannot
-/// retry for ever.
-pub const MAX_POLICY_HOLDS: u8 = 3;
+/// How long after a hold of the orchestrator's own rules ([`CauseClass::OrchestratorStays`],
+/// [`CauseClass::OrchestratorChanged`]) the next attempt of its key waits. Such a hold
+/// is no failed move, so it spends no attempt and never ends the path; the wait
+/// alone bounds a daemon whose inputs keep disagreeing with the leg, and a policy
+/// that clears is followed by the move once it has passed.
+pub const POLICY_HOLD_WAIT_SECS: i64 = 300;
 /// The hold the daemon journals, once, when the last round was refused or
 /// failed: no further attempt, and the seat is told.
 pub const GAVE_UP_SUMMARY: &str = "other: held: gave up after repeated refused or failed moves";
@@ -1671,9 +1672,9 @@ pub struct Episode {
     /// Some hold of this key named an observed choice, so the key tells the
     /// human once however often it is tried; no later hold unsays it.
     pub choice_held: bool,
-    /// The holds of the orchestrator's own rules already given back their
-    /// attempt ([`MAX_POLICY_HOLDS`] at most).
-    policy_holds: u8,
+    /// When the newest hold of the orchestrator's own rules was recorded: the
+    /// next attempt waits [`POLICY_HOLD_WAIT_SECS`] after it.
+    policy_hold_at: Option<Timestamp>,
 }
 
 impl Episode {
@@ -1742,7 +1743,7 @@ impl Episode {
             held: false,
             last_hold: None,
             choice_held: false,
-            policy_holds: 0,
+            policy_hold_at: None,
         }
     }
 
@@ -1769,21 +1770,21 @@ impl Episode {
                     .summary
                     .as_deref()
                     .is_some_and(|s| s.starts_with(&lead));
-                // A hold of the orchestrator's own rules gives its attempt back,
-                // a bounded number of times: it is no move that failed.
+                // A hold of the orchestrator's own rules is no move that failed: it
+                // gives its attempt back and the key waits before the next one.
                 let policy = [
                     CauseClass::OrchestratorChanged.lead(""),
                     CauseClass::OrchestratorStays.lead(""),
                 ];
-                if was_open
-                    && self.policy_holds < MAX_POLICY_HOLDS
-                    && event
-                        .summary
-                        .as_deref()
-                        .is_some_and(|s| policy.iter().any(|lead| s.starts_with(lead.as_str())))
+                if event
+                    .summary
+                    .as_deref()
+                    .is_some_and(|s| policy.iter().any(|lead| s.starts_with(lead.as_str())))
                 {
-                    self.policy_holds += 1;
-                    self.attempts = self.attempts.saturating_sub(1);
+                    self.policy_hold_at = Some(event.ts);
+                    if was_open {
+                        self.attempts = self.attempts.saturating_sub(1);
+                    }
                 }
                 self.last_hold.clone_from(&event.summary);
             }
@@ -2389,6 +2390,10 @@ pub fn decide_with_waits(
     let input_wait = i64::try_from(waits.input).unwrap_or(i64::MAX);
     let key = episode.key.epoch();
     let due_at = key.saturating_add(quota_wait);
+    // A hold of the orchestrator's own rules waits before its key tries again.
+    let due_at = episode.policy_hold_at.map_or(due_at, |at| {
+        due_at.max(at.epoch().saturating_add(POLICY_HOLD_WAIT_SECS))
+    });
     if now < due_at {
         return Decision::Wait { due_at };
     }
@@ -6478,7 +6483,7 @@ mod tests {
             held: false,
             last_hold: None,
             choice_held: false,
-            policy_holds: 0,
+            policy_hold_at: None,
         }
     }
 
