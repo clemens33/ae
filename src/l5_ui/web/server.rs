@@ -787,6 +787,7 @@ mod tests {
             version: "deadline-unit".to_owned(),
         })
         .unwrap_or_else(|error| panic!("start: {error}"));
+        let running = Listening(Some(running));
         let host = running.addr();
         let mut client = TcpStream::connect(host).unwrap_or_else(|error| panic!("{error}"));
         client
@@ -795,14 +796,9 @@ mod tests {
         client
             .write_all(format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
             .unwrap_or_else(|error| panic!("{error}"));
-        let mut reply = Vec::new();
-        let _ = client.read_to_end(&mut reply);
+        let reply = read_reply(&mut client, Vec::new());
         running.shutdown();
-        assert!(
-            reply.starts_with(b"HTTP/1.1 408 "),
-            "{}",
-            String::from_utf8_lossy(reply.get(..40).unwrap_or_default())
-        );
+        assert!(reply.head.starts_with("HTTP/1.1 408 "), "{}", reply.head);
     }
 
     /// driver-plan.md: a response leaves in writes of at most 16 KiB. A contract pin
@@ -909,6 +905,77 @@ mod tests {
         client
     }
 
+    /// The most bytes a reply head may take before its empty row.
+    const HEAD_MAX: usize = 64 * 1024;
+
+    /// One reply, read whole and no further.
+    struct Reply {
+        /// The status line and the header rows, without the empty row.
+        head: String,
+        /// Exactly the bytes its `Content-Length` names.
+        body: Vec<u8>,
+    }
+
+    /// The reply that `reply` begins (the bytes already read, often none),
+    /// read from `client` with a bound: the head, then at most its
+    /// `Content-Length` and one byte more. A server that sends past the body
+    /// it named fails here at once instead of filling the test's memory. The
+    /// body is exactly `Content-Length` bytes, and the connection ends after
+    /// it. Every test that reads a whole reply reads it here.
+    fn read_reply(client: &mut TcpStream, mut reply: Vec<u8>) -> Reply {
+        let mut chunk = [0_u8; 4096];
+        let end = loop {
+            if let Some(end) = reply.windows(4).position(|four| four == b"\r\n\r\n") {
+                break end;
+            }
+            assert!(
+                reply.len() <= HEAD_MAX,
+                "no head end in {} bytes",
+                reply.len()
+            );
+            let read = client
+                .read(&mut chunk)
+                .unwrap_or_else(|error| panic!("head after {} bytes: {error}", reply.len()));
+            assert!(
+                read > 0,
+                "the connection ended inside the head: {}",
+                String::from_utf8_lossy(&reply)
+            );
+            reply.extend_from_slice(chunk.get(..read).unwrap_or_default());
+        };
+        // The last read can bring the empty row from past the bound.
+        assert!(end <= HEAD_MAX, "a head of {end} bytes");
+        let head = String::from_utf8_lossy(reply.get(..end).unwrap_or_default()).into_owned();
+        let named: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|length| length.parse().ok())
+            .unwrap_or_else(|| panic!("no Content-Length: {head}"));
+        let whole = end + 4 + named;
+        // One byte past the body shows a reply that runs on.
+        let more = u64::try_from((whole + 1).saturating_sub(reply.len())).unwrap_or(u64::MAX);
+        let read = std::io::Read::by_ref(client)
+            .take(more)
+            .read_to_end(&mut reply);
+        assert!(
+            read.is_ok(),
+            "{read:?} after {} of {whole} bytes: {head}",
+            reply.len()
+        );
+        assert_eq!(
+            reply.len(),
+            whole,
+            "the body is not the {named} bytes its head names: {head}"
+        );
+        let ended = client.read(&mut chunk);
+        assert!(
+            matches!(ended, Ok(0)),
+            "the connection did not end after the body: {ended:?}: {head}"
+        );
+        let body = reply.split_off(end + 4);
+        Reply { head, body }
+    }
+
     /// `linger`: unread request bytes do not turn the close into a reset that
     /// destroys the answer. A client still sending when its 413 leaves reads
     /// the whole refusal and an orderly end, and its socket reports no reset.
@@ -929,13 +996,8 @@ mod tests {
         client
             .shutdown(Shutdown::Write)
             .unwrap_or_else(|error| panic!("half close: {error}"));
-        let mut reply = Vec::new();
-        let read = client.read_to_end(&mut reply);
-        assert!(
-            read.is_ok() && reply.starts_with(b"HTTP/1.1 413 "),
-            "{read:?} after {:?}",
-            String::from_utf8_lossy(&reply)
-        );
+        let reply = read_reply(&mut client, Vec::new());
+        assert!(reply.head.starts_with("HTTP/1.1 413 "), "{}", reply.head);
         // The worker closes on its own thread after the reply's end, so a
         // reset can land after the read: watch the socket error for a while.
         let watch = Instant::now() + Duration::from_millis(500);
@@ -970,14 +1032,9 @@ mod tests {
         // The pause the scenario needs: past the read timeout the deadline leaves.
         std::thread::sleep(early * 4);
         let _ = client.write_all(format!("ET / HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes());
-        let mut reply = Vec::new();
-        let _ = client.read_to_end(&mut reply);
+        let reply = read_reply(&mut client, Vec::new());
         running.shutdown();
-        assert!(
-            reply.starts_with(b"HTTP/1.1 200 "),
-            "{}",
-            String::from_utf8_lossy(reply.get(..40).unwrap_or_default())
-        );
+        assert!(reply.head.starts_with("HTTP/1.1 200 "), "{}", reply.head);
     }
 
     /// A chat of the most rows at the most bytes: a state reply of about
@@ -1020,12 +1077,12 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap_or_else(|error| panic!("login: {error}"));
-        let mut reply = String::new();
-        let _ = client.read_to_string(&mut reply);
-        let (_, after) = reply
+        let reply = read_reply(&mut client, Vec::new());
+        let body = String::from_utf8_lossy(&reply.body);
+        let (_, after) = body
             .split_once(r#""session":""#)
-            .unwrap_or_else(|| panic!("{reply}"));
-        let (bearer, _) = after.split_once('"').unwrap_or_else(|| panic!("{reply}"));
+            .unwrap_or_else(|| panic!("{} {body}", reply.head));
+        let (bearer, _) = after.split_once('"').unwrap_or_else(|| panic!("{body}"));
         bearer.to_owned()
     }
 
@@ -1055,8 +1112,10 @@ mod tests {
         let mut client = ask_state(&running);
         // The first bytes show that the reply is leaving: the rest fills the
         // socket buffers at once, and the next write blocks.
-        let mut reply = vec![0_u8; 4096];
-        let first = client.read_exact(&mut reply);
+        let mut first = vec![0_u8; 4096];
+        client
+            .read_exact(&mut first)
+            .unwrap_or_else(|error| panic!("first bytes: {error}"));
         // The pause the scenario needs: the write timeout that sends nothing,
         // the timeouts before it, one spare and a margin. Measured on loopback
         // on Linux 7.0 and macOS 26: the write that fills the buffers ends at
@@ -1068,21 +1127,9 @@ mod tests {
         // buffering can change the number of partial writes; the spare covers
         // one more.
         std::thread::sleep(super::POLL * 4 + Duration::from_millis(500));
-        let read = client.read_to_end(&mut reply);
+        let reply = read_reply(&mut client, first);
         running.shutdown();
-        assert!(first.is_ok(), "first bytes: {first:?}");
-        let end = reply
-            .windows(4)
-            .position(|four| four == b"\r\n\r\n")
-            .unwrap_or_else(|| panic!("no head in {} bytes: {read:?}", reply.len()));
-        let head = String::from_utf8_lossy(reply.get(..end).unwrap_or_default()).into_owned();
-        let named: usize = head
-            .lines()
-            .find_map(|line| line.strip_prefix("Content-Length: "))
-            .and_then(|length| length.parse().ok())
-            .unwrap_or_else(|| panic!("{head}"));
-        assert!(named > 30 << 20, "{head}");
-        assert_eq!(reply.len() - end - 4, named, "{read:?} {head}");
+        assert!(reply.body.len() > 30 << 20, "{}", reply.head);
     }
 
     /// `write_response` and `waited`: a write that fails is a close, not a
@@ -1114,15 +1161,13 @@ mod tests {
         );
     }
 
-    /// What `running` answers to `wire`, whole.
-    fn reply(running: &Running, wire: &str) -> String {
+    /// What `running` answers to `wire`, read whole and no further.
+    fn reply(running: &Running, wire: &str) -> Reply {
         let mut client = client(running);
         client
             .write_all(wire.as_bytes())
             .unwrap_or_else(|error| panic!("send: {error}"));
-        let mut reply = Vec::new();
-        let _ = client.read_to_end(&mut reply);
-        String::from_utf8_lossy(&reply).into_owned()
+        read_reply(&mut client, Vec::new())
     }
 
     /// `answer` serves a page asset to `GET` only, and RFC 9110 §15.5.6 makes a
@@ -1140,11 +1185,7 @@ mod tests {
             ),
         );
         running.shutdown();
-        assert!(
-            answer.starts_with("HTTP/1.1 405 "),
-            "{}",
-            answer.get(..40).unwrap_or(&answer)
-        );
+        assert!(answer.head.starts_with("HTTP/1.1 405 "), "{}", answer.head);
     }
 
     /// [`super::LINK_GAP`], "the least time between two fresh links printed
@@ -1173,12 +1214,12 @@ mod tests {
         let host = running.addr();
         let no_session = format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\n\r\n");
         let first = reply(&running, &no_session);
-        assert!(first.starts_with("HTTP/1.1 401 "), "{first}");
+        assert!(first.head.starts_with("HTTP/1.1 401 "), "{}", first.head);
         assert_eq!(printed.load(Ordering::SeqCst), 1, "the first fresh link");
         clock.advance(super::LINK_GAP);
         let second = reply(&running, &no_session);
         running.shutdown();
-        assert!(second.starts_with("HTTP/1.1 401 "), "{second}");
+        assert!(second.head.starts_with("HTTP/1.1 401 "), "{}", second.head);
         assert_eq!(
             printed.load(Ordering::SeqCst),
             2,
