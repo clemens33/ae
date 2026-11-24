@@ -331,6 +331,60 @@ function line(kind, words) {
   return { kind, label: "", words, id: "" };
 }
 
+// A new draft: the draft id (nonce) is minted and the exact body, text, route
+// and id, is fixed. Resolves to { body } or, when no draft could be made, to
+// { note } saying why; nothing was sent then.
+async function draft(route, text) {
+  const answer = await api("nonce");
+  if (answer.status !== 200) {
+    return { note: line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)) };
+  }
+  const minted = await answer.json();
+  const nonce = minted && typeof minted.nonce === "string" ? minted.nonce : "";
+  if (!nonce) {
+    return { note: line("error", "ae web gave no draft id") };
+  }
+  return { body: JSON.stringify({ text, route: route.id, nonce }) };
+}
+
+// One carry: posts the exact body again and again until the server answers
+// with a receipt, at most SEND_TRIES times, SEND_AGAIN_MS apart, and shows each
+// wait through `show`. It resolves to { receipt }, the server's receipt (200)
+// whatever its outcome; to { spent, note }, a refusal of this very body (400,
+// 409, 410, 413 and the other 4xx but 401 and 408), when nothing was sent and
+// the next send is a new draft id; or to { open, note }, no receipt: a lost
+// session (401), a request cut by its deadline (408), any other answer, the end
+// of the tries or an unreachable listener. The body may have carried, so the
+// caller keeps it and asks again with the same body and id.
+async function carry(body, show) {
+  try {
+    for (let tries = 0; tries < SEND_TRIES; tries += 1) {
+      const answer = await api("send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      if (answer.status === 200) {
+        return { receipt: await answer.json() };
+      }
+      if (answer.status === 202 || answer.status === 503) {
+        show(line("wait", answer.status === 202 ? "queued" : "busy, retrying"));
+        await pause(SEND_AGAIN_MS);
+        continue;
+      }
+      const note = line("error", answer.status === 401 ? NO_SESSION : await refusal(answer));
+      const open = answer.status === 401 || answer.status === 408;
+      if (answer.status >= 400 && answer.status < 500 && !open) {
+        return { spent: true, note };
+      }
+      return { open: true, note };
+    }
+    return { open: true, note: line("error", "no receipt yet: it may still land; Check again asks once more") };
+  } catch (_) {
+    return { open: true, note: line("error", UNREACHABLE + "; Check again asks once more") };
+  }
+}
+
 // The owner's composer. One draft id (nonce) per draft, and one attempt per
 // draft id: the exact body first posted (text, route and id) is posted again
 // verbatim on every retry and every later check until an answer settles it,
@@ -376,20 +430,13 @@ function Composer({ route, slug }) {
     if (!route || !text.trim()) {
       return "";
     }
-    const answer = await api("nonce");
-    if (answer.status !== 200) {
-      setNote(line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)));
+    const made = await draft(route, text);
+    if (!made.body) {
+      setNote(made.note);
       return "";
     }
-    const minted = await answer.json();
-    const nonce = minted && typeof minted.nonce === "string" ? minted.nonce : "";
-    if (!nonce) {
-      setNote(line("error", "ae web gave no draft id"));
-      return "";
-    }
-    const body = JSON.stringify({ text, route: route.id, nonce });
-    setAttempt(body);
-    return body;
+    setAttempt(made.body);
+    return made.body;
   };
 
   const send = async () => {
@@ -403,34 +450,18 @@ function Composer({ route, slug }) {
       if (!body) {
         return;
       }
-      for (let tries = 0; tries < SEND_TRIES; tries += 1) {
-        const answer = await api("send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        if (answer.status === 200) {
-          settle(await answer.json());
-          return;
-        }
-        if (answer.status === 202 || answer.status === 503) {
-          setNote(line("wait", answer.status === 202 ? "queued" : "busy, retrying"));
-          await pause(SEND_AGAIN_MS);
-          continue;
-        }
-        // A refusal of this very body (400, 409, 410, 413 and the other 4xx
-        // but 401 and 408) settles the attempt with nothing sent: the draft
-        // can be edited again and the next send is a new draft id. A lost
-        // session (401), a request cut by its deadline (408) and any other
-        // answer leave it open to be asked again: it may have carried.
-        const open = answer.status === 401 || answer.status === 408;
-        if (answer.status >= 400 && answer.status < 500 && !open) {
-          setAttempt("");
-        }
-        setNote(line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)));
+      const done = await carry(body, setNote);
+      if (done.receipt) {
+        settle(done.receipt);
         return;
       }
-      setNote(line("error", "no receipt yet: it may still land; Check again asks once more"));
+      // A refusal of this very body settles the attempt with nothing sent, so
+      // the draft can be edited again. Any other end leaves it open to be
+      // asked again, because it may have carried.
+      if (done.spent) {
+        setAttempt("");
+      }
+      setNote(done.note);
     } catch (_) {
       setNote(line("error", UNREACHABLE + "; Check again asks once more"));
     } finally {
