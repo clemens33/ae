@@ -734,6 +734,10 @@ fn wait_rows(sessions: &[SessionInput], unresolved: &mut Vec<Gap>) -> Vec<Row> {
                 gap("waiting-user, but the session records no session id".to_owned());
                 continue;
             };
+            if let Witness::Unproved(why) = &wait.witness {
+                gap(format!("waiting-user, but {why}"));
+                continue;
+            }
             let Some(slot) = wait.slot.as_deref() else {
                 gap("waiting-user, but the roster names no slot for the seat".to_owned());
                 continue;
@@ -749,10 +753,7 @@ fn wait_rows(sessions: &[SessionInput], unresolved: &mut Vec<Gap>) -> Vec<Row> {
                 continue;
             };
             match &wait.witness {
-                Witness::Unproved(why) => {
-                    gap(format!("waiting-user, but {why}"));
-                    continue;
-                }
+                Witness::Unproved(_) => continue,
                 // The row names its launch: that name wins over any time.
                 Witness::Launch(declared) => {
                     if declared != launch {
@@ -1049,9 +1050,33 @@ fn key_of(entry: &crate::digest::SessionEntry) -> SessionKey<'_> {
     )
 }
 
+/// The seat's newest declaration under its stable session key. A record
+/// pinned to another session id is no declaration of this seat even under its
+/// name, one pinned to this id is across a rename, and a record with no id is
+/// judged by the name it spelled.
+fn keyed_declaration<'a>(
+    events: &'a [Event],
+    session: SessionKey<'_>,
+    slot: &str,
+    reference: &str,
+) -> Option<&'a Event> {
+    events.iter().rev().find(|event| {
+        event.declared_state().is_some()
+            && crate::watchdog::event_is_actor_in(event, session, slot, reference)
+    })
+}
+
 /// The `waiting-user` seats of one fleet entry, each with the facts that bind
-/// it to its launch. The seat state and its declaration row are read from the
-/// one journal read the entry was built from.
+/// it to its launch.
+///
+/// The seats come from the roster and the declarations from the one journal
+/// read the entry was built from, each by the seat's stable session key, and
+/// the very record that says `waiting-user` is the one that names the launch.
+/// The digest reads a declaration by name alone: a record of another
+/// incarnation under the same name can end a wait there and a rename can hide
+/// one, so the digest is no authority on which seat waits. It only tells which
+/// seats look as if they wait, so that one the journal cannot bind to its own
+/// declaration is a coverage line and never silence.
 fn waits_of(
     entry: &crate::digest::SessionEntry,
     snapshot: Option<&RecordSnapshot>,
@@ -1062,74 +1087,72 @@ fn waits_of(
         .and_then(|snapshot| snapshot.events.as_ref())
         .map(|read| read.events.as_slice());
     let key = key_of(entry);
-    crate::brief::agent_lines_from_world(entry, as_of)
+    let shown: Vec<crate::brief::AgentLine> = crate::brief::agent_lines_from_world(entry, as_of)
         .into_iter()
         .filter(|line| line.state == "waiting-user")
-        .map(|line| {
-            let seat =
-                meta.and_then(|meta| meta.roster().iter().find(|seat| seat.name == line.name));
-            let slot = seat.map(|seat| seat.slot.clone());
-            let since = line
-                .age_secs
-                .map(|age| Timestamp::from_epoch(as_of.epoch().saturating_sub(age)));
-            let witness = seat.map_or_else(
-                || Witness::Unproved("the roster names no slot for the seat".to_owned()),
-                |seat| witness_of(events, key, &seat.slot, &seat.reference(), since),
-            );
-            let launch_id = slot
-                .as_deref()
-                .and_then(|slot| meta.and_then(|meta| meta.launch_id(slot)))
-                .map(str::to_owned);
-            let launch_epoch = slot
-                .as_deref()
-                .and_then(|slot| meta.and_then(|meta| meta.launch_epoch(slot)));
-            Wait {
-                since,
-                agent: line.name,
-                slot,
-                launch_id,
-                launch_epoch,
-                witness,
+        .collect();
+    let since_of = |line: &crate::brief::AgentLine| {
+        line.age_secs
+            .map(|age| Timestamp::from_epoch(as_of.epoch().saturating_sub(age)))
+    };
+    let roster = meta.map_or(&[][..], |meta| meta.roster());
+    let mut waits = Vec::new();
+    for seat in roster {
+        let declared =
+            events.map(|events| keyed_declaration(events, key, &seat.slot, &seat.reference()));
+        let own = declared
+            .flatten()
+            .filter(|event| event.declared_state() == Some("waiting-user"));
+        let looks = shown.iter().find(|line| line.name == seat.name);
+        let (since, witness) = match (own, looks) {
+            (Some(event), _) => (Some(event.ts), witness_of(event)),
+            (None, Some(line)) => {
+                let why = match declared {
+                    None => "the journal that holds the declaration cannot be read".to_owned(),
+                    Some(None) => {
+                        "the journal holds no declaration of the seat under its session id"
+                            .to_owned()
+                    }
+                    Some(Some(event)) => format!(
+                        "its newest declaration under its session id is {}, not waiting-user",
+                        event.declared_state().unwrap_or("none")
+                    ),
+                };
+                (since_of(line), Witness::Unproved(why))
             }
-        })
-        .collect()
+            (None, None) => continue,
+        };
+        waits.push(Wait {
+            since,
+            agent: seat.name.clone(),
+            slot: Some(seat.slot.clone()),
+            launch_id: meta
+                .and_then(|meta| meta.launch_id(&seat.slot))
+                .map(str::to_owned),
+            launch_epoch: meta.and_then(|meta| meta.launch_epoch(&seat.slot)),
+            witness,
+        });
+    }
+    for line in &shown {
+        if roster.iter().any(|seat| seat.name == line.name) {
+            continue;
+        }
+        waits.push(Wait {
+            since: since_of(line),
+            agent: line.name.clone(),
+            slot: None,
+            launch_id: None,
+            launch_epoch: None,
+            witness: Witness::Unproved("the roster names no slot for the seat".to_owned()),
+        });
+    }
+    waits
 }
 
-/// What the declaration row of a seat says of its launch. The row is the
-/// seat's newest declaration under its stable session key, taken from the
-/// same read the seat state came from: a record pinned to another session id
-/// is no declaration of this seat even under its name, and one pinned to this
-/// id is, across a rename. It must be a `waiting-user` made at the second the
-/// seat state names, or the state came from some other row and nothing is
-/// proved. The second is a consistency check, never how the row is chosen.
-fn witness_of(
-    events: Option<&[Event]>,
-    session: SessionKey<'_>,
-    slot: &str,
-    reference: &str,
-    since: Option<Timestamp>,
-) -> Witness {
-    let Some(events) = events else {
-        return Witness::Unproved(
-            "the journal that holds the declaration cannot be read".to_owned(),
-        );
-    };
-    let Some(event) = events.iter().rev().find(|event| {
-        event.declared_state().is_some()
-            && crate::watchdog::event_is_actor_in(event, session, slot, reference)
-    }) else {
-        return Witness::Unproved(
-            "the journal holds no declaration of the seat under its session id".to_owned(),
-        );
-    };
-    if event.declared_state() != Some("waiting-user")
-        || since.is_some_and(|since| since.epoch() != event.ts.epoch())
-    {
-        return Witness::Unproved(
-            "the seat's newest declaration in the journal is not the one the fleet read named"
-                .to_owned(),
-        );
-    }
+/// What the declaration row of a seat says of its launch: the record that
+/// declared `waiting-user` is the record that names, or does not name, the
+/// launch that made it.
+fn witness_of(event: &Event) -> Witness {
     match &event.actor_launch_id {
         RoutingMember::Absent => Witness::Absent,
         RoutingMember::Value(launch) => Witness::Launch(launch.clone()),

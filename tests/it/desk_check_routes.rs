@@ -228,3 +228,98 @@ fn a_stopped_dispatcher_keeps_its_relay_and_labels_it_through_the_real_route() {
     let relay = row(&out, "unboarded", &id);
     assert!(relay.ends_with("origin stopped"), "{relay}");
 }
+
+fn excludes(out: &Out, name: &str, id: &str) {
+    assert!(
+        section(out, name)
+            .into_iter()
+            .all(|line| !line.contains(id)),
+        "unexpected {id} in {name}: {}",
+        words(out)
+    );
+}
+
+fn waiting(rig: &Rig) {
+    let route = format!("@{}", rig.owner.home);
+    let out = run(
+        rig,
+        ae(),
+        Some(&rig.owner.tool.pane),
+        &[
+            &route,
+            "state",
+            "waiting-user",
+            "The private fixture needs the owner's input before continuing with the next verification step.",
+        ],
+    );
+    success(&out, 0);
+}
+
+/// Give the target seat the completed launch baseline a live seat records,
+/// ten seconds before now.
+fn baseline(rig: &Rig) {
+    let meta_path = rig.owner.tool.dir.join("meta");
+    let meta = fs::read_to_string(&meta_path).expect("seat metadata");
+    let started = ae::time::Timestamp::now().epoch() - 10;
+    fs::write(&meta_path, format!("{meta}launch_time.main={started}\n"))
+        .expect("a live seat has a completed launch baseline");
+}
+
+/// Append to the target's journal a declaration that another incarnation of
+/// the same session name made: the same name and slot, another session id.
+fn foreign_declaration(rig: &Rig, value: &str) {
+    let body = ae::state::event_body(
+        ae::time::Timestamp::now(),
+        "lead",
+        &ae::state::Declaration {
+            value: value.to_owned(),
+            reason: "an earlier incarnation under the same session name speaks for its own seat"
+                .to_owned(),
+            on: None,
+        },
+    );
+    let line = body.lines().next().expect("a record");
+    let routed = format!(
+        "{},\"actor_slot\":\"main\",\"actor_session\":\"{}\",\"actor_session_id\":\"{}\"}}\n",
+        line.trim_end_matches('}'),
+        rig.owner.home,
+        uuid_of("another-incarnation"),
+    );
+    let mut journal = fs::OpenOptions::new()
+        .append(true)
+        .open(rig.owner.tool.dir.join("events.jsonl"))
+        .expect("the target journal");
+    journal
+        .write_all(routed.as_bytes())
+        .expect("a foreign declaration");
+}
+
+#[test]
+fn a_seats_own_wait_stays_listed_beside_a_newer_row_of_another_incarnation() {
+    let rig = rig("dckwown");
+    baseline(&rig);
+    waiting(&rig);
+    foreign_declaration(&rig, "working");
+    let seat = format!("{}:lead", rig.owner.home);
+    let out = report(&rig);
+    success(&out, 1);
+    let wait = row(&out, "unboarded", &seat);
+    assert!(wait.contains("waiting-user since"), "{wait}");
+    excludes(&out, "unresolved coverage", &seat);
+}
+
+#[test]
+fn a_waiting_row_of_another_incarnation_is_coverage_and_never_a_wait() {
+    let rig = rig("dckwfor");
+    baseline(&rig);
+    foreign_declaration(&rig, "waiting-user");
+    let seat = format!("{}:lead", rig.owner.home);
+    let out = report(&rig);
+    success(&out, 0);
+    excludes(&out, "unboarded", &seat);
+    let gap = row(&out, "unresolved coverage", &seat);
+    assert!(
+        gap.contains("no declaration of the seat under its session id"),
+        "{gap}"
+    );
+}

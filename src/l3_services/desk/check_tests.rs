@@ -10,7 +10,7 @@
 use super::{
     CLOSED_SHOWN, EXIT_UNBOARDED, Fate, Gap, Hint, Join, Journal, Kind, Report, Row, SessionInput,
     Wait, Witness, absent_label, board_error_line, degradation, evaluate, fate, fleet_gaps, hint,
-    holders, join, mentions, render, witness_of,
+    holders, join, keyed_declaration, mentions, render, waits_of, witness_of,
 };
 use crate::desk::{Desk, parse_input};
 use crate::digest::Status;
@@ -1068,59 +1068,25 @@ fn routed_declaration(
 }
 
 #[test]
-fn the_declaration_row_names_its_launch_and_a_foreign_read_proves_nothing() {
-    let key = SessionKey::new("alpha", TARGET);
-    let witness = |events: Option<&[Event]>, since: i64| {
-        witness_of(events, key, "main", "lead", Some(at(since)))
-    };
-    let stamped = [declaration(100, "lead", "waiting-user", Some("tok-1"))];
-    assert_eq!(
-        witness(Some(&stamped), 100),
-        Witness::Launch("tok-1".to_owned())
-    );
-    let unstamped = [declaration(100, "lead", "waiting-user", None)];
-    assert_eq!(witness(Some(&unstamped), 100), Witness::Absent);
-    let unproved = |witness: Witness, phrase: &str| {
-        let Witness::Unproved(why) = witness else {
-            panic!("expected an unproved declaration, got {witness:?}");
-        };
-        assert!(why.contains(phrase), "{why}");
-    };
-    unproved(
-        witness(Some(&stamped), 101),
-        "not the one the fleet read named",
-    );
-    let superseded = [
-        declaration(100, "lead", "waiting-user", Some("tok-1")),
-        declaration(150, "lead", "working", Some("tok-1")),
-    ];
-    unproved(
-        witness(Some(&superseded), 100),
-        "not the one the fleet read named",
-    );
-    unproved(witness(Some(&[]), 100), "holds no declaration");
-    unproved(witness(None, 100), "cannot be read");
+fn the_declaration_row_names_its_launch_or_says_it_does_not() {
+    let stamped = declaration(100, "lead", "waiting-user", Some("tok-1"));
+    assert_eq!(witness_of(&stamped), Witness::Launch("tok-1".to_owned()));
+    let unstamped = declaration(100, "lead", "waiting-user", None);
+    assert_eq!(witness_of(&unstamped), Witness::Absent);
     let empty = declaration(100, "lead", "waiting-user", Some(""));
-    unproved(witness(Some(&[empty]), 100), "present and empty");
-    assert_eq!(
-        witness_of(Some(&stamped), key, "main", "lead", None),
-        Witness::Launch("tok-1".to_owned()),
-        "a missing fleet time leaves the row's own witness"
-    );
+    let Witness::Unproved(why) = witness_of(&empty) else {
+        panic!("an empty launch name proves nothing");
+    };
+    assert!(why.contains("present and empty"), "{why}");
 }
 
 #[test]
 fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
     let key = SessionKey::new("alpha", TARGET);
-    let witness = |events: &[Event]| witness_of(Some(events), key, "main", "lead", Some(at(100)));
-    let unproved = |witness: Witness, phrase: &str| {
-        let Witness::Unproved(why) = witness else {
-            panic!("expected an unproved declaration, got {witness:?}");
-        };
-        assert!(why.contains(phrase), "{why}");
+    let newest = |events: &[Event]| {
+        keyed_declaration(events, key, "main", "lead").map(|event| event.ts.epoch())
     };
-    let launch = Witness::Launch("tok-1".to_owned());
-    // The seat's own stamped row names its launch.
+    // The seat's own stamped row.
     let own = [routed_declaration(
         100,
         "alpha",
@@ -1128,9 +1094,9 @@ fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
         "waiting-user",
         Some("tok-1"),
     )];
-    assert_eq!(witness(&own), launch);
-    // The same name and slot under another session id is another incarnation's
-    // row. Its launch name would pass, and it supplies nothing.
+    assert_eq!(newest(&own), Some(100));
+    // The same name and slot under another session id is another
+    // incarnation's row: it supplies nothing.
     let foreign = [routed_declaration(
         100,
         "alpha",
@@ -1138,23 +1104,19 @@ fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
         "waiting-user",
         Some("tok-1"),
     )];
-    unproved(
-        witness(&foreign),
-        "no declaration of the seat under its session id",
-    );
-    // Beside an older row of the seat itself, the seat's own row is the one
-    // read, and its second is not the one the seat state names.
+    assert_eq!(newest(&foreign), None);
+    // Beside an older row of the seat itself, the seat's own row is the one read.
     let beside = [
         declaration(90, "lead", "waiting-user", None),
         routed_declaration(100, "alpha", Some(ORCH), "waiting-user", Some("tok-1")),
     ];
-    unproved(witness(&beside), "not the one the fleet read named");
-    // A foreign row newer than the seat's own working row cannot end it.
+    assert_eq!(newest(&beside), Some(90));
+    // A foreign row newer than the seat's own cannot end it.
     let newer_foreign = [
         routed_declaration(100, "alpha", Some(TARGET), "waiting-user", Some("tok-1")),
         routed_declaration(150, "alpha", Some(ORCH), "working", Some("tok-0")),
     ];
-    assert_eq!(witness(&newer_foreign), launch);
+    assert_eq!(newest(&newer_foreign), Some(100));
     // A row pinned to this id before a rename is still the seat's.
     let renamed = [routed_declaration(
         100,
@@ -1163,7 +1125,7 @@ fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
         "waiting-user",
         Some("tok-1"),
     )];
-    assert_eq!(witness(&renamed), launch);
+    assert_eq!(newest(&renamed), Some(100));
     // A row with no session id is judged by the name alone.
     let legacy = [routed_declaration(
         100,
@@ -1172,7 +1134,7 @@ fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
         "waiting-user",
         Some("tok-1"),
     )];
-    assert_eq!(witness(&legacy), launch);
+    assert_eq!(newest(&legacy), Some(100));
     let other = [routed_declaration(
         100,
         "other",
@@ -1180,7 +1142,126 @@ fn a_declaration_is_the_seats_by_its_session_id_and_never_by_its_name_alone() {
         "waiting-user",
         Some("tok-1"),
     )];
-    unproved(witness(&other), "no declaration of the seat");
+    assert_eq!(newest(&other), None);
+}
+
+const ALPHA_META: &str = "session=alpha\nsession_id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\nseat.main=lead\nagent_bin.main=gemini\nlaunch_id.main=tok-1\nlaunch_time.main=90\n";
+
+/// The waits of session `alpha`, found from the entry the fleet read builds
+/// out of `events`: the whole route from the journal to the seats.
+fn waits_in(events: Vec<Event>) -> Vec<Wait> {
+    let snapshot = meta_snapshot(
+        ALPHA_META,
+        Some(SessionRead {
+            events,
+            last_active: None,
+            pending: Vec::new(),
+            cursor: Cursor::default(),
+            skipped: Vec::new(),
+        }),
+    );
+    let entry = crate::session::entry_from(
+        &snapshot,
+        "alpha",
+        &crate::session::SessionRuntime::new(Status::Running),
+        at(200),
+        3600,
+    );
+    assert!(entry.agent_state_is_exact(), "the fixture reads whole");
+    waits_of(&entry, Some(&snapshot), at(200))
+}
+
+#[test]
+fn the_waits_come_from_the_roster_by_the_stable_key_and_not_from_the_name_only_digest() {
+    let launch = Witness::Launch("tok-1".to_owned());
+    let own_wait = || routed_declaration(100, "alpha", Some(TARGET), "waiting-user", Some("tok-1"));
+    let unproved = |wait: &Wait, phrase: &str| {
+        let Witness::Unproved(why) = &wait.witness else {
+            panic!("expected an unproved wait, got {:?}", wait.witness);
+        };
+        assert!(why.contains(phrase), "{why}");
+    };
+
+    // The seat's own row waits, and its launch name travels with it.
+    let waits = waits_in(vec![own_wait()]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        (waits[0].since, &waits[0].witness),
+        (Some(at(100)), &launch)
+    );
+    assert_eq!(waits[0].launch_id.as_deref(), Some("tok-1"));
+    assert_eq!(waits[0].launch_epoch, Some(90));
+
+    // A foreign working row of the same name is newer, and the name-only
+    // digest reads it: the seat's own row still waits.
+    let waits = waits_in(vec![
+        own_wait(),
+        routed_declaration(150, "alpha", Some(ORCH), "working", Some("tok-0")),
+    ]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        (waits[0].since, &waits[0].witness),
+        (Some(at(100)), &launch)
+    );
+
+    // A row the seat made under its name before a rename waits, though the
+    // digest reads the new name only and shows nothing.
+    let waits = waits_in(vec![routed_declaration(
+        100,
+        "alpha-old",
+        Some(TARGET),
+        "waiting-user",
+        Some("tok-1"),
+    )]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        (waits[0].since, &waits[0].witness),
+        (Some(at(100)), &launch)
+    );
+
+    // A foreign waiting row of the same name looks like a wait to the digest
+    // and is no declaration of this seat: coverage, never a row.
+    let waits = waits_in(vec![routed_declaration(
+        100,
+        "alpha",
+        Some(ORCH),
+        "waiting-user",
+        Some("tok-1"),
+    )]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    unproved(&waits[0], "no declaration of the seat under its session id");
+    let report = evaluate(None, &[with_waits(waits)], Vec::new(), at(200));
+    assert!(report.unboarded.is_empty());
+    assert_eq!(report.unresolved.len(), 1);
+    assert!(
+        report.unresolved[0].reason.starts_with(
+            "waiting-user, but the journal holds no declaration of the seat under its session id"
+        ),
+        "{}",
+        report.unresolved[0].reason
+    );
+
+    // The seat's own newer working row ends its own wait, whatever a foreign
+    // waiting row says after it.
+    let waits = waits_in(vec![
+        own_wait(),
+        routed_declaration(120, "alpha", Some(TARGET), "working", Some("tok-1")),
+        routed_declaration(150, "alpha", Some(ORCH), "waiting-user", Some("tok-1")),
+    ]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    unproved(&waits[0], "is working, not waiting-user");
+
+    // An unstamped row keeps the baseline rule: a keyless declaration of the
+    // seat waits and names no launch.
+    let waits = waits_in(vec![declaration(100, "lead", "waiting-user", None)]);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        (waits[0].since, &waits[0].witness),
+        (Some(at(100)), &Witness::Absent)
+    );
+
+    // A seat that only works waits for nobody.
+    assert!(waits_in(vec![declaration(100, "lead", "working", None)]).is_empty());
 }
 
 #[test]
