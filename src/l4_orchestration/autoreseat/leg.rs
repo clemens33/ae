@@ -2238,7 +2238,13 @@ pub(crate) fn plan_paired(
     let waits = start.waits(key, settings.grace_secs);
     let mut pane = sight.pane;
     pane.frame = start.frame(key, pane.frame);
-    let decision = super::decide_with_waits(found.as_ref(), waits, &pane, now.epoch());
+    let mut decision = super::decide_with_waits(found.as_ref(), waits, &pane, now.epoch());
+    // A hold of the orchestrator's own rules delays the next admission only.
+    if let (Some(found), super::Decision::Attempt) = (&found, decision) {
+        if let Some(due_at) = found.cooling_until(now.epoch()) {
+            decision = super::Decision::Wait { due_at };
+        }
+    }
     let (Some(found), super::Decision::Attempt) = (found, decision) else {
         return Plan::Decline(format!("not due ({decision:?})"));
     };

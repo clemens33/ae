@@ -282,6 +282,9 @@ pub(super) fn auto_acts_with(
                     });
                 }
             }
+            // A hold of the orchestrator's own rules delays the next admission
+            // only; the verdict above is told whatever the cooldown says.
+            Decision::Attempt if found.cooling_until(now).is_some() => {}
             Decision::Attempt => {
                 if due.is_none_or(|(at, first)| (key, &seat.slot) < (at, &first.slot)) {
                     due = Some((key, seat));

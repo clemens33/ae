@@ -3229,6 +3229,10 @@ mod pairguard_spec;
 #[path = "watchdog_daemon/return_tests.rs"]
 mod return_tests;
 
+#[cfg(test)]
+#[path = "watchdog_daemon/orchcool_tests.rs"]
+mod orchcool_tests;
+
 /// The rests between iterations, on a private server: a stepped rest waits
 /// for its step, an unstepped retry is one plain sleep.
 #[cfg(test)]

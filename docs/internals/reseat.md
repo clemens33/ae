@@ -1046,9 +1046,12 @@ the orchestrator. It only narrows `auto_reseat = all`.
   no-move or a request in flight closes the attempt as a hold
   (`orchestrator-stays`), which gives an OPEN attempt back however often it comes
   (the trigger's hold before admission opens none and refunds none) and makes the
-  key wait `POLICY_HOLD_WAIT_SECS` before it tries again, so a policy that clears
-  is followed by the move and no number of holds strands the episode. The
-  daemon's next verdict tells the owner once with the full body. A seat that
+  key wait `POLICY_HOLD_WAIT_SECS` before its next ADMISSION, so a policy that
+  clears is followed by the move and no number of holds strands the episode. The
+  wait is no part of the due time: the daemon's next verdict tells the owner once
+  with the full body, whatever the key's cooldown says. The orchestrator gate's
+  own refusal of a request that began after the early check is such a hold too
+  (`orchestrator-stays`, its diagnostic kept). A seat that
   records no launch or conversation is such a no-move for the verdict too: the
   stage guard refuses it whatever the policy says, and the detached leg keeps its
   own diagnostic. A standing observed choice is a reason too: the act that tells

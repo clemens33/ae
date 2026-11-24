@@ -1698,6 +1698,17 @@ impl Episode {
         self.held && self.last_hold.as_deref() == Some(summary)
     }
 
+    /// The epoch before which a hold of the orchestrator's own rules keeps this
+    /// key from another ADMISSION, while `now` is still before it. It delays the
+    /// attempt only: the due time, the verdict and the owner's notice never wait
+    /// on it.
+    #[must_use]
+    pub fn cooling_until(&self, now: i64) -> Option<i64> {
+        self.policy_hold_at
+            .map(|at| at.epoch().saturating_add(POLICY_HOLD_WAIT_SECS))
+            .filter(|until| now < *until)
+    }
+
     /// Whether the last round of this limit episode was refused or failed:
     /// the path is over for good, and the seat is owed one word of it.
     #[must_use]
@@ -2390,10 +2401,6 @@ pub fn decide_with_waits(
     let input_wait = i64::try_from(waits.input).unwrap_or(i64::MAX);
     let key = episode.key.epoch();
     let due_at = key.saturating_add(quota_wait);
-    // A hold of the orchestrator's own rules waits before its key tries again.
-    let due_at = episode.policy_hold_at.map_or(due_at, |at| {
-        due_at.max(at.epoch().saturating_add(POLICY_HOLD_WAIT_SECS))
-    });
     if now < due_at {
         return Decision::Wait { due_at };
     }

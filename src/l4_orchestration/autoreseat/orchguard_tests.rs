@@ -332,7 +332,7 @@ mod holds {
     }
 
     #[test]
-    fn a_policy_hold_makes_its_key_wait_and_then_it_tries_again() {
+    fn a_policy_hold_delays_the_admission_only() {
         let clear = Pane {
             frame: Frame::Clear,
             human_prompt: false,
@@ -342,17 +342,22 @@ mod holds {
         let state = spent(&[Some(stays.as_str()); 5]);
         let held_at = state.policy_hold_at.expect("the hold is dated").epoch();
         let until = held_at + POLICY_HOLD_WAIT_SECS;
+        assert_eq!(state.cooling_until(until - 1), Some(until));
+        assert_eq!(state.cooling_until(until), None, "the key tries again");
+        // The due time and the verdict never wait on it: the decision is still an
+        // attempt while the key cools, so the daemon can tell its notice.
         assert_eq!(
             decide(Some(&state), 0, &clear, until - 1),
-            Decision::Wait { due_at: until },
-            "the key waits after a policy hold"
+            Decision::Attempt,
+            "the cooldown is no part of the due time"
         );
         assert_eq!(
             decide(Some(&state), 0, &clear, until),
             Decision::Attempt,
-            "and the next attempt is not used up however many holds came before"
+            "and no number of holds uses the attempts up"
         );
         let busy = spent(&[Some("busy: held: a request is in flight"); 2]);
+        assert_eq!(busy.cooling_until(busy.key.epoch()), None);
         assert_eq!(
             decide(Some(&busy), 0, &clear, busy.key.epoch() + 100_000),
             Decision::Rest,
