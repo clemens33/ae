@@ -1176,3 +1176,10 @@ mod web_walk_browser_spec;
 
 #[path = "web_guard_browser.rs"]
 mod web_guard_browser;
+
+#[allow(
+    clippy::expect_used,
+    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+)]
+#[path = "web_compose_browser_spec.rs"]
+mod web_compose_browser_spec;
