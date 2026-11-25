@@ -1067,6 +1067,33 @@ mod tests {
         include_str!("../../../tests/fixtures/orchestrator/orchexec-v2026.11.98.config");
 
     #[test]
+    fn an_edited_older_charter_repair_names_its_first_missing_marker() {
+        for (tag, fixture, missing) in [
+            (
+                "repair-v2",
+                include_str!("../../../tests/fixtures/orchestrator/v2026.11.101.config"),
+                "never end a session whose seats hold or wait for a build or test lane claim",
+            ),
+            (
+                "repair-v3",
+                include_str!("../../../tests/fixtures/orchestrator/v2026.11.103.config"),
+                "queues a move of this seat to another model or account of the same tool",
+            ),
+        ] {
+            let (body, tail) = fixture
+                .rsplit_once("\n\"\"\"")
+                .expect("the template's prompt block");
+            let edited = format!("{body}\nAn owner note.\n\"\"\"{tail}");
+            let scratch = root_with(tag, Some(edited.as_bytes()));
+            let line = reconcile(&scratch.0, "9.9").expect("a repair line for an edited prompt");
+            assert!(
+                line.contains(&format!("lacks the charter sentence \"{missing}\"")),
+                "{tag}: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn an_owner_prompt_with_the_owner_words_but_no_charter_is_left_alone_and_named() {
         let (body, tail) = BEFORE_CHARTER
             .rsplit_once("\n\"\"\"")
