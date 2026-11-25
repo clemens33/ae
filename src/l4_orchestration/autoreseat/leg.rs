@@ -3884,10 +3884,11 @@ mod tests {
             Skip::Blocked,
         ));
         let kept = bounded(&no_candidate(&skipped));
+        // The class prefix is written out here, independent of the producer.
         assert!(
             kept.starts_with(&format!(
-                "{}mus [client-muse since 2026-09-08T09:10:00Z: {reason}]; ",
-                blocked_hold_head()
+                "no-candidate: refused: vendor block on \
+                 mus [client-muse since 2026-09-08T09:10:00Z: {reason}]; "
             )),
             "the first block witness leads, whole, after 40 earlier candidates: {kept}"
         );
