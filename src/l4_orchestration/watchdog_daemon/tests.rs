@@ -388,6 +388,51 @@ fn a_dead_seat_showing_a_modal_is_reported_dead_and_not_named() {
     );
 }
 
+/// The orchestrator's queued reseat is claimed only at a live idle frame: a
+/// dead pane books no turn even when its last frame still reads idle.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+              may reach"
+)]
+fn a_dead_pane_books_no_self_reseat_turn_even_on_an_idle_frame() {
+    let dir = std::env::temp_dir().join(format!("aeselfreseat.{}.dead", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+    assert!(std::fs::write(dir.join(crate::reseat::request::FILE), b"queued").is_ok());
+    let idle = Observation {
+        harness: HarnessObservation {
+            frame: crate::harness_state::HarnessState::Idle,
+            ..seen().harness
+        },
+        ..seen()
+    };
+    let base = account(&PaneState::default(), &idle, &Knobs::default());
+    let claims = |seen: &Observation| {
+        let mut booked = base.clone();
+        booked.effects.clear();
+        super::self_reseat::book(
+            &mut booked,
+            seen,
+            &[],
+            (&dir, ("work", "orchestrator")),
+            (false, false),
+        );
+        booked
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SelfReseatClaim))
+    };
+    assert!(claims(&idle), "a live idle seat claims its request");
+    let dead = Observation {
+        is_dead: true,
+        ..idle.clone()
+    };
+    assert!(!claims(&dead), "a dead pane books nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The detector path NEVER sends a key — invariant 3, and the reason this
 /// feature is safe to run against a modal at all. The types already say so
 /// (none of these takes a server or a pane), so this reads the SOURCE: the

@@ -1625,9 +1625,20 @@ pub(crate) fn run(
     )
 }
 
+/// Who may withdraw the orchestrator's queued request from outside its seat:
+/// a shell outside ae, or a plain shell inside tmux, both of which carry no
+/// `@ae_agent`. Any other seat is refused; `Some` is that refusal.
+fn owner_cancel_refusal(caller: &Caller) -> Option<&'static str> {
+    (!caller.display.is_empty()).then_some(
+        "Error: only the orchestrator seat itself, or a shell outside ae, withdraws a \
+         queued reseat. Nothing was changed.",
+    )
+}
+
 /// `ae reseat <session> <agent> --cancel` from outside the seat: a shell
 /// outside ae (the owner) may withdraw the orchestrator's queued request, and
-/// no other seat may. The proved seat's own withdrawal never reaches here.
+/// no other seat may ([`owner_cancel_refusal`]). The proved seat's own
+/// withdrawal never reaches here.
 fn cancel_as_owner(
     root: &Path,
     tail: &[String],
@@ -1642,19 +1653,13 @@ fn cancel_as_owner(
             return Ok(EXIT_USAGE);
         }
     };
-    match caller_of(session) {
-        Err(line) => {
-            writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
-        }
-        Ok(caller) if !caller.display.is_empty() => {
-            writeln!(
-                err,
-                "Error: only the orchestrator seat itself, or a shell outside ae, withdraws a                  queued reseat. Nothing was changed."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        Ok(_) => {}
+    let refusal = match caller_of(session) {
+        Err(line) => Some(line),
+        Ok(caller) => owner_cancel_refusal(&caller).map(str::to_owned),
+    };
+    if let Some(line) = refusal {
+        writeln!(err, "{line}")?;
+        return Ok(EXIT_FAILED);
     }
     let sessions = crate::inventory::Roots::under(root).sessions().to_owned();
     if !crate::session_launch::name::is_session_name(session) {
@@ -3631,6 +3636,10 @@ fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str, mentions:
 mod leadfloor2_locked_source_spec;
 
 #[cfg(test)]
+#[path = "reseat/requested_guard_spec.rs"]
+mod requested_guard_spec;
+
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 
@@ -3650,6 +3659,92 @@ mod tests {
             None,
             "a bare move reads the seat as it always did"
         );
+    }
+
+    #[test]
+    fn only_a_caller_with_no_seat_withdraws_the_orchestrators_request_from_outside() {
+        let caller = |pane: Option<&str>, display: &str| super::Caller {
+            pane: pane.map(str::to_owned),
+            display: display.to_owned(),
+        };
+        assert_eq!(
+            super::owner_cancel_refusal(&caller(None, "")),
+            None,
+            "a shell outside ae is the owner"
+        );
+        assert_eq!(
+            super::owner_cancel_refusal(&caller(Some("%7"), "")),
+            None,
+            "a plain shell inside tmux carries no seat"
+        );
+        assert_eq!(
+            super::owner_cancel_refusal(&caller(Some("%9"), "lead")),
+            Some(
+                "Error: only the orchestrator seat itself, or a shell outside ae, withdraws a \
+                 queued reseat. Nothing was changed."
+            ),
+            "another seat is refused, in one readable sentence"
+        );
+    }
+
+    /// A scratch directory of this test's own, under the system temp dir.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aereseat.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        dir
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture writes its own scratch config; the boundary is about what PRODUCT \
+                  code may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn a_requested_move_stays_on_one_portable_adapter_whatever_travels_would_say() {
+        let dir = scratch("portable");
+        let config = dir.join("config");
+        assert!(
+            std::fs::write(
+                &config,
+                "[profiles]\nclaude-b = \"claude --model sonnet\"\n\
+                 codex-b = \"codex --model gpt-b\"\n",
+            )
+            .is_ok(),
+            "the session's recorded global config"
+        );
+        let meta = |bin: &str| {
+            format!(
+                "config={}\nseat.main=orchestrator\nagent_bin.main={bin}\n",
+                config.display()
+            )
+        };
+        let rule = |bin: &str, to: &str| {
+            super::portable_same_adapter(&dir, meta(bin).as_bytes(), "main", to)
+        };
+        assert_eq!(
+            rule("claude", "claude-b"),
+            Ok(()),
+            "claude carries portable files"
+        );
+        // A keep on codex's own store would pass `travels`; this rule refuses it.
+        let codex = rule("codex", "codex-b").err().unwrap_or_default();
+        assert!(
+            codex
+                .contains("the adapter of 'codex' does not carry a conversation as portable files"),
+            "the same nonportable adapter: {codex}"
+        );
+        let cross = rule("claude", "codex-b").err().unwrap_or_default();
+        assert!(
+            cross.contains("runs binary 'codex', not the seat's recorded 'claude'"),
+            "another adapter: {cross}"
+        );
+        let unrecorded = rule("", "claude-b").err().unwrap_or_default();
+        assert!(
+            unrecorded.contains("runs binary 'claude', not the seat's recorded ''"),
+            "a seat that records no binary: {unrecorded}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn argv(words: &[&str]) -> Vec<String> {

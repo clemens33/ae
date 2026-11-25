@@ -1186,10 +1186,17 @@ fn unsettled(
     let grace = i64::try_from(crate::autoreseat::settings(config.as_deref()).grace_secs)
         .unwrap_or(i64::MAX);
     let clients = crate::transport::observe_clients(server);
-    let typed = crate::watchdog_daemon::viewing_input(clients.as_deref(), pane)
+    let input = crate::watchdog_daemon::viewing_input(clients.as_deref(), pane);
+    typed_within(input, now, grace).then_some("a human typed in the pane within the input grace")
+}
+
+/// Whether input at `input` still holds the seat at `now`: until `grace`
+/// seconds after it, that second itself excluded, as the automatic leg's
+/// grace counts.
+fn typed_within(input: Option<u64>, now: Timestamp, grace: i64) -> bool {
+    input
         .and_then(|at| i64::try_from(at).ok())
-        .is_some_and(|at| now.epoch() < at.saturating_add(grace));
-    typed.then_some("a human typed in the pane within the input grace")
+        .is_some_and(|at| now.epoch() < at.saturating_add(grace))
 }
 
 /// The argv of the leg, proven before anything is read.
@@ -1540,6 +1547,309 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+                  may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn removing_a_request_that_is_already_gone_is_done_and_any_other_failure_is_not() {
+        let dir = std::env::temp_dir().join(format!("aerequest.{}.remove", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            std::fs::create_dir_all(dir.join("held")).is_ok(),
+            "a scratch dir"
+        );
+        assert!(std::fs::write(dir.join(FILE), b"x").is_ok(), "a request");
+        assert!(remove(&dir, FILE).is_ok(), "a present request");
+        assert!(
+            std::fs::symlink_metadata(dir.join(FILE)).is_err(),
+            "is gone"
+        );
+        assert!(remove(&dir, FILE).is_ok(), "an absent one is already gone");
+        assert!(
+            remove(&dir, "held").is_err(),
+            "a directory in its place is a failure, never done"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A damaged file's refusal is journaled under the digest of its bytes, or
+    /// of its name and reason when there are none: the same damage is one
+    /// reference, other damage another.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+                  may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn a_damaged_request_is_referenced_by_the_digest_of_its_bytes_or_its_reason() {
+        let dir = std::env::temp_dir().join(format!("aerequest.{}.damaged", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        assert!(std::fs::write(dir.join(FILE), b"garbage").is_ok());
+        let digest = crate::install::sha256_hex(b"garbage");
+        let bytes = damaged_reference(&dir, FILE, "one reason");
+        assert_eq!(
+            bytes,
+            format!("damaged-{}", digest.get(..32).unwrap_or_default())
+        );
+        assert_eq!(damaged_reference(&dir, FILE, "another reason"), bytes);
+        assert!(std::fs::write(dir.join(FILE), b"other garbage").is_ok());
+        assert_ne!(damaged_reference(&dir, FILE, "one reason"), bytes);
+        let absent = damaged_reference(&dir, "absent", "why");
+        let named = crate::install::sha256_hex(b"absent\nwhy");
+        assert_eq!(
+            absent,
+            format!("damaged-{}", named.get(..32).unwrap_or_default())
+        );
+        assert_ne!(damaged_reference(&dir, "absent", "other"), absent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The watchdog's pass looks at the seat whenever either request file is
+    /// there: a damaged pending request with no claimed one beside it is
+    /// refused on the journal and removed, and a seat with neither is left as
+    /// it is, its journal untouched.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+                  may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn the_sweep_refuses_a_lone_damaged_request_and_leaves_an_empty_seat_alone() {
+        let root = std::env::temp_dir().join(format!("aerequest.{}.sweep", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("work");
+        assert!(
+            std::fs::create_dir_all(&dir).is_ok(),
+            "a scratch session dir"
+        );
+        let meta = crate::store::open(&dir).meta_path();
+        assert!(std::fs::write(meta, "seat.main=orchestrator\n").is_ok());
+        let now = Timestamp::from_epoch(1_800_000_000);
+        let mut err = Vec::new();
+        assert!(sweep(&dir, "work", now, &mut err).is_ok());
+        assert_eq!(
+            ledger(&dir).map(|events| events.len()),
+            Some(0),
+            "untouched"
+        );
+        assert!(std::fs::write(dir.join(FILE), b"garbage").is_ok());
+        assert!(sweep(&dir, "work", now, &mut err).is_ok());
+        assert!(
+            std::fs::symlink_metadata(dir.join(FILE)).is_err(),
+            "removed: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let events = ledger(&dir).unwrap_or_default();
+        let seat = ("work", "orchestrator");
+        assert!(
+            events.iter().any(|event| is(event, seat, REFUSED_ACTION)
+                && event
+                    .reference
+                    .as_deref()
+                    .is_some_and(|reference| reference.starts_with("damaged-"))),
+            "{events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A claimed request whose attempt is journaled is booked failed only once
+    /// that attempt has stood open for [`OVERDUE_SECS`], and its file goes with
+    /// the record; before that the leg still reports and nothing changes.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+                  may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn an_open_attempt_is_failed_from_its_own_open_time_once_overdue() {
+        let dir = std::env::temp_dir().join(format!("aerequest.{}.overdue", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        assert!(std::fs::write(dir.join(CLAIMED), b"claimed").is_ok());
+        let meta = crate::store::open(&dir).meta_path();
+        let records = format!("profile.main=claude-b\nlaunch_id.main={LAUNCH}\n");
+        assert!(std::fs::write(meta, &records).is_ok());
+        let seat = ("work", "orchestrator");
+        let opened = Timestamp::from_epoch(1_800_000_000);
+        assert!(watchdog_record(
+            &dir,
+            seat,
+            (ATTEMPT_ACTION, ID, "attempt"),
+            opened
+        ));
+        let events = ledger(&dir).unwrap_or_default();
+        let settle = |now: i64| {
+            let mut err = Vec::new();
+            let now = Timestamp::from_epoch(opened.epoch().saturating_add(now));
+            assert!(
+                recover(
+                    &dir,
+                    (seat, b"".as_slice()),
+                    &events,
+                    Found::Ready(request()),
+                    now,
+                    &mut err
+                )
+                .is_ok()
+            );
+        };
+        settle(OVERDUE_SECS - 1);
+        assert!(
+            std::fs::symlink_metadata(dir.join(CLAIMED)).is_ok(),
+            "not yet overdue"
+        );
+        settle(OVERDUE_SECS);
+        assert!(
+            std::fs::symlink_metadata(dir.join(CLAIMED)).is_err(),
+            "overdue: removed"
+        );
+        let failed = ledger(&dir).unwrap_or_default();
+        assert!(
+            failed
+                .iter()
+                .any(|event| event.reference.as_deref() == Some(ID)
+                    && is(event, seat, FAILED_ACTION)
+                    && event
+                        .summary
+                        .as_deref()
+                        .is_some_and(|summary| summary.ends_with(&format!(
+                            "ae now records profile 'claude-b' (launch {LAUNCH})"
+                        )))),
+            "{failed:?}"
+        );
+        assert_eq!(
+            records_now(records.as_bytes()),
+            format!("profile 'claude-b' (launch {LAUNCH})")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Input holds the seat for the grace after it, the closing second
+    /// excluded; no input, or input past the clock's range, holds nothing.
+    #[test]
+    fn input_holds_the_seat_until_the_grace_after_it_ends() {
+        let at = 1_800_000_000_u64;
+        let now = |epoch: u64| Timestamp::from_epoch(i64::try_from(epoch).unwrap_or(i64::MAX));
+        assert!(typed_within(Some(at), now(at), 30));
+        assert!(typed_within(Some(at), now(at + 29), 30));
+        assert!(
+            !typed_within(Some(at), now(at + 30), 30),
+            "the grace has ended"
+        );
+        assert!(!typed_within(None, now(at), 30));
+        assert!(!typed_within(Some(u64::MAX), now(at), 30));
+    }
+
+    /// A requested move's continuation tells the seat its own request ran, and
+    /// its record names the fate, apart from an automatic move's.
+    #[test]
+    fn a_requested_moves_continuation_says_the_request_ran_and_names_its_fate() {
+        use crate::autoreseat::Fate;
+        let ran = format!(
+            "your requested reseat ran: you moved to the profile you asked for, {}",
+            crate::autoreseat::leg::CONTINUE
+        );
+        for (fate, word) in [(Fate::Carried, "carried"), (Fate::Kept, "kept")] {
+            let (body, summary) = continuation(fate);
+            assert_eq!(body, ran);
+            assert_eq!(
+                summary,
+                format!("continuation turn after a requested {word} reseat")
+            );
+            assert_ne!(summary, crate::autoreseat::leg::continuation(fate).1);
+        }
+    }
+
+    /// The seat may name only itself: its own session and its own agent, both.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture owns its scratch dir; the boundary is about what PRODUCT code \
+                  may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn the_seat_names_only_itself_by_both_its_session_and_its_agent() {
+        let dir = std::env::temp_dir().join(format!("aerequest.{}.own", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        let meta = crate::store::open(&dir).meta_path();
+        assert!(std::fs::write(meta, "seat.main=orchestrator\n").is_ok());
+        let own = |session: &str| session == "work";
+        let seat = Seat {
+            session: "work",
+            dir: &dir,
+            uuid: UUID,
+            slot: MAIN_SLOT,
+            own: &own,
+        };
+        assert_eq!(not_own(&seat, "work", "orchestrator"), None);
+        let refusal = Some(only_itself("work", "orchestrator"));
+        assert_eq!(not_own(&seat, "work", "lead"), refusal, "another agent");
+        assert_eq!(
+            not_own(&seat, "other", "orchestrator"),
+            refusal,
+            "another session"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bad argv from the seat is refused before anything is read: the
+    /// parse error, then the usage, and the usage alone exactly once.
+    #[test]
+    fn a_bad_queue_argv_prints_its_error_and_the_usage_once() {
+        let own = |_: &str| true;
+        let seat = Seat {
+            session: "work",
+            dir: Path::new("/nonexistent/orchself"),
+            uuid: UUID,
+            slot: MAIN_SLOT,
+            own: &own,
+        };
+        let run = |words: &[&str]| {
+            let tail: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+            let mut err = Vec::new();
+            let verdict = checked(&seat, &tail, Timestamp::from_epoch(1_800_000_000), &mut err)
+                .ok()
+                .and_then(Result::err);
+            (verdict, String::from_utf8_lossy(&err).into_owned())
+        };
+        let usage = super::super::RESEAT_USAGE;
+        assert_eq!(run(&[]), (Some(EXIT_USAGE), format!("{usage}\n")));
+        assert_eq!(
+            run(&["work", "orchestrator"]),
+            (
+                Some(EXIT_USAGE),
+                format!("Error: reseat needs --using <profile>.\n{usage}\n")
+            )
+        );
+    }
+
+    /// A record's summary is one clean line, kept whole up to the cap and cut
+    /// with an ellipsis past it, so the cut line is exactly the cap long.
+    #[test]
+    fn a_summary_is_one_line_kept_whole_to_the_cap_and_cut_past_it() {
+        assert_eq!(bounded(" moved\nto b\t"), "moved to b");
+        let at_cap = "x".repeat(SUMMARY_MAX);
+        assert_eq!(bounded(&at_cap), at_cap, "the cap itself is kept whole");
+        let past = bounded(&"y".repeat(SUMMARY_MAX + 1));
+        assert_eq!(past.chars().count(), SUMMARY_MAX, "{past}");
+        assert_eq!(past, format!("{}…", "y".repeat(SUMMARY_MAX - 1)));
+    }
+
+    /// The line grammar on its own, apart from each field's filter: one space
+    /// after the key, then one word with no whitespace and no control byte.
+    #[test]
+    fn a_value_is_one_nonempty_word_after_one_space() {
+        assert_eq!(super::value("to fake-b", "to"), Some("fake-b"));
+        assert_eq!(super::value("to ", "to"), None, "an empty value");
+        assert_eq!(super::value("to a b", "to"), None, "a space inside");
+        assert_eq!(super::value("to a\u{7}", "to"), None, "a control byte");
+        assert_eq!(super::value("to  a", "to"), None, "two spaces");
+        assert_eq!(super::value("tox a", "to"), None, "another key");
+    }
+
+    #[test]
     fn cancel_takes_two_names_and_no_other_flag() {
         let words = |list: &[&str]| list.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
         assert_eq!(
@@ -1550,6 +1860,8 @@ mod tests {
             vec!["s", "--cancel"],
             vec!["s", "a", "b", "--cancel"],
             vec!["s", "a", "--cancel", "--using"],
+            vec!["-s", "a", "--cancel"],
+            vec!["s", "-a", "--cancel"],
         ] {
             assert!(cancel_names(&words(&bad)).is_err(), "{bad:?}");
         }
