@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.119] - 2026-11-25
+- Stop a signed-out ae web tab from polling and hold back repeat fresh links
+- Name the fleet's work in the orchestrator header and retire the app's board column
+
 ## [v2026.11.118] - 2026-11-25
 - Add the frozen S3a acceptance specs for decision answers and new topics
 - Call the S3a compose cases from the live smoke and allow the frozen specs their lints
