@@ -20,7 +20,7 @@ const THROTTLE: &str = "sys/devices/system/cpu/cpu0/thermal_throttle";
 
 /// A sysfs tree as a Linux host lays it out: `class/hwmon/hwmonN` are symlinks into `devices`, a
 /// decoy hwmon named `acpitz` reads 99 C, and the real `coretemp` one reads `temp` millidegrees.
-fn fake_sysfs(scratch: &Path, temp: &str, count: &str) -> PathBuf {
+pub(super) fn fake_sysfs(scratch: &Path, temp: &str, count: &str) -> PathBuf {
     let root = scratch.join("sysroot");
     let decoy = root.join("sys/devices/platform/acpitz/hwmon/hwmon0");
     fs::create_dir_all(&decoy).expect("the decoy hwmon directory");

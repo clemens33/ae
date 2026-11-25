@@ -42,6 +42,7 @@ mod receipt_spec;
 mod affected;
 mod bashfloor;
 mod gatereap_lost;
+mod lanequeue_spec;
 mod lanesafe_spec;
 mod lanetemp_spec;
 mod macos_subset;
@@ -10326,8 +10327,8 @@ fn the_lane_lock_keeps_the_hand_protocol_and_reports_a_stale_lock_without_touchi
     assert_eq!(code, 0, "{out}{err}");
     assert_eq!(
         read(&locks.join("next")),
-        "gamma\n",
-        "the queue file is the lead's"
+        "",
+        "a successful claim clears next when it names that claimant"
     );
     assert_eq!(lane_lock(&scratch, &main, &["release", "gamma"]).0, 0);
     assert!(std::fs::write(locks.join("next"), "").is_ok());
