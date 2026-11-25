@@ -3116,7 +3116,7 @@ impl Cycle<'_> {
             carry.refresh_owed = false;
             self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
             self.tell_seats(&by_slot, &events, now);
-            self.tell_blocks(&by_slot, &events, drawn_block, now);
+            self.tell_blocks((&by_slot, &observed), &events, drawn_block, now);
         }
         self.auto_note(&mut carry.auto_noted, err)?;
         self.trust_note(&mut carry.trust_noted, err)?;

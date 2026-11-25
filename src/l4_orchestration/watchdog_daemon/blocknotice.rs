@@ -7,9 +7,10 @@
 //! running watchdog hears it on its next start, and its spawn and reseat
 //! refusals name the block meanwhile.
 //!
-//! The receipt is the delivered `send` event itself ([`NOTICE_ACTION`], ref
-//! `<identity>#<slot>`), so a later cycle and a restart find it and never
-//! repeat the notice; a clear and a reblock make a new identity. Resume
+//! The receipt is the watchdog's own journal event ([`NOTICE_ACTION`], ref
+//! `<identity>#<slot>`), written once the leg delivered or submitted the
+//! notice, so a later cycle and a restart find it and never repeat it; a
+//! clear and a reblock make a new identity. Resume
 //! retention keeps a receipt whose block still stands
 //! (`session_launch::trim_events`). The remaining window: a crash after the
 //! pane received the text and before the helper's event landed repeats the
@@ -31,7 +32,7 @@ impl Cycle<'_> {
     /// told on this cycle, not the next ([`notice_source`]).
     pub(super) fn tell_blocks(
         &self,
-        verdicts: &[(String, SeatVerdict)],
+        (verdicts, observed): (&[(String, SeatVerdict)], &[crate::tmux::WatchPane]),
         snapshot: &[Event],
         drawn: bool,
         now: i64,
@@ -71,7 +72,7 @@ impl Cycle<'_> {
                 });
                 let reference = format!("{identity}#{}", entry.slot);
                 if live && !noticed(events, &reference) {
-                    self.claim_and_tell(entry, root, &identity, &reference);
+                    self.claim_and_tell((entry, observed), root, &identity, &reference);
                 }
             }
         }
@@ -83,11 +84,11 @@ impl Cycle<'_> {
     /// sends nothing, and a block cleared or replaced while this one waited is
     /// told by its own identity or not at all. A journal that cannot be read
     /// or classified defers the send: nothing then proves no receipt exists.
-    /// The send helper never takes this lock, so holding it across the delivery
+    /// The delivery never takes this lock, so holding it across the delivery
     /// cannot deadlock it. A lock that cannot be had sends nothing this cycle.
     fn claim_and_tell(
         &self,
-        entry: &crate::meta::RosterEntry,
+        (entry, observed): (&crate::meta::RosterEntry, &[crate::tmux::WatchPane]),
         root: &std::path::Path,
         identity: &str,
         reference: &str,
@@ -113,17 +114,77 @@ impl Cycle<'_> {
         let Some(record) = crate::vendorblock::standing_identity(root, identity, now) else {
             return;
         };
-        let summary = format!("vendor block notice: {}", record.stem());
-        let _ = self.deliver(
-            &entry.name,
-            &record.notice(),
-            NOTICE_ACTION,
-            &summary,
-            Some(reference),
-            Some(&entry.slot),
+        self.tell_lead((entry, observed), &record, reference);
+    }
+
+    /// The notice itself, as ae's own leg to the lead seat: the pane this
+    /// cycle observed in the seat's slot, admitted in process against the
+    /// launch this cycle's snapshot read (a legacy launch is the empty token),
+    /// the way the charter update and the session notice reach a seat. The
+    /// public send would refuse the orchestrator's main seat, whose initiation
+    /// it cannot prove. A delivery, or a submit that may have reached the pane
+    /// unconfirmed, journals the receipt; anything else tries again later.
+    fn tell_lead(
+        &self,
+        (entry, observed): (&crate::meta::RosterEntry, &[crate::tmux::WatchPane]),
+        record: &crate::vendorblock::Record,
+        reference: &str,
+    ) {
+        let mut panes = observed
+            .iter()
+            .filter(|pane| pane.slot.as_deref() == Some(entry.slot.as_str()));
+        let (Some(pane), None) = (panes.next(), panes.next()) else {
+            return;
+        };
+        let launch = match self.launch_ids.iter().find(|(slot, _)| *slot == entry.slot) {
+            None => "",
+            Some((_, super::SeatLaunch::Id(id))) => id.as_str(),
+            Some((_, super::SeatLaunch::Unproven(_))) => return,
+        };
+        let text = record.notice();
+        let request = crate::deliver::Request {
+            dir: self.meta_dir,
+            server: self.server,
+            pane: &pane.pane_id,
+            logged_target: &entry.name,
+            target_session: self.session,
+            pane_slot: &entry.slot,
+            own_session: self.session,
+            action: NOTICE_ACTION,
+            reference,
+            actor: super::ACTOR,
+            body: &text,
+            shape: crate::deliver::Shape::Send,
+            defer: NOTICE_DEFER,
+            composed: crate::tool::Composed::NONE,
+        };
+        let mut err = std::io::stderr();
+        let Ok(Some(guard)) = crate::tracked::admit_leg(&request, (&entry.slot, launch), &mut err)
+        else {
+            return;
+        };
+        let landed = matches!(
+            crate::deliver::deliver_checked(&request, Some(&guard), false, &mut err),
+            Ok(Ok(_) | Err(crate::deliver::Failure::Unconfirmed { .. }))
         );
+        if landed {
+            let _ = super::Journal {
+                meta_dir: self.meta_dir,
+                session: self.session,
+            }
+            .record_routed(
+                NOTICE_ACTION,
+                (&entry.name, &entry.slot),
+                reference,
+                &format!("vendor block notice: {}", record.stem()),
+                &mut err,
+            );
+        }
     }
 }
+
+/// How long a notice waits for a busy lead before a later cycle tries again.
+const NOTICE_DEFER: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The events a cycle's notice step reads: the cycle's snapshot, or when a
 /// seat drew a block on this cycle the journal read again, so the row that

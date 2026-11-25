@@ -2024,6 +2024,8 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/l3_services/quota/pace_history_spec.rs",
         "src/l3_services/quota/credits_spec.rs",
         "src/l3_services/quota/credits_api_spec.rs",
+        "src/l3_services/quota/blocked_display_spec.rs",
+        "src/l3_services/quota/clear_asker_spec.rs",
         "src/l4_orchestration/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -2056,7 +2058,10 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // `credits_api_spec.rs` the fifteenth and sixteenth, the frozen credits
     // acceptance specs, test-only modules that build policies and readings
     // only through `Policy::for_tests`, `Reading::of` and `Classified::first`,
-    // the same constructors every caller uses). Two
+    // the same constructors every caller uses; `blocked_display_spec.rs` and
+    // `clear_asker_spec.rs` the seventeenth and eighteenth, quarantine2's
+    // test-only pins of the blocked-scope display and the clear caller
+    // verdict, which build no policy, level or reading). Two
     // descendants it cannot see: a module written INLINE inside
     // `src/l3_services/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
@@ -2066,7 +2071,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         seen.iter()
             .filter(|name| name.starts_with("src/l3_services/quota/"))
             .count(),
-        16,
+        18,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

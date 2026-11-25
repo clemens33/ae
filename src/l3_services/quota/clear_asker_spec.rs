@@ -75,6 +75,13 @@ fn the_refusal_and_the_prompt_name_the_stem_and_the_human_route() {
         line.contains("ae quota clear client-muse") && line.contains("human"),
         "{line}"
     );
+    let longest = format!("provider-{}", "p".repeat(48));
+    assert!(crate::vendorblock::Target::parse(&longest).is_some());
+    assert!(
+        clear_prompt(&longest).chars().count() <= 80,
+        "{}",
+        clear_prompt(&longest)
+    );
     let prompt = clear_prompt("provider-github-copilot");
     assert!(
         prompt.contains("provider-github-copilot") && prompt.ends_with("(y/n)"),

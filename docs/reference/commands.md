@@ -1617,8 +1617,8 @@ stopped.
 Each session's own watchdog tells its own lead seat once per block on a scope the session can launch
 on: a configured profile on its own client, an approved `profile@client` pair onto the same adapter,
 or a seat's recorded client. The notice names the scope, the reason, the time and the human's clear
-command. Its delivered `send` event (action `vendorblock-notice`, ref `<identity>#<slot>`) is the
-receipt, so no later cycle, restart or resume repeats it; a cleared and reblocked scope is a new
+command. Its journal event (action `vendorblock-notice`, ref `<identity>#<slot>`), written once the
+notice is delivered or submitted, is the receipt, so no later cycle, restart or resume repeats it; a cleared and reblocked scope is a new
 notice. The orchestrator session's watchdog tells its main seat the same way. A session with no
 running watchdog hears it on its next start. No watchdog sends to another session.
 

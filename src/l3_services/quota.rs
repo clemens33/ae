@@ -3359,10 +3359,12 @@ pub fn clear_refusal(word: &str) -> String {
     )
 }
 
-/// The question the human's attached tmux client shows.
+/// The question the human's attached tmux client shows. It fits an 80-column
+/// client whole for the longest stem the grammar takes (`provider-` and 48
+/// characters): a prompt clipped before its `(y/n)` asks nothing.
 #[must_use]
 pub fn clear_prompt(word: &str) -> String {
-    format!("Clear the vendor block on {word}? Spawns and reseats may use it again. (y/n)")
+    format!("Clear {word}? (y/n)")
 }
 
 /// `ae quota clear <stem>`: remove one scope's block record, the ONLY way a
