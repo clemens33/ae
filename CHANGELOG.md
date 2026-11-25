@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.120] - 2026-11-25
+- Show the fleet work segment with the sidebar band icons
+
 ## [v2026.11.119] - 2026-11-25
 - Stop a signed-out ae web tab from polling and hold back repeat fresh links
 - Name the fleet's work in the orchestrator header and retire the app's board column
