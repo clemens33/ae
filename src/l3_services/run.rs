@@ -642,6 +642,7 @@ pub fn run(
     }
     record_choice(dir, slot, &choice, err)?;
     record_launch(dir, slot, &plan, err)?;
+    record_version(dir, slot, &plan, err)?;
     let why = exec_between_facts(dir, slot, &plan, &choice.0.start_key, &marker, err)?;
     writeln!(err, "ae: could not start {} ({why})", plan.argv[0])?;
     err.flush()?;
@@ -1706,6 +1707,78 @@ fn record_launch(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> s
     }
     for line in lines {
         let _ = crate::store::open(dir).append_event(&format!("{line}\n"));
+    }
+    Ok(())
+}
+
+/// What this start learned of its harness's release, as the row records it.
+/// Only a program whose binary ae classifies as a harness is asked, with the
+/// one fixed argument `--version`, and only the start's own `set` assignments
+/// reach it; a wrapper such as `cc` or `codex-mic` is never run and never
+/// believed. Every failure is a reason, never a guess. NAMED RESIDUAL: the
+/// profile's `env -i` (`plan.clear`) and `env -u` (`plan.unset`) are not
+/// applied to the question, so the answer is the binary's own in ae's
+/// environment plus the `set` assignments, not the start's exact one.
+fn measure_version(plan: &Plan) -> crate::toolversion::Seen {
+    use crate::toolversion::{Seen, Why};
+    use crate::transport::VersionRun;
+    if !plan.tool.is_known() {
+        return Seen::Unknown(Why::Unclassified);
+    }
+    let Some(program) = plan.argv.first() else {
+        return Seen::Unknown(Why::Failed);
+    };
+    let envs: Vec<(&str, &str)> = plan
+        .set
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    match crate::transport::run_tool_version(program, &envs) {
+        VersionRun::Answer(bytes) => {
+            crate::toolversion::parse_answer(&bytes).map_or_else(Seen::Unknown, Seen::Release)
+        }
+        VersionRun::Absent => Seen::Unknown(Why::Absent),
+        VersionRun::TimedOut => Seen::Unknown(Why::Timeout),
+        VersionRun::Failed => Seen::Unknown(Why::Failed),
+        VersionRun::Over => Seen::Unknown(Why::Oversize),
+    }
+}
+
+/// Measure this start's harness and publish `version.<slot>` BEFORE the exec,
+/// under `[workspace] version_probe = on` of the global config, and never in
+/// the start's way: a write that fails is said and the seat launches anyway.
+/// With the key absent or anything but `on`, nothing is run, and a row an
+/// earlier start wrote (the probe was on then) is taken back, because it no
+/// longer describes this start.
+fn record_version(
+    dir: &Path,
+    slot: &str,
+    plan: &Plan,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    // The global config the watchdog reads: the state root's, or with no root
+    // to name, the one two levels above the session directory.
+    let global = crate::doors::state_root(crate::shape::current())
+        .or_else(|| dir.parent().and_then(Path::parent).map(Path::to_path_buf))
+        .map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let probe = crate::config::global_version_probe(global.as_deref());
+    let seen = probe.asks().then(|| measure_version(plan));
+    if seen.is_none() {
+        let stale = crate::meta::read_bytes(dir).is_ok_and(|bytes| {
+            crate::meta::tool_version(&bytes, slot) != crate::meta::Rows::Absent
+        });
+        if !stale {
+            return Ok(());
+        }
+    }
+    let launch_id = &plan.context_stamp.launch_id;
+    if let Err(why) = crate::meta::set_version(dir, slot, launch_id, seen.as_ref()) {
+        writeln!(
+            err,
+            "ae: seat {slot}: could not record version.{slot} ({}) — launching anyway",
+            why.cause()
+        )?;
+        err.flush()?;
     }
     Ok(())
 }

@@ -1,0 +1,3 @@
+[workspace]
+version_probe = on
+main = lead

@@ -102,6 +102,11 @@ pub const OBSERVED_EFFORT_PIN_PREFIX: &str = "observed_effort_pin.";
 pub const LAUNCHED_PREFIX: &str = "launched.";
 pub const LAUNCHED_MODEL_PREFIX: &str = "launched_model.";
 pub const LAUNCHED_EFFORT_PREFIX: &str = "launched_effort.";
+/// What the current tool start measured of its harness (`version.<slot>`): a
+/// release or `unknown <why>` ([`crate::toolversion::Seen`]). ONE row, written
+/// by `_run` under `[workspace] version_probe = on`, rewritten by every start,
+/// cleared by a reseat, and read by [`tool_version`] alone.
+pub const VERSION_PREFIX: &str = "version.";
 /// Both families, the observed pair's own two rows first.
 const OBSERVED_FAMILY: [&str; 7] = [
     OBSERVED_MODEL_PREFIX,
@@ -491,6 +496,8 @@ pub struct Meta {
     /// Every row of the observed and launch-baseline families, duplicates
     /// included, for [`observed_pair`] and [`launched`] to judge.
     observed_raw: String,
+    /// Every `version.<slot>` row, duplicates included, for [`tool_version`].
+    version_raw: String,
     /// `harness_session_prior.<slot>` rows, kept RAW until the accessor splits
     /// them; the family is this parser's own, so it never doubts the roster.
     harness_session_priors: Vec<(String, String)>,
@@ -574,6 +581,11 @@ impl Meta {
             {
                 meta.observed_raw.push_str(raw);
                 meta.observed_raw.push('\n');
+            }
+            // The version row is its reader's, RAW, as the observed family is.
+            if claimed.starts_with(VERSION_PREFIX.as_bytes()) {
+                meta.version_raw.push_str(raw);
+                meta.version_raw.push('\n');
             }
             // One trailing carriage return is line ENDING, not value: a CRLF
             // meta would otherwise put an invisible byte on the end of a path.
@@ -819,6 +831,8 @@ impl Meta {
                     .any(|prefix| key.starts_with(prefix))
                 {
                     // RAW: `observed_pair` and `launched` are their one reader.
+                } else if key.starts_with(VERSION_PREFIX) {
+                    // RAW: `tool_version` is its one reader and judges damage.
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -1269,6 +1283,13 @@ impl Meta {
     #[must_use]
     pub fn observed_record(&self, slot: &str) -> Rows<ObservedPair> {
         observed_pair(self.observed_raw.as_bytes(), slot)
+    }
+
+    /// What the seat's last tool start measured of its harness, judged by
+    /// [`tool_version`].
+    #[must_use]
+    pub fn tool_version(&self, slot: &str) -> Rows<crate::toolversion::Seen> {
+        tool_version(self.version_raw.as_bytes(), slot)
     }
 
     /// The seat's launch baseline, judged by [`launched`].
@@ -2553,6 +2574,9 @@ pub(crate) fn reseated_from(
         (format!("{LAUNCHED_PREFIX}{slot}"), None),
         (format!("{LAUNCHED_MODEL_PREFIX}{slot}"), None),
         (format!("{LAUNCHED_EFFORT_PREFIX}{slot}"), None),
+        // The release belongs to the harness that LEFT; the successor's own
+        // start measures its own.
+        (format!("{VERSION_PREFIX}{slot}"), None),
     ];
     if slot == crate::watchdog::MAIN_SLOT {
         let continuation = moved_continuation(text, move_to);
@@ -3026,6 +3050,48 @@ pub(crate) fn set_context(
             (Some(version), _) => Some(rewritten(&cleared, &key, Some(&version.to_string()))),
             (None, _) => (cleared != current).then_some(cleared),
         }
+    })?;
+    Ok(held.get())
+}
+
+/// Record what the tool start `launch_id` measured of the harness in `slot`:
+/// `version.<slot>`, replaced whole, or removed when `seen` is `None`
+/// (`version_probe` is off, so a row an earlier start wrote no longer
+/// describes this one). Guarded like [`set_context`]: nothing is written
+/// unless the slot is a roster seat and `launch_id.<slot>` is still
+/// `launch_id`, so an old start can neither stamp nor clear the seat a later
+/// launch replaced. A row that already says it is left as it is.
+///
+/// Returns whether the guard held.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn set_version(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    seen: Option<&crate::toolversion::Seen>,
+) -> Result<bool, RewriteError> {
+    let held = std::cell::Cell::new(false);
+    rewrite_under_lock(dir, |current| {
+        let seated = Meta::parse(current)
+            .roster()
+            .iter()
+            .any(|entry| entry.slot == slot);
+        let recorded = sole_value(current.as_bytes(), &format!("launch_id.{slot}"));
+        if !seated || launch_id.is_empty() || recorded != Some(launch_id.as_bytes()) {
+            return None;
+        }
+        held.set(true);
+        let key = format!("{VERSION_PREFIX}{slot}");
+        let cleared = rewritten(current, &key, None);
+        let next = match seen {
+            Some(seen) => rewritten(&cleared, &key, Some(&seen.row())),
+            None => cleared,
+        };
+        (next != current).then_some(next)
     })?;
     Ok(held.get())
 }
@@ -3703,6 +3769,24 @@ pub fn observed_pair(text: &[u8], slot: &str) -> Rows<ObservedPair> {
             effort,
         }),
         _ => Rows::Damaged("partial"),
+    }
+}
+
+/// The ONE reader of a seat's `version.<slot>` row: absent, one well-formed
+/// row ([`crate::toolversion::Seen::parse_row`]), or damaged (`duplicate`, or
+/// `invalid` for a bare claim, a value no start writes, an empty, overlong or
+/// control-carrying one). A damaged row is ignored, never repaired and never
+/// guessed at.
+#[must_use]
+pub fn tool_version(text: &[u8], slot: &str) -> Rows<crate::toolversion::Seen> {
+    let key = [format!("{VERSION_PREFIX}{slot}")];
+    match sole_rows(text, &key) {
+        Err(why) => Rows::Damaged(why),
+        Ok(rows) => match rows[0] {
+            None => Rows::Absent,
+            Some(value) => crate::toolversion::Seen::parse_row(value)
+                .map_or(Rows::Damaged("invalid"), Rows::Valid),
+        },
     }
 }
 
@@ -4609,6 +4693,153 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn set_version_writes_one_row_only_for_the_launch_that_owns_the_seat() {
+        use super::set_version;
+        use crate::toolversion::{Seen, Why};
+        let dir = std::env::temp_dir().join(format!("ae-meta-ver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = "seat.main=lead\nprofile.main=p\nlaunch_id.main=L1\nseat.worker.0=co\nprofile.worker.0=p\n";
+        let read = || std::fs::read_to_string(dir.join("meta")).unwrap();
+        let put = |extra: &str| std::fs::write(dir.join("meta"), format!("{base}{extra}")).unwrap();
+        let release = Seen::Release("2.1.330".to_owned());
+        put("");
+        assert!(set_version(&dir, "main", "L1", Some(&release)).unwrap());
+        assert_eq!(read(), format!("{base}version.main=2.1.330\n"));
+        // The same claim again is no write at all.
+        let before = std::fs::metadata(dir.join("meta"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(set_version(&dir, "main", "L1", Some(&release)).unwrap());
+        assert_eq!(
+            std::fs::metadata(dir.join("meta"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before
+        );
+        // A later start replaces it, and a repeated claim collapses to one.
+        let unknown = Seen::Unknown(Why::Timeout);
+        assert!(set_version(&dir, "main", "L1", Some(&unknown)).unwrap());
+        assert_eq!(read(), format!("{base}version.main=unknown timeout\n"));
+        put("version.main=1.0\nversion.main=2.0\nversion.worker.0=9.9\n");
+        assert!(set_version(&dir, "main", "L1", Some(&release)).unwrap());
+        assert_eq!(
+            read(),
+            format!("{base}version.worker.0=9.9\nversion.main=2.1.330\n")
+        );
+        // `None` clears every claim of that seat, and only that seat's.
+        put("version.main=1.0\nversion.main=2.0\nversion.worker.0=9.9\n");
+        assert!(set_version(&dir, "main", "L1", None).unwrap());
+        assert_eq!(read(), format!("{base}version.worker.0=9.9\n"));
+        // Another launch, no launch id, or a slot nobody sits in: nothing moves.
+        for (slot, launch) in [
+            ("main", "L0"),
+            ("main", ""),
+            ("ghost", "L1"),
+            ("worker.0", "L1"),
+        ] {
+            put("version.main=1.0\nversion.ghost=1.0\nversion.worker.0=1.0\n");
+            let was = read();
+            let wrote = set_version(&dir, slot, launch, Some(&release)).unwrap();
+            let cleared = set_version(&dir, slot, launch, None).unwrap();
+            // `worker.0` sits in the roster but its launch id is not "L1".
+            assert!(!wrote && !cleared, "{slot} {launch:?}");
+            assert_eq!(read(), was);
+        }
+        // A launch id recorded for a slot the roster does not seat owns nothing:
+        // the roster guard stands on its own, never leaning on the launch row.
+        put("launch_id.ghost=L1\nversion.ghost=1.0\n");
+        let was = read();
+        assert!(!set_version(&dir, "ghost", "L1", Some(&release)).unwrap());
+        assert!(!set_version(&dir, "ghost", "L1", None).unwrap());
+        assert_eq!(read(), was);
+        // An EMPTY recorded launch id equals an empty claim and still owns nothing.
+        std::fs::write(
+            dir.join("meta"),
+            "seat.main=lead\nprofile.main=p\nlaunch_id.main=\nversion.main=1.0\n",
+        )
+        .unwrap();
+        let was = read();
+        assert!(!set_version(&dir, "main", "", Some(&release)).unwrap());
+        assert!(!set_version(&dir, "main", "", None).unwrap());
+        assert_eq!(read(), was);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_row_is_one_release_or_one_unknown_and_anything_else_is_damage() {
+        use super::{Rows, tool_version};
+        use crate::toolversion::{Seen, Why};
+        let read = |rows: &str| tool_version(rows.as_bytes(), "main");
+        assert_eq!(read(""), Rows::Absent);
+        assert_eq!(read("version.worker.0=1.0\n"), Rows::Absent);
+        assert_eq!(
+            read("version.main=2.1.330\n"),
+            Rows::Valid(Seen::Release("2.1.330".to_owned()))
+        );
+        assert_eq!(
+            read("seat.main=lead\nversion.main=unknown absent\n"),
+            Rows::Valid(Seen::Unknown(Why::Absent))
+        );
+        for (rows, why) in [
+            ("version.main=2.1.330\nversion.main=2.1.330\n", "duplicate"),
+            ("version.main=2.1.330\nversion.main\n", "duplicate"),
+            ("version.main\n", "invalid"),
+            ("version.main=\n", "invalid"),
+            ("version.main=guess\n", "invalid"),
+            ("version.main=unknown\n", "invalid"),
+            ("version.main=unknown nonsense\n", "invalid"),
+            ("version.main=claude 2.1.330\n", "invalid"),
+            ("version.main=2.1.330\r\n", "invalid"),
+            ("version.main=2.1\u{7}\n", "invalid"),
+        ] {
+            assert_eq!(read(rows), Rows::Damaged(why), "{rows:?}");
+        }
+        // The parsed document keeps the same verdict, through the same reader.
+        let parsed = Meta::parse("seat.main=lead\nprofile.main=p\nversion.main=1.2.3\n");
+        assert_eq!(
+            parsed.tool_version("main"),
+            Rows::Valid(Seen::Release("1.2.3".to_owned()))
+        );
+        assert_eq!(parsed.tool_version("worker.0"), Rows::Absent);
+    }
+
+    /// A version row is a known family: the parse never calls it an `UnknownKey`,
+    /// healthy or damaged (the generic duplicate and malformed-line anomalies
+    /// still apply to a repeated key or a bare claim; `tool_version` judges the
+    /// value). A healthy row adds no anomaly at all.
+    #[test]
+    fn a_version_row_is_a_known_key_and_never_a_parse_anomaly() {
+        for rows in [
+            "version.main=2.1.330\n",
+            "version.main=unknown timeout\nversion.worker.0=0.171.0\n",
+        ] {
+            let meta = Meta::parse(&format!("seat.main=lead\nprofile.main=p\n{rows}"));
+            assert!(
+                meta.anomalies().is_empty(),
+                "{rows:?}: {:?}",
+                meta.anomalies()
+            );
+        }
+        let damaged = "version.main=guess\nversion.main=2.1.330\nversion.main\n";
+        let meta = Meta::parse(&format!("seat.main=lead\nprofile.main=p\n{damaged}"));
+        assert!(
+            !meta
+                .anomalies()
+                .iter()
+                .any(|anomaly| matches!(anomaly, Anomaly::UnknownKey { .. })),
+            "{:?}",
+            meta.anomalies()
+        );
+    }
+
+    #[test]
     fn a_context_stamp_is_one_positive_number_on_a_roster_slot() {
         use super::ContextStamp;
         let roster = "seat.main=lead\nprofile.main=p\nseat.worker.0=co\nprofile.worker.0=p\n";
@@ -5055,6 +5286,21 @@ mod tests {
         for gone in ["launch_time.main=", "observed_model.main=", "client.main="] {
             assert!(!moved.contains(gone), "{gone} survived:\n{moved}");
         }
+    }
+
+    #[test]
+    fn a_seat_move_takes_the_release_of_the_harness_that_left_and_only_that_seats() {
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        let with = format!(
+            "{}version.main=unknown timeout\nversion.spawned.0=0.171.0\n",
+            seated()
+        );
+        let moved = super::reseated(&with, "main", &moving_to("lunam", "codex", NEW));
+        assert!(!moved.contains("version.main"), "{moved}");
+        assert!(moved.contains("version.spawned.0=0.171.0\n"), "{moved}");
+        // The rows a seat holds before it ever measured anything stay untouched.
+        let moved = super::reseated(&seated(), "main", &moving_to("lunam", "codex", NEW));
+        assert!(!moved.contains("version."), "{moved}");
     }
 
     #[test]

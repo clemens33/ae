@@ -566,3 +566,10 @@ path = "fuzz_targets/topic_card.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tool_version"
+path = "fuzz_targets/tool_version.rs"
+test = false
+doc = false
+bench = false

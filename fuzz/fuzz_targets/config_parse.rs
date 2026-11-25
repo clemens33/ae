@@ -51,6 +51,12 @@ fuzz_target!(|data: &[u8]| {
         std::path::Path::new("config"),
         &text,
     ));
+    // The version probe switch: a global-only key whose every value but exact
+    // `on` asks nothing, so a hostile text can only ever turn it on by spelling it.
+    let _ = std::hint::black_box(ae::config::version_probe_in(
+        std::path::Path::new("config"),
+        &text,
+    ));
     let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
     let _ = std::hint::black_box(pairs.judge("opus55x", "cc-mic"));
     let _ = std::hint::black_box(ae::telegram::validate_settings_in(

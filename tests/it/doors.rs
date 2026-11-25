@@ -361,6 +361,39 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     );
 }
 
+/// `transport::run_tool_version` is the harness-version leg of the one process
+/// door: it asks the program ONE fixed question, `--version`, through the
+/// existing `spawn_until` (so the agy leg's no-pipe, deadline-bounded shape and
+/// its `Stdio::null()` pin cover it) and gains no `Command` site of its own.
+/// The caller is `run::record_version` alone, behind the `version_probe` knob.
+#[test]
+fn run_tool_version_has_exactly_one_product_caller_one_fixed_argument_and_no_command() {
+    let holders = src_holders("run_tool_version(");
+    // A scan that found nothing fails here too: the expected list is not empty.
+    assert_eq!(
+        sorted(holders),
+        sorted(["src/l3_services/run.rs", "src/l1_platform/transport.rs"]),
+        "the harness-version leg gained (or lost) a product holder"
+    );
+    let raw = tree_text("src/l1_platform/transport.rs");
+    let code = structural("src/l1_platform/transport.rs", raw);
+    let range = body_of(&code, "fn tool_version_with(");
+    assert!(
+        code[range.clone()].contains("spawn_until("),
+        "the version leg no longer rides the one deadline-bounded spawn"
+    );
+    assert!(
+        !code[range.clone()].contains("Command"),
+        "the version leg grew a process site of its own"
+    );
+    // Literals are blanked in `code`, so the argument is read from the source.
+    assert_eq!(
+        raw[range].matches("&[\"--version\"]").count(),
+        1,
+        "the version leg asks something other than the one fixed `--version`"
+    );
+}
+
 /// `transport::run_clipboard_image` is the FIXED-PROGRAM clipboard leg of
 /// the one process door: it chooses the binary and every argument.
 #[test]

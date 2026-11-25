@@ -34,6 +34,9 @@ fuzz_target!(|data: &[u8]| {
         // and value grammar, through both readers and the parsed accessors.
         let _ = std::hint::black_box(ae::meta::observed_pair(data, slot));
         let _ = std::hint::black_box(ae::meta::launched(data, slot));
+        // The measured release row: absent, one valid, duplicate, bare, damaged.
+        let _ = std::hint::black_box(ae::meta::tool_version(data, slot));
+        let _ = std::hint::black_box(parsed.tool_version(slot));
         let _ = std::hint::black_box(parsed.observed_record(slot));
         let _ = std::hint::black_box(parsed.launch_baseline(slot));
         let _ = std::hint::black_box(parsed.launch_id(slot));

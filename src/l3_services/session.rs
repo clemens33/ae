@@ -1233,6 +1233,7 @@ fn agent_entries(
                 conversation: None,
                 background_task: false,
                 harness_clash: None,
+                version: None,
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
                 alias: slot.profile.clone().unwrap_or_default(),
@@ -1458,6 +1459,32 @@ pub fn harness_clash_of<'t>(
         runs,
         records: records.to_owned(),
     })
+}
+
+/// The cell `ae list` and `ae doctor` draw for what a seat's last tool start
+/// measured of its harness, as [`crate::toolversion::cell`] words it, or `None`
+/// when the seat has no valid `version.<slot>` row (the default: the probe is
+/// off, so nothing was asked; a damaged row is `ae doctor`'s to name, and is
+/// never guessed at here). `binary` is the seat's recorded `agent_bin`: the
+/// label of the cell, cleaned for one terminal line, and the tool whose
+/// measured release stands beside the seat's own.
+#[must_use]
+pub fn version_cell_of(
+    meta: &crate::meta::Meta,
+    slot: &str,
+    binary: Option<&str>,
+) -> Option<String> {
+    let crate::meta::Rows::Valid(seen) = meta.tool_version(slot) else {
+        return None;
+    };
+    let binary = binary.filter(|word| !word.is_empty()).unwrap_or("-");
+    let label: String = binary
+        .chars()
+        .take(32)
+        .map(|ch| if ch.is_control() { '\u{FFFD}' } else { ch })
+        .collect();
+    let tool = crate::tool::ToolKind::from_binary_name(binary);
+    Some(crate::toolversion::cell(&label, tool, &seen))
 }
 
 /// Enrich `ae list` (both modes) without changing activity or durable reads.

@@ -112,6 +112,11 @@ pub struct AgentEntry {
     /// records name. TABLE only, same rule as `own_work`; `None` also covers
     /// every reading that proves nothing. Filled by `ae list` alone.
     pub harness_clash: Option<HarnessClash>,
+    /// What the seat's last tool start measured of its harness, already worded
+    /// ([`crate::toolversion::cell`]); `None` when the seat recorded none (the
+    /// default, `[workspace] version_probe` is off) or its row is damaged.
+    /// TABLE only, same rule as `own_work`. Filled by `ae list` alone.
+    pub version: Option<String>,
 }
 
 /// A pane that runs known harnesses the seat's records do not name — for

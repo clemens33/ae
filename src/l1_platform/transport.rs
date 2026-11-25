@@ -953,6 +953,64 @@ fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) 
     }
 }
 
+/// What the harness-version leg came back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VersionRun {
+    /// `--version` exited successfully: its stdout, at most
+    /// [`VERSION_ANSWER_CAP`] bytes. Reading it is the model layer's
+    /// (`toolversion::parse_answer`).
+    Answer(Vec<u8>),
+    /// No such program on the child's `PATH`.
+    Absent,
+    /// The question outlived its deadline; the child was killed and reaped.
+    TimedOut,
+    /// The program did not start, did not exit successfully, or could not be
+    /// read back.
+    Failed,
+    /// The answer was longer than the cap.
+    Over,
+}
+
+/// The deadline of the harness-version question: every real answer is under a
+/// quarter second (claude, codex, opencode, agy, grok and muse, measured
+/// 2026-11-25), and a seat's start waits for it.
+const VERSION_DEADLINE: Duration = Duration::from_secs(3);
+
+/// The most bytes of a `--version` answer the leg keeps; one byte more is
+/// [`VersionRun::Over`]. `toolversion::ANSWER_CAP` takes this value, so the
+/// model layer names the cap without this layer naming the model.
+pub(crate) const VERSION_ANSWER_CAP: usize = 4096;
+
+/// The harness-version leg of the one process door: ONE fixed argument,
+/// `--version`, put to the program a seat is about to become. The caller is
+/// `run::record_version` alone, and only for a program whose binary ae
+/// classifies as a harness: ae never asks a wrapper it cannot name. The child
+/// gets the start's own `set` assignments, no stdin, no stderr and a scratch
+/// file for stdout, the shape of the agy leg's `--version` call.
+pub(crate) fn run_tool_version(program: &str, envs: &[(&str, &str)]) -> VersionRun {
+    tool_version_with(program, envs, VERSION_DEADLINE)
+}
+
+/// [`run_tool_version`] with its deadline passed in, so the leg's own tests can
+/// bound a hang.
+fn tool_version_with(program: &str, envs: &[(&str, &str)], deadline: Duration) -> VersionRun {
+    match spawn_until(
+        program,
+        &["--version"],
+        envs,
+        u64::try_from(VERSION_ANSWER_CAP).unwrap_or(4096),
+        deadline,
+        Out::Tagged("version"),
+        None,
+    ) {
+        Ran::Exited(exit, out) if exit.success() => VersionRun::Answer(out),
+        Ran::Exited(..) | Ran::Failed => VersionRun::Failed,
+        Ran::TimedOut => VersionRun::TimedOut,
+        Ran::Absent => VersionRun::Absent,
+        Ran::Over => VersionRun::Over,
+    }
+}
+
 /// The directory a Muse quota call runs in: new, empty, private (0700) and
 /// UNDER the OS temp directory, removed when this guard drops.
 ///
@@ -3629,7 +3687,8 @@ mod tests {
     }
     use super::{
         AGY_DEADLINES, AgyRun, CaptureScratch, GIT_LOCAL_ENV_VARS, PROGRAM, Streams, Tmux,
-        agy_quota_with, declares_utf8, run, spawn,
+        VERSION_ANSWER_CAP, VersionRun, agy_quota_with, declares_utf8, run, spawn,
+        tool_version_with,
     };
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
@@ -3689,6 +3748,91 @@ mod tests {
     const GENEROUS: [Duration; 2] = [Duration::from_secs(20), Duration::from_secs(20)];
     const VERSION_OK: &str = "printf '%s\\n' 1.2.14";
     const BOTH_CALLS: &str = "--version\n-p /quota --output-format json\n";
+
+    /// The version leg against a fake at an ABSOLUTE path: nothing is looked up.
+    fn version_of(fake: &FakeAgy, envs: &[(&str, &str)], deadline: Duration) -> VersionRun {
+        tool_version_with(&fake.dir.join("agy").display().to_string(), envs, deadline)
+    }
+
+    #[test]
+    fn the_version_leg_puts_exactly_one_fixed_argument_and_returns_stdout() {
+        let fake = FakeAgy::new("vok", "printf '%s\\n' '2.1.330 (Claude Code)'", "exit 96");
+        assert_eq!(
+            version_of(&fake, &[], GENEROUS[0]),
+            VersionRun::Answer(b"2.1.330 (Claude Code)\n".to_vec())
+        );
+        assert_eq!(fake.read("argv"), "--version\n", "one call, one argument");
+    }
+
+    #[test]
+    fn the_version_leg_hands_the_starts_own_assignments_to_the_child() {
+        let fake = FakeAgy::new("venv", "printf '%s' \"$VSTAMP_FIXTURE\"", "exit 96");
+        assert_eq!(
+            version_of(&fake, &[("VSTAMP_FIXTURE", "seat-1")], GENEROUS[0]),
+            VersionRun::Answer(b"seat-1".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_failing_version_call_is_failed_even_when_it_printed_a_release() {
+        let fake = FakeAgy::new("vfail", "printf '%s\\n' 2.1.330; exit 3", "exit 96");
+        assert_eq!(version_of(&fake, &[], GENEROUS[0]), VersionRun::Failed);
+    }
+
+    #[test]
+    fn a_missing_program_is_absent_and_a_directory_is_failed() {
+        assert_eq!(
+            tool_version_with("/nonexistent-ae-dir/claude", &[], GENEROUS[0]),
+            VersionRun::Absent
+        );
+        let dir = std::env::temp_dir().display().to_string();
+        assert_eq!(
+            tool_version_with(&dir, &[], GENEROUS[0]),
+            VersionRun::Failed
+        );
+    }
+
+    #[test]
+    fn a_hung_version_call_is_killed_at_its_deadline_and_reaped() {
+        let fake = FakeAgy::new(
+            "vhang",
+            "printf '%s' \"$$\" > \"${0%/*}/pid\"; exec /bin/sleep 30",
+            "exit 96",
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(version_of(&fake, &[], HANG_DEADLINE), VersionRun::TimedOut);
+        let took = started.elapsed();
+        assert!(
+            took >= HANG_DEADLINE && took < Duration::from_secs(10),
+            "{took:?}"
+        );
+        let pid: u32 = fake.read("pid").parse().expect("its pid");
+        let table = crate::procs::snapshot().expect("the process table");
+        assert!(
+            table.iter().all(|row| row.pid != pid),
+            "{pid} survived or was not reaped"
+        );
+        assert_eq!(fake.read("argv"), "--version\n");
+    }
+
+    #[test]
+    fn the_version_cap_is_inclusive_and_one_byte_past_it_is_over() {
+        let cap = VERSION_ANSWER_CAP;
+        let at = FakeAgy::new(
+            "vcap",
+            &format!("exec /usr/bin/head -c {cap} /dev/zero"),
+            "exit 96",
+        );
+        assert!(
+            matches!(version_of(&at, &[], GENEROUS[0]), VersionRun::Answer(bytes) if bytes.len() == cap)
+        );
+        let past = FakeAgy::new(
+            "vpast",
+            &format!("exec /usr/bin/head -c {} /dev/zero", cap + 1),
+            "exit 96",
+        );
+        assert_eq!(version_of(&past, &[], GENEROUS[0]), VersionRun::Over);
+    }
 
     #[test]
     fn the_agy_leg_runs_the_version_gate_then_the_fixed_quota_call() {

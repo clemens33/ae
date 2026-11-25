@@ -26,6 +26,7 @@ pub mod store;
 pub mod theme;
 pub mod tmux;
 pub mod tool;
+pub mod toolversion;
 pub mod topic;
 pub mod tracked;
 pub mod vendorblock;

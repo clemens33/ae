@@ -196,6 +196,9 @@ pub struct SeatFacts {
     pub profile: String,
     /// The reading — `Unknown` when the pane could not be found or read.
     pub observed: crate::procs::Observed,
+    /// What the seat's last tool start measured of its harness
+    /// ([`crate::session::version_cell_of`]); `None` when it recorded none.
+    pub version: Option<String>,
 }
 
 /// One `[profiles]` entry, as the report needs it.
@@ -354,6 +357,7 @@ pub fn report(facts: &Facts) -> Report {
     reseat_floor_rows(&facts.reseat_floor, &mut out);
     session_rows(facts, &mut out);
     seat_identity_rows(&facts.seats, &mut out);
+    seat_version_rows(&facts.seats, &mut out);
     for damaged in &facts.damaged_records {
         out.push(Level::Warn, "seat-records", damaged);
     }
@@ -443,6 +447,24 @@ fn seat_identity_rows(seats: &[SeatFacts], out: &mut Report) {
             seats.len()
         ),
     );
+}
+
+/// The `seat-version` rows: each live seat's harness release as its last tool
+/// start measured it, beside the release the frozen fixtures prove for that
+/// tool (`claude 2.1.330 (measured 2.1.330)`). A seat with no recorded
+/// measurement has no row: ae never asked (`[workspace] version_probe` is off
+/// by default), and silence is not a reading. DIAGNOSIS ONLY: no release is
+/// ever judged too old or too new.
+fn seat_version_rows(seats: &[SeatFacts], out: &mut Report) {
+    for seat in seats {
+        if let Some(cell) = &seat.version {
+            out.push(
+                Level::Ok,
+                "seat-version",
+                &format!("{}:{} {cell}", seat.session, seat.agent),
+            );
+        }
+    }
 }
 
 /// What ae cannot establish about a `#` model request, said beside the profile.
@@ -1201,7 +1223,8 @@ fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
         let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
         let slots =
             crate::transport::observe_slots(&session.server, &session.name).unwrap_or_default();
-        for row in crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).roster() {
+        let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+        for row in parsed.roster() {
             let pane = slots
                 .iter()
                 .find(|stamped| stamped.slot == row.slot)
@@ -1222,6 +1245,7 @@ fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
                 binary: row.binary.clone().unwrap_or_default(),
                 profile: row.profile.clone().unwrap_or_default(),
                 observed,
+                version: crate::session::version_cell_of(&parsed, &row.slot, row.binary.as_deref()),
             });
         }
     }
@@ -1245,6 +1269,11 @@ fn damaged_records(root: &Path) -> Vec<String> {
             if let Rows::Damaged(why) = crate::meta::launched(&bytes, &row.slot) {
                 out.push(format!(
                     "{seat}: launch baseline damaged ({why}) — ignored and kept"
+                ));
+            }
+            if let Rows::Damaged(why) = crate::meta::tool_version(&bytes, &row.slot) {
+                out.push(format!(
+                    "{seat}: version record damaged ({why}) — ignored and kept; the next start rewrites it"
                 ));
             }
         }
@@ -1957,6 +1986,56 @@ mod tests {
         }
     }
 
+    /// A live seat with a recorded measurement gets one quiet `seat-version`
+    /// row, with the release the fixtures prove beside it; a seat with none
+    /// gets no row, because ae never asked and silence is not a reading.
+    #[test]
+    fn a_seat_that_measured_its_harness_gets_one_version_row_and_the_rest_none() {
+        let seat = |agent: &str, version: Option<&str>| SeatFacts {
+            session: "infra".to_owned(),
+            agent: agent.to_owned(),
+            pane: "%1".to_owned(),
+            binary: "claude".to_owned(),
+            profile: "p".to_owned(),
+            observed: crate::procs::Observed::Unknown,
+            version: version.map(ToOwned::to_owned),
+        };
+        let mut out = Report::default();
+        seat_version_rows(&[], &mut out);
+        assert!(out.rows().is_empty());
+        seat_version_rows(
+            &[
+                seat("lead", Some("claude 2.1.332 (measured 2.1.330)")),
+                seat("colead", None),
+                seat(
+                    "w1",
+                    Some("codex-mic unknown (unclassified) (measured: none)"),
+                ),
+            ],
+            &mut out,
+        );
+        let rows: Vec<_> = out
+            .rows()
+            .iter()
+            .map(|row| (row.level, row.label.as_str(), row.detail.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    Level::Ok,
+                    "seat-version",
+                    "infra:lead claude 2.1.332 (measured 2.1.330)"
+                ),
+                (
+                    Level::Ok,
+                    "seat-version",
+                    "infra:w1 codex-mic unknown (unclassified) (measured: none)"
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn a_seat_whose_pane_runs_another_harness_is_named_and_uncovered_ones_are_counted() {
         use crate::procs::Observed;
@@ -1968,6 +2047,7 @@ mod tests {
             binary: binary.to_owned(),
             profile: format!("p-{agent}"),
             observed,
+            version: None,
         };
         let rows_of = |seats: &[SeatFacts]| {
             let mut out = Report::default();

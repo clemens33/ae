@@ -61,6 +61,7 @@ pub use l2_model::store;
 pub use l2_model::theme;
 pub use l2_model::tmux;
 pub use l2_model::tool;
+pub use l2_model::toolversion;
 pub use l2_model::topic;
 pub use l2_model::tracked;
 pub use l2_model::vendorblock;
@@ -993,6 +994,7 @@ fn enrich_list_seats(
                 pid,
                 &table,
             );
+            agent.version = session::version_cell_of(meta, &seat.slot, seat.binary.as_deref());
             agent.harness_clash = pane
                 .filter(|_| entry.status == digest::Status::Running && agent.alive == Some(true))
                 .and_then(|pane| {

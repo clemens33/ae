@@ -951,6 +951,13 @@ pub(crate) struct ToolAdapter {
     /// execs a versioned `muse-bin-<version>`); every other row is `None`
     /// and matches its exact binary only.
     pub(crate) process_family_prefix: Option<&'static str>,
+    /// The newest release the frozen fixtures prove for this harness, `None`
+    /// where no fixture names one. THE one place a measured release is kept:
+    /// `ae list` and `ae doctor` draw a seat's own release beside it, and
+    /// `tests/it/toolversion_spec.rs` rebuilds it from the fixture file names.
+    /// A fixture of a newer release moves it in the same commit; ae never
+    /// judges a seat's release by it (no range, no notice).
+    pub(crate) measured_version: Option<&'static str>,
     /// Human-facing name, or the full profile command for an unknown tool.
     pub(crate) label: Option<&'static str>,
     /// The client token a roster row draws beside an observed model, at most
@@ -1152,6 +1159,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
     name: "claude",
     process_family_prefix: None,
+    measured_version: Some("2.1.330"),
     label: Some("claude code"),
     client: "cc",
     launch_marker: None,
@@ -1272,6 +1280,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     kind: ToolKind::Codex,
     name: "codex",
     process_family_prefix: None,
+    measured_version: Some("0.171.0"),
     label: Some("codex"),
     client: "cx",
     launch_marker: Some("CODEX"),
@@ -1389,6 +1398,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     kind: ToolKind::Gemini,
     name: "gemini",
     process_family_prefix: None,
+    measured_version: None,
     label: Some("gemini cli"),
     client: "gem",
     launch_marker: Some("GEMINI"),
@@ -1447,6 +1457,7 @@ const AGY: ToolAdapter = ToolAdapter {
     kind: ToolKind::Agy,
     name: "agy",
     process_family_prefix: None,
+    measured_version: Some("1.5.14"),
     label: Some("antigravity cli"),
     client: "agy",
     launch_marker: Some("AGY"),
@@ -1549,6 +1560,7 @@ const GROK: ToolAdapter = ToolAdapter {
     kind: ToolKind::Grok,
     name: "grok",
     process_family_prefix: None,
+    measured_version: Some("1.0.92"),
     label: Some("grok build"),
     client: "grok",
     launch_marker: None,
@@ -1635,6 +1647,7 @@ const MUSE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Muse,
     name: "muse",
     process_family_prefix: Some("muse-bin-"),
+    measured_version: Some("1.4.24"),
     label: Some("muse code"),
     client: "muse",
     launch_marker: Some("MUSE"),
@@ -1707,6 +1720,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     kind: ToolKind::OpenCode,
     name: "opencode",
     process_family_prefix: None,
+    measured_version: Some("2.3.2"),
     label: Some("opencode"),
     client: "oc",
     launch_marker: None,
@@ -1804,6 +1818,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     kind: ToolKind::Unknown,
     name: "unknown",
     process_family_prefix: None,
+    measured_version: None,
     label: None,
     client: "-",
     launch_marker: None,
@@ -2054,6 +2069,13 @@ impl ToolKind {
     #[must_use]
     pub const fn client_token(self) -> &'static str {
         self.adapter().client
+    }
+
+    /// The newest release of this harness the frozen fixtures prove, or `None`
+    /// when no fixture names one.
+    #[must_use]
+    pub const fn measured_version(self) -> Option<&'static str> {
+        self.adapter().measured_version
     }
 
     /// The capabilities of this harness.
@@ -2424,6 +2446,7 @@ mod tests {
                     kind: ToolKind::Claude,
                     name: "claude",
                     process_family_prefix: None,
+                    measured_version: Some("2.1.330"),
                     label: Some("claude code"),
                     client: "cc",
                     launch_marker: None,
@@ -2531,6 +2554,7 @@ mod tests {
                     kind: ToolKind::Codex,
                     name: "codex",
                     process_family_prefix: None,
+                    measured_version: Some("0.171.0"),
                     label: Some("codex"),
                     client: "cx",
                     launch_marker: Some("CODEX"),
@@ -2634,6 +2658,7 @@ mod tests {
                     kind: ToolKind::Gemini,
                     name: "gemini",
                     process_family_prefix: None,
+                    measured_version: None,
                     label: Some("gemini cli"),
                     client: "gem",
                     launch_marker: Some("GEMINI"),
@@ -2691,6 +2716,7 @@ mod tests {
                     kind: ToolKind::Agy,
                     name: "agy",
                     process_family_prefix: None,
+                    measured_version: Some("1.5.14"),
                     label: Some("antigravity cli"),
                     client: "agy",
                     launch_marker: Some("AGY"),
@@ -2777,6 +2803,7 @@ mod tests {
                     kind: ToolKind::Grok,
                     name: "grok",
                     process_family_prefix: None,
+                    measured_version: Some("1.0.92"),
                     label: Some("grok build"),
                     client: "grok",
                     launch_marker: None,
@@ -2845,6 +2872,7 @@ mod tests {
                     kind: ToolKind::Muse,
                     name: "muse",
                     process_family_prefix: Some("muse-bin-"),
+                    measured_version: Some("1.4.24"),
                     label: Some("muse code"),
                     client: "muse",
                     launch_marker: Some("MUSE"),
@@ -2907,6 +2935,7 @@ mod tests {
                     kind: ToolKind::OpenCode,
                     name: "opencode",
                     process_family_prefix: None,
+                    measured_version: Some("2.3.2"),
                     label: Some("opencode"),
                     client: "oc",
                     launch_marker: None,
@@ -2981,6 +3010,7 @@ mod tests {
                 kind: ToolKind::Unknown,
                 name: "unknown",
                 process_family_prefix: None,
+                measured_version: None,
                 label: None,
                 client: "-",
                 launch_marker: None,

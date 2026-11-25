@@ -429,6 +429,10 @@ fn push_agent_line(out: &mut String, session: &SessionEntry, agent: &AgentEntry,
     if let Some(clash) = &agent.harness_clash {
         harness_cell(clash, out);
     }
+    if let Some(cell) = &agent.version {
+        out.push_str(" · version:");
+        out.push_str(cell);
+    }
     effort_cell(agent.effort.as_ref(), out);
     if let Some(cell) = agent
         .conversation
@@ -1449,6 +1453,78 @@ mod tests {
             ["cl:lead", "-", "working", "·", "observed:unknown"],
             "reference, short id, declared state, observed frame: {rendered}"
         );
+    }
+
+    /// A seat with a recorded release draws it, with the release the frozen
+    /// fixtures prove for that tool; a seat with none draws no cell at all.
+    #[test]
+    fn a_seat_with_a_measured_release_draws_it_beside_the_fixture_release() {
+        let meta = |rows: &str| {
+            crate::meta::Meta::parse(&format!(
+                "seat.main=lead\nprofile.main=p\nagent_bin.main=claude\n{rows}"
+            ))
+        };
+        let render = |cell: Option<String>| {
+            let mut session = SessionEntry::new("solo", Status::Running);
+            let mut entry = agent("lead", Some(true), Some("working"));
+            entry.version = cell;
+            session.agents = vec![entry];
+            table(&[&session])
+        };
+        let measured = crate::tool::ToolKind::Claude
+            .measured_version()
+            .expect("claude has fixtures");
+        let seen = crate::session::version_cell_of(
+            &meta("version.main=2.1.332\n"),
+            "main",
+            Some("claude"),
+        );
+        assert_eq!(
+            seen.as_deref(),
+            Some(format!("claude 2.1.332 (measured {measured})").as_str())
+        );
+        let line = render(seen);
+        assert!(
+            line.contains(&format!(" · version:claude 2.1.332 (measured {measured})")),
+            "{line}"
+        );
+        assert!(!line.contains('\t'), "{line}");
+        // No row, a damaged row and a seat with no recorded binary.
+        for (rows, binary) in [
+            ("", Some("claude")),
+            ("version.main=guess\n", Some("claude")),
+            ("version.main=1.0\nversion.main=1.0\n", Some("claude")),
+        ] {
+            assert_eq!(
+                crate::session::version_cell_of(&meta(rows), "main", binary),
+                None,
+                "{rows:?}"
+            );
+        }
+        let none = render(None);
+        assert!(!none.contains("version:"), "{none}");
+        // An unclassified binary and a failed measurement are named, never guessed.
+        assert_eq!(
+            crate::session::version_cell_of(
+                &meta("version.main=unknown unclassified\n"),
+                "main",
+                Some("codex-mic"),
+            )
+            .as_deref(),
+            Some("codex-mic unknown (unclassified) (measured: none)")
+        );
+        assert_eq!(
+            crate::session::version_cell_of(&meta("version.main=2.0.1\n"), "main", None).as_deref(),
+            Some("- 2.0.1 (measured: none)")
+        );
+        // A control byte in the recorded binary never reaches the line.
+        let hostile = crate::session::version_cell_of(
+            &meta("version.main=2.0.1\n"),
+            "main",
+            Some("cl\u{1b}[31mx\nz"),
+        )
+        .expect("a valid row");
+        assert!(!hostile.contains(['\u{1b}', '\n']), "{hostile:?}");
     }
 
     #[test]

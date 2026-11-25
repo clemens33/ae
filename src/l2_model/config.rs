@@ -2523,6 +2523,50 @@ pub fn global_relay_replies(global: Option<&Path>) -> RelayReplies {
     }
 }
 
+/// The global `[workspace] version_probe` ruling: whether each tool start asks
+/// the seat's own harness for `--version` and records the answer as
+/// `version.<slot>` (`ae list` and `ae doctor` then show it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VersionProbe {
+    /// No question is asked, the default: a start runs nothing but the tool.
+    #[default]
+    Off,
+    /// Exactly `on`: one `--version` call per start, three seconds at most.
+    On,
+}
+
+impl VersionProbe {
+    /// Whether a start asks.
+    #[must_use]
+    pub const fn asks(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// GLOBAL ONLY, so a project `.ae/config` never votes. Exactly `on` asks; an
+/// absent file, an absent key, `off`, any other value and every reader error
+/// ask nothing, because the question starts a program on every launch.
+#[must_use]
+pub fn global_version_probe(global: Option<&Path>) -> VersionProbe {
+    let Some(file) = global else {
+        return VersionProbe::Off;
+    };
+    match read_global_text(file) {
+        Ok(Some(text)) => version_probe_in(file, &text),
+        _ => VersionProbe::Off,
+    }
+}
+
+/// [`global_version_probe`] over text already read; `file` names it in a
+/// refusal that is then read as `Off`.
+#[must_use]
+pub fn version_probe_in(file: &Path, text: &str) -> VersionProbe {
+    match workspace_key_in(file, text, "version_probe") {
+        Ok(Some(value)) if value.trim() == "on" => VersionProbe::On,
+        _ => VersionProbe::Off,
+    }
+}
+
 /// GLOBAL ONLY, through the same reader as `restore`, so a project
 /// `.ae/config` never votes. Absent and exact `on` answer, exact `off` does
 /// not; any other value and every reader error answers nothing and is named.
@@ -3027,6 +3071,51 @@ mod tests {
     /// PIN: the raw relay answer line is hidden unless the global config says
     /// exactly `on`; a missing file, a missing key, `off`, any other value, an
     /// unreadable file and no file at all hide it.
+    /// `version_probe` asks only on an exact `on` in the global `[workspace]`;
+    /// the default, `off`, any other value, a duplicate that ends on one, a
+    /// refused line, an unreadable file and no file at all ask nothing.
+    #[test]
+    fn version_probe_asks_only_on_an_exact_on_in_the_global_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-config-version-probe-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let file = dir.join("config");
+        let read = |text: &str| {
+            assert!(std::fs::write(&file, text).is_ok());
+            global_version_probe(Some(&file))
+        };
+        let on = read("[workspace]\nversion_probe = on\n");
+        let spaced = read("[workspace]\n  version_probe =  on  \n");
+        let last_wins = read("[workspace]\nversion_probe = off\nversion_probe = on\n");
+        let wrong_section = read("[other]\nversion_probe = on\n");
+        let ended_off = read("[workspace]\nversion_probe = on\nversion_probe = off\n");
+        let others: Vec<_> = ["off", "ON", "true", "1", "maybe", ""]
+            .iter()
+            .map(|value| read(&format!("[workspace]\nversion_probe = {value}\n")))
+            .collect();
+        let no_key = read("[workspace]\nchat = on\n");
+        let bare = read("[workspace]\nversion_probe\n");
+        let missing = global_version_probe(Some(&dir.join("absent")));
+        let unreadable = global_version_probe(Some(&dir));
+        let no_file = global_version_probe(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(on.asks() && spaced.asks() && last_wins.asks());
+        assert_eq!(VersionProbe::default(), VersionProbe::Off);
+        assert!(others.iter().all(|value| !value.asks()), "{others:?}");
+        assert_eq!(
+            [
+                wrong_section,
+                ended_off,
+                no_key,
+                bare,
+                missing,
+                unreadable,
+                no_file
+            ],
+            [VersionProbe::Off; 7]
+        );
+    }
+
     #[test]
     fn relay_replies_shows_only_on_an_exact_on_in_the_global_workspace() {
         let dir =

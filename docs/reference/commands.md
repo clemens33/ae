@@ -400,6 +400,13 @@ A running seat whose pane runs other known harnesses than its records name reads
 `harness:<runs> (records <tool>)` — the `seat-identity` disagreement `ae doctor` reports, from
 the listing's one process read; a diagnosis only, no record is rewritten. A pane ae cannot read
 whole, an ambiguous one, a shell and a seat that records no tool read nothing. JSON is unchanged.
+A seat whose last start measured its harness (`[workspace] version_probe = on`) adds
+`version:<bin> <release> (measured <release>)`, for example `version:claude 2.1.330 (measured 2.1.330)`:
+the release `<bin> --version` printed at that start beside the newest release the captured fixtures
+prove for that tool, or `(measured: none)` where there is none. A start that could not measure says
+why instead, `version:codex-mic unknown (unclassified) (measured: none)`. No row, no cell; `ae doctor`
+repeats it as a `seat-version` row and names a damaged row under `seat-records`. Table only, and
+diagnosis only: no release is judged old or new.
 Each session's indented detail line ends with three lifecycle ages:
 `created` is the first launch, `started` is the latest launch or resume, and
 `active` is the newest ae event. Legacy sessions derive creation from the
