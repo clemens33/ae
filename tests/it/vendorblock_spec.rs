@@ -566,11 +566,27 @@ fn ae_quota_shows_a_block_and_reading_it_does_not_clear_it() {
     );
     assert!(out.contains("ae quota clear client-muse"), "{out}");
     assert!(
+        out.lines().any(|line| {
+            ["client-muse", SINCE_ISO, "Billing verification failed"]
+                .iter()
+                .all(|fact| line.contains(fact))
+        }),
+        "{out}"
+    );
+    assert!(
         out.contains(&format!("blocked (account since {SINCE_ISO}")),
         "{out}"
     );
     assert!(
         out.contains("ae quota clear provider-github-copilot"),
+        "{out}"
+    );
+    assert!(
+        out.lines().any(|line| {
+            ["provider-github-copilot", SINCE_ISO, PHRASE]
+                .iter()
+                .all(|fact| line.contains(fact))
+        }),
         "{out}"
     );
     assert!(
@@ -622,7 +638,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
             SINCE,
         ),
     );
-    let cleared = ae_quota(&root, &["quota", "clear", "client-muse"]);
+    let cleared = ae_quota(&root, &["quota", "clear", "client-muse", "-y"]);
     let err = String::from_utf8_lossy(&cleared.stderr);
     let out = String::from_utf8_lossy(&cleared.stdout);
     assert_eq!(cleared.status.code(), Some(0), "{err}{out}");
@@ -632,7 +648,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
             .join("vendorblock/provider-github-copilot.rec")
             .exists()
     );
-    let again = ae_quota(&root, &["quota", "clear", "client-muse"]);
+    let again = ae_quota(&root, &["quota", "clear", "client-muse", "-y"]);
     let err = String::from_utf8_lossy(&again.stderr);
     let out = String::from_utf8_lossy(&again.stdout);
     assert_ne!(again.status.code(), Some(0), "{err}{out}");
@@ -640,7 +656,7 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
         format!("{err}{out}").contains("no block recorded for client-muse"),
         "{err}{out}"
     );
-    let other = ae_quota(&root, &["quota", "clear", "provider-opencode"]);
+    let other = ae_quota(&root, &["quota", "clear", "provider-opencode", "-y"]);
     let err = String::from_utf8_lossy(&other.stderr);
     let out = String::from_utf8_lossy(&other.stdout);
     assert_ne!(other.status.code(), Some(0), "{err}{out}");
@@ -653,12 +669,42 @@ fn ae_quota_clear_removes_one_client_and_a_second_clear_refuses() {
             .join("vendorblock/provider-github-copilot.rec")
             .exists()
     );
-    let unknown = ae_quota(&root, &["quota", "clear", "nosuch"]);
+    let unknown = ae_quota(&root, &["quota", "clear", "nosuch", "-y"]);
     let err = String::from_utf8_lossy(&unknown.stderr);
     let out = String::from_utf8_lossy(&unknown.stdout);
     assert_ne!(unknown.status.code(), Some(0), "{err}{out}");
     assert!(
         format!("{err}{out}").contains("unknown scope nosuch"),
         "{err}{out}"
+    );
+}
+
+#[test]
+fn quarantine2_list_names_standing_blocks_without_a_seat_on_them() {
+    let root = Root::new("q2list");
+    let reason = "Fixture account blocked deliberately";
+    root.write(
+        "provider-github-copilot",
+        &record(
+            "opencode",
+            "opencode",
+            "github-copilot",
+            "account",
+            "oldseat",
+            reason,
+            SINCE,
+        ),
+    );
+    let output = ae_quota(&root, &["list"]);
+    assert!(output.status.success(), "{output:?}");
+    let out = String::from_utf8(output.stdout).expect("list output");
+    for fact in ["provider-github-copilot", SINCE_ISO, reason] {
+        assert!(out.contains(fact), "list must show {fact:?}: {out}");
+    }
+    assert!(
+        root.ae_home
+            .join("vendorblock/provider-github-copilot.rec")
+            .exists(),
+        "list is read-only"
     );
 }

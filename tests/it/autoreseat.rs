@@ -652,6 +652,15 @@ fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
 }
 
 fn watch_until_from(rig: &Rig, caller_pane: Option<&str>, done: impl Fn() -> bool) -> bool {
+    watch_until_in(rig, &rig.scratch, caller_pane, done)
+}
+
+fn watch_until_in(
+    rig: &Rig,
+    state_root: &std::path::Path,
+    caller_pane: Option<&str>,
+    done: impl Fn() -> bool,
+) -> bool {
     link_send(rig);
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -664,7 +673,7 @@ fn watch_until_from(rig: &Rig, caller_pane: Option<&str>, done: impl Fn() -> boo
         .args(["--interval", "1", "--stale-secs", "999999"])
         .args(["--tg-supervise-secs", "0"])
         .env("HOME", rig.scratch.join("home"))
-        .env("AE_HOME", &rig.scratch)
+        .env("AE_HOME", state_root)
         .env("CONFIG_FILE", rig.scratch.join("config"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
@@ -1256,11 +1265,13 @@ fn limitstop_playback_as(rig: &Rig, tool: &str, frame: &str, agent: &str) -> Str
     assert!(std::fs::write(&frame_path, frame).is_ok(), "playback frame");
     // The marker is a string the drawn frame contains: the product's own words
     // where the frame has them, else the menu's title.
-    let mark = if frame.contains("Usage limit reached") {
-        "Usage limit reached"
-    } else {
-        "What do you want to do?"
-    };
+    let mark = [
+        "Usage limit reached",
+        "Error: You have exceeded your monthly quota",
+    ]
+    .into_iter()
+    .find(|row| frame.contains(row))
+    .unwrap_or("What do you want to do?");
     let body = LIMITSTOP_PLAYBACK
         .replace("__FRAME__", &frame_path.display().to_string())
         .replace("__MARK__", mark)
@@ -2933,3 +2944,6 @@ mod bgtaskreseat_pins;
 
 #[path = "autoreseat/orchreseat_spec.rs"]
 mod orchreseat_spec;
+
+#[path = "autoreseat/quarantine2_spec.rs"]
+mod quarantine2_spec;

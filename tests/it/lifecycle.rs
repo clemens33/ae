@@ -4115,3 +4115,6 @@ fn a_confirmed_refusal_reaches_the_clicker_without_the_targets_metadata() {
         }
     }
 }
+
+#[path = "lifecycle_quarantine2_spec.rs"]
+mod quarantine2_spec;
