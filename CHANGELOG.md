@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.121] - 2026-11-25
+- Freeze web charter and origin acceptance
+- Teach the orchestrator topics and web owner lines, and label web openings
+- Keep a DECIDE item on the board until its relay is sent
+- Keep run_carried within the line limit
+- Name the labelled opening in the requests --verify rows
+- Record the v2026.11.121 template in the seat config ledger
+- Pin older charter repair hints
+
 ## [v2026.11.120] - 2026-11-25
 - Show the fleet work segment with the sidebar band icons
 
