@@ -81,8 +81,8 @@ const SLUG: &str = "smoke";
 const HOSTILE: &str = "<img src=x onerror=alert(1)> & </p>";
 const HOSTILE_WHAT: &str = "<script>alert(2)</script>";
 const DRAFT: &str = "web smoke: one owner ask";
-const LIGHT_BG: &str = "rgb(246, 244, 239)";
-const DARK_BG: &str = "rgb(21, 23, 25)";
+const LIGHT_BG: &str = "rgb(247, 248, 250)";
+const DARK_BG: &str = "rgb(43, 43, 43)";
 
 /// The topic row's focus guard as `app.mjs` serves it, and what the plant
 /// serves instead: the same row without its mousedown `preventDefault`.
