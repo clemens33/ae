@@ -967,10 +967,49 @@ test-affected *args:
 # creates EXCLUSIVELY (noclobber, O_EXCL): that create is the claim, because `mkdir` is not
 # atomic everywhere (uutils 0.10.0, Ubuntu 26.04, reports success for a directory that exists,
 # so two claimants both "win" it). The hand protocol has no owner proof on such a host, the
-# recipe has. `<main checkout>/.local/locks/next` is the queue, a file naming
-# the one slice that may claim next (empty = anyone). The main checkout is
-# resolved from `git rev-parse --git-common-dir`, so a linked worktree meets the
-# same lock. `.local` is untracked: claim creates what it needs.
+# recipe has. `<main checkout>/.local/locks/next` names the one slice that may claim
+# next (empty = the queue decides). The main checkout is resolved from
+# `git rev-parse --git-common-dir`, so a linked worktree meets the same lock.
+# `.local` is untracked: claim creates what it needs.
+#
+# THE QUEUE. A claim that may wait (wait-secs > 0) takes a TICKET in
+# `<main checkout>/.local/locks/queue/`: an empty plain file named
+# `<key>+<name>+<pid>+<identity>+<host>` (pid and `ps -o lstart=` identity of the recipe shell, as
+# CANCEL-WAIT records them). Only names and file types are read, never content. It publishes the
+# ticket through a DOOR `0+<name>+<pid>+<identity>+<host>` (Lamport's bakery): door, then key =
+# max(largest key + 1, epoch seconds), then ticket, then the door goes. The order is the key, then the
+# whole name in C order. A ticket is the HEAD when two looks in a row, each a full scan, find no other
+# door standing (a door that vanishes mid-scan counts as standing) and no live, unsure or damaged entry
+# ordered before it. The key is read after a claim scan, which removes stale entries first. Keys stop
+# at 18 digits: while a live, unsure or damaged entry holds the largest key, a claim cannot take a
+# ticket and waits, trying again on each poll. With `next` empty, or holding a reservation, only the
+# head takes the free gate. `next` is read whole, once, as a plain file of at most 256 bytes; a link,
+# anything longer or unreadable, or text that is not one claim name (trailing newlines aside) names no
+# claim and blocks every claim. A `next` naming a claim, written by anyone else (the lead, a hand
+# waiter, an old script or recipe), is MANUAL: it blocks every other name as before and lets the name
+# it holds through whatever the queue order. While the head waits it RESERVES an empty `next` (or one
+# another ticket reserved): it writes `nextby/<ticket>+new` holding its name, stamps it and a proof
+# `nextby/<ticket>+<inode>` with one `touch -t` second; then one perl process checks the file against
+# its proof, reads `next` again and renames the file to `next`. The
+# reservation counts while `next` is that inode, unchanged (content, size, mtime): any later write
+# makes it MANUAL. Every successful claim empties (truncates, never removes) a `next` naming it; any
+# other end of a claim empties only its own reservation, and removes its door, ticket and the
+# `nextby` files it created itself. A proof goes only once `next` is emptied or proven to be
+# something else: on any doubt (an unwritable `next`, a change mid-check, a check that never reported) it stays, so a later pass
+# can still prove the reservation. An entry whose claim is provably gone (this host, pid gone or
+# reused) is removed by the next claim that sees it, with one line from the claim that removed it; a
+# stale proof first empties `next` while `next` is still its reservation, through one open
+# descriptor (perl: fstat, content, inode, mtime, the path still names it, then truncate). On any
+# doubt (identity unreadable, another host) an entry counts as live. A DAMAGED entry (a name off the
+# grammar, a link, not a plain file, not empty; in `nextby`, a proof that is not empty or a prepared
+# file that does not hold exactly its name) is never removed by a claim: in the queue it is live at
+# its key's place (no key = first) and named on every poll; `status` names both kinds; only a human
+# removes one. Every unlink rechecks the entry's shape first. CANCEL-WAIT removes only the intact
+# entries of the cancelled incarnation on this host, then its prepared file and, through its proof,
+# its reservation. A claim of 0 writes no ticket and reads only `next`.
+# Named residual: a writer outside the protocol whose write to `next` lands after the final recheck
+# of `next` (the same file, size and mtime, or still absent) and before the rename or truncate that
+# follows it is overwritten; a legacy waiter that relied on it can be stranded.
 #
 # WHICH RUNS A CLAIM OWNS (#343). After its owner create wins, a claim writes
 # `<main checkout>/.local/locks/binding`: its exact owner line, then the canonical root
@@ -981,8 +1020,10 @@ test-affected *args:
 # is proof only while its first line equals the current owner line; without one,
 # every run counts as the holder's. Release removes the binding of its own claim.
 #
-# claim <name> [wait-secs]  take it, or with a wait poll every 30 s up to that
-#                           many seconds, printing the holder; 0 = try once. Exit 1 when not taken.
+# claim <name> [wait-secs]  take it, or with a wait queue (THE QUEUE) and poll every 30 s up to
+#                           that many seconds, printing the holder; 0 = try once, no ticket. Exit 1
+#                           when not taken. A taken claim prints `bind runs to this claim: export
+#                           AE_LANE_CLAIM=<name>`.
 # release <name>            give it back. Refused, lock untouched, when the owner line
 #                           is not <name> (or not readable, or the directory holds anything
 #                           but `owner`). It never removes a lock it cannot prove is yours.
@@ -991,7 +1032,8 @@ test-affected *args:
 # cancel-wait <name>        stop a claim of that name that is still WAITING and that this
 #                           machine's `claim` recorded when it began to wait. Never a holder, never
 #                           a pid set, never a signal: see CANCEL-WAIT below. Exit 0 cancelled, 1 refused.
-# status                    who holds it and how long; exit 0 free, 1 held.
+# status                    who holds it and how long, `next`, then the queue in order (name, age,
+#                           live, unsure or stale, damaged entries); exit 0 free, 1 held.
 #
 # A `claim` and the `release` RECIPE (`just release`, not the `release` verb here, which never checks
 # the disk, so a full disk cannot stop a holder giving its lock back) refuse, before any effect, when
@@ -1038,7 +1080,7 @@ test-affected *args:
 # ("suspect") and left standing: a human or the lead clears it, by hand, after
 # asking the holder. A stale-lock cleanup once removed an ACTIVE gate. Age alone
 # cannot prove a holder dead, so nothing here acts on it. The queue check and the
-# claim are two steps, as they were by hand: `next` is a courtesy, the owner create is the lock.
+# claim are two steps, as they were by hand: the queue and `next` order, the owner create is the lock.
 
 # Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | cancel-wait NAME | status
 [no-exit-message]
@@ -1362,11 +1404,619 @@ LANE_LOCK := DISKFREE + "\n" + '''
                 return 0
             fi
             if ((cool_slept == 0)); then
+                if ((reserve_ok)); then reserve_next; fi
                 wait_register
                 cool_slept=1
             fi
             echo "lane-lock: cooling, ${left}s left: $(thermal_temp) is above $max_temp C (AE_LANE_MAX_TEMP_C)" >&2
             if ((left < cool_step)); then nap "$left"; else nap "$cool_step"; fi
+        done
+    }
+    # THE QUEUE (see the header). Its entries are hostile input: a name is matched against an exact
+    # grammar and a file's type is tested; content is opened only through q_perl, at most 256 bytes.
+    queue="$locks/queue"
+    nextby="$locks/nextby"
+    key_re='^(0|[1-9][0-9]{0,17})\+'
+    entry_re='^(0|[1-9][0-9]{0,17})\+([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\+([1-9][0-9]{0,9})\+([A-Za-z0-9]{1,64})\+([A-Za-z0-9._-]{1,64})$'
+    proof_re='^([1-9][0-9]{0,17}\+([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\+([1-9][0-9]{0,9})\+([A-Za-z0-9]{1,64})\+([A-Za-z0-9._-]{1,64}))\+([1-9][0-9]{0,19}|new)$'
+    # q_perl MODE PATH ...: every read of `next` and every removal in the queue, on one open
+    # descriptor or one lstat, never through a link, at most 256 bytes of content.
+    # `read NEXT NEXTBY` prints one line: a kind, a space and a text. The kind is `empty` (absent
+    # or a plain empty file), `manual` (one claim name, trailing newlines aside), `auto` (that name,
+    # the content exactly `NAME\n`, and NEXTBY, read entry by entry only then, holds an empty proof
+    # of its inode and mtime) or `opaque` (anything else: a link, not a plain file, longer than 256
+    # bytes, unreadable, changed while read, or no claim name), whose text says why.
+    # `publish PREP PROOF NAME NEXT NEXTBY` renames PREP onto NEXT only when PREP is still exactly
+    # what PROOF names (inode, `NAME\n`, mtime) and NEXT, read the same way, is empty or another
+    # name's reservation, all in one process just before the rename. `reclaim NEXT PROOF NAME INODE` (that
+    # reservation) and `clear NEXT NAME` (a `next` naming NAME) truncate it after a read-only check, a
+    # writable open of the same file, an unchanged size and mtime, and the path still naming it.
+    # `canon PATH empty|prep NAME` checks an entry's shape (empty, or exactly `NAME\n`); `unlink`
+    # checks it and removes it. Exit codes: 0 done (truncated, renamed, removed, canonical), 1 doubt
+    # (nothing changed; try again later), 2 verified otherwise (not that reservation, not naming NAME,
+    # not publishable, damaged), 3 gone (the entry, the prepared file, or the proof of a reclaim).
+    # Any other exit (a signal, a perl failure) leaves the outcome unknown: the caller keeps what it
+    # tracks, and every proof stays.
+    q_perl='
+        use strict;
+        use warnings;
+        use Fcntl qw(O_RDONLY O_RDWR O_NONBLOCK O_NOFOLLOW :mode);
+        use Time::HiRes qw(stat lstat);
+        my ($mode, $path, @rest) = @ARGV;
+        my $limit = 256;
+        my $grammar = qr/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/;
+        sub whole {
+            my ($fh, $size) = @_;
+            return undef if $size > $limit;
+            my $text = "";
+            my $got = sysread($fh, $text, $limit + 1);
+            return undef unless defined $got && $got == $size;
+            return $text;
+        }
+        my $proof_name = qr/\A[1-9][0-9]{0,17}\+([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\+[1-9][0-9]{0,9}\+[A-Za-z0-9]{1,64}\+[A-Za-z0-9._-]{1,64}\+([1-9][0-9]{0,19})\z/;
+        my @seen;
+        sub observe {
+            my ($next, $dir) = @_;
+            my $fh;
+            @seen = ();
+            unless (sysopen($fh, $next, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)) {
+                return ("empty", "") if $!{ENOENT};
+                return ("opaque", $!{ELOOP} ? "it is a symbolic link" : "it cannot be read");
+            }
+            my @f = stat($fh) or return ("opaque", "it cannot be read");
+            @seen = @f;
+            return ("opaque", "it is not a plain file") unless S_ISREG($f[2]);
+            return ("empty", "") if $f[7] == 0;
+            return ("opaque", "it is longer than $limit bytes") if $f[7] > $limit;
+            my $text = whole($fh, $f[7]);
+            return ("opaque", "it changed while it was read") unless defined $text;
+            (my $line = $text) =~ s/\n+\z//;
+            if ($line !~ $grammar) {
+                (my $shown = $line) =~ s/([^\x21-\x7e])/sprintf("\\x%02x", ord($1))/ge;
+                return ("opaque", "it holds \"$shown\", not one claim name");
+            }
+            return ("manual", $line) unless $text eq "$line\n";
+            my @d = lstat($dir) or return ("manual", $line);
+            return ("manual", $line) unless S_ISDIR($d[2]);
+            opendir(my $dh, $dir) or return ("manual", $line);
+            while (defined(my $base = readdir($dh))) {
+                next unless $base =~ $proof_name && $1 eq $line && $2 eq "$f[1]";
+                my @q = lstat("$dir/$base") or next;
+                next unless S_ISREG($q[2]) && $q[7] == 0 && $q[9] == $f[9];
+                return ("auto", $line);
+            }
+            return ("manual", $line);
+        }
+        if ($mode eq "read") {
+            my ($kind, $text) = observe($path, $rest[0]);
+            print "$kind $text\n";
+            exit 0;
+        }
+        if ($mode eq "publish") {
+            my ($proof, $name, $next, $dir) = @rest;
+            my ($ino) = $proof =~ /\+([1-9][0-9]{0,19})\z/ or exit 1;
+            my @l = lstat($path) or exit($!{ENOENT} ? 3 : 1);
+            exit 2 unless S_ISREG($l[2]) && "$l[1]" eq $ino && $l[7] == length($name) + 1;
+            sysopen(my $fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1;
+            my @f = stat($fh) or exit 1;
+            exit 2 unless $f[0] == $l[0] && $f[1] == $l[1];
+            my $text = whole($fh, $f[7]);
+            exit 2 unless defined $text && $text eq "$name\n";
+            my @p = lstat($proof) or exit 1;
+            exit 2 unless S_ISREG($p[2]) && $p[7] == 0 && $p[9] == $f[9];
+            my ($kind, $held) = observe($next, $dir);
+            exit 2 unless $kind eq "empty" || ($kind eq "auto" && $held ne $name);
+            # The final checks, last before the rename: the prepared file, its proof, and `next`
+            # still exactly as observed (absent, or the same dev, inode, size and mtime). Any change
+            # since is kept and retried later; only a write after these checks is overwritten.
+            my @g = lstat($path) or exit 1;
+            exit 1 unless $g[0] == $f[0] && $g[1] == $f[1] && $g[7] == $f[7] && $g[9] == $f[9];
+            my @q = lstat($proof) or exit 1;
+            exit 1 unless S_ISREG($q[2]) && $q[7] == 0 && $q[9] == $f[9];
+            my @n = lstat($next);
+            if (@seen) {
+                exit 1 unless @n && $n[0] == $seen[0] && $n[1] == $seen[1] && $n[7] == $seen[7] && $n[9] == $seen[9];
+            } else {
+                exit 1 if @n || !$!{ENOENT};
+            }
+            exit(rename($path, $next) ? 0 : 1);
+        }
+        if ($mode eq "canon" || $mode eq "unlink") {
+            my ($kind, $name) = @rest;
+            my @l = lstat($path) or exit($!{ENOENT} ? 3 : 1);
+            exit 2 unless S_ISREG($l[2]);
+            if ($kind eq "empty") {
+                exit 2 unless $l[7] == 0;
+            } else {
+                exit 2 unless $l[7] == length($name) + 1;
+                sysopen(my $fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1;
+                my @f = stat($fh) or exit 1;
+                exit 1 unless $f[0] == $l[0] && $f[1] == $l[1];
+                my $text = whole($fh, $f[7]);
+                exit 2 unless defined $text && $text eq "$name\n";
+            }
+            exit 0 if $mode eq "canon";
+            exit(unlink($path) == 1 ? 0 : ($!{ENOENT} ? 3 : 1));
+        }
+        my $fh;
+        sysopen($fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit(($!{ENOENT} || $!{ELOOP}) ? 2 : 1);
+        my @f = stat($fh) or exit 1;
+        exit 2 unless S_ISREG($f[2]) && $f[7] > 0 && $f[7] <= $limit;
+        my $text = whole($fh, $f[7]);
+        exit 1 unless defined $text;
+        (my $line = $text) =~ s/\n+\z//;
+        if ($mode eq "clear") {
+            exit 2 unless $line eq $rest[0];
+        } elsif ($mode eq "reclaim") {
+            my ($proof, $name, $ino) = @rest;
+            exit 2 unless $text eq "$name\n" && "$f[1]" eq $ino;
+            my @p = lstat($proof) or exit($!{ENOENT} ? 3 : 1);
+            exit 1 unless S_ISREG($p[2]) && $p[7] == 0;
+            exit 2 unless $p[9] == $f[9];
+        } else {
+            exit 1;
+        }
+        sysopen(my $wh, $path, O_RDWR | O_NONBLOCK | O_NOFOLLOW) or exit 1;
+        my @w = stat($wh) or exit 1;
+        exit 1 unless $w[0] == $f[0] && $w[1] == $f[1] && $w[7] == $f[7] && $w[9] == $f[9];
+        my @n = lstat($path) or exit 1;
+        exit 1 unless $n[0] == $f[0] && $n[1] == $f[1] && $n[7] == $f[7] && $n[9] == $f[9];
+        truncate($wh, 0) or exit 1;
+        exit 0;
+    '
+    q_run() { perl -e "$q_perl" "$@" 2>/dev/null; }
+    here=""
+    host_here() { [[ -n "$here" ]] || here="$(hostname 2>/dev/null || true)"; }
+    # A hostile name, quoted so that printing it runs and shows nothing but its bytes.
+    shown() {
+        local LC_ALL=C
+        printf '%q' "$1"
+    }
+    # entry_state DIR BASE: one queue entry. Sets e_kind (door, ticket, damaged, or `vanished <kind>`
+    # when it is gone by now), e_key (its order key, 0 without one), e_name, e_pid, e_ident, e_host,
+    # e_state (live, unsure or stale; damaged counts as live) and e_why.
+    entry_state() {
+        local LC_ALL=C path="$1/$2"
+        e_kind=damaged
+        e_key=0
+        e_name=""
+        e_pid=""
+        e_ident=""
+        e_host=""
+        e_state=live
+        e_why=""
+        if [[ "$2" =~ $key_re ]]; then e_key="${BASH_REMATCH[1]}"; fi
+        if [[ "$2" =~ $entry_re ]]; then
+            e_name="${BASH_REMATCH[2]}"
+            e_pid="${BASH_REMATCH[3]}"
+            e_ident="${BASH_REMATCH[4]}"
+            e_host="${BASH_REMATCH[5]}"
+            if [[ "$e_key" == 0 ]]; then e_kind=door; else e_kind=ticket; fi
+        else
+            e_why="its name is not a ticket name"
+        fi
+        if [[ ! -e "$path" && ! -L "$path" ]]; then
+            e_kind="vanished $e_kind"
+            return 0
+        fi
+        if [[ -z "$e_why" ]]; then
+            if [[ -L "$path" ]]; then
+                e_why="it is a symbolic link"
+            elif [[ ! -f "$path" ]]; then
+                e_why="it is not a plain file"
+            elif [[ -s "$path" ]]; then
+                e_why="it is not empty"
+            fi
+            if [[ -n "$e_why" ]]; then e_kind=damaged; fi
+        fi
+        if [[ "$e_kind" == damaged ]]; then return 0; fi
+        host_here
+        if [[ "$e_host" != "$here" ]]; then
+            e_state=unsure
+            e_why="recorded on host $e_host, not this machine"
+            return 0
+        fi
+        case "$(claimant_state "$e_pid" "$e_ident")" in
+            alive) ;;
+            gone)
+                e_state=stale
+                e_why="pid $e_pid is gone or is now another process"
+                ;;
+            *)
+                e_state=unsure
+                e_why="pid $e_pid cannot be read"
+                ;;
+        esac
+    }
+    # queue_scan claim|status: one full scan into q_base, q_kind, q_key, q_name, q_state and q_why
+    # (q_n entries). A claim removes each stale door or ticket with one line and keeps a door that
+    # vanished while it scanned; status removes nothing and lists only what is still there.
+    q_n=0
+    queue_scan() {
+        local entry base r
+        q_n=0
+        [[ -d "$queue" && ! -L "$queue" ]] || return 0
+        for entry in "$queue"/* "$queue"/.[!.]* "$queue"/..?*; do
+            base="${entry##*/}"
+            if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+                case "$base" in '*' | '.[!.]*' | '..?*') continue ;; esac
+            fi
+            entry_state "$queue" "$base"
+            case "$e_kind" in
+                "vanished door") [[ "$1" == claim ]] || continue ;;
+                vanished*) continue ;;
+            esac
+            if [[ "$1" == claim && "$e_state" == stale ]]; then
+                # Only the claim whose unlink removed it says so; a damaged entry never goes.
+                r=0
+                q_run unlink "$entry" empty || r=$?
+                if ((r == 0)); then
+                    if [[ "$e_kind" == ticket ]]; then
+                        echo "lane-lock: queue: removed the stale ticket of $e_name ($e_why)" >&2
+                    else
+                        echo "lane-lock: queue: removed the stale door of $e_name ($e_why)" >&2
+                    fi
+                fi
+                if ((r == 0 || r == 3)); then continue; fi
+                # Still there: what it is now counts for this scan, so damage seen at the recheck blocks.
+                entry_state "$queue" "$base"
+                case "$e_kind" in vanished*) continue ;; esac
+                [[ "$e_state" != stale ]] || continue
+            fi
+            q_base[q_n]="$base"
+            q_kind[q_n]="$e_kind"
+            q_key[q_n]="$e_key"
+            q_name[q_n]="$e_name"
+            q_state[q_n]="$e_state"
+            q_why[q_n]="$e_why"
+            q_n=$((q_n + 1))
+        done
+    }
+    # entry_before I J: entry I orders before entry J (key, then the whole name in C order).
+    entry_before() {
+        local LC_ALL=C
+        if ((q_key[$1] != q_key[$2])); then
+            if ((q_key[$1] < q_key[$2])); then return 0; fi
+            return 1
+        fi
+        if [[ "${q_base[$1]}" < "${q_base[$2]}" ]]; then return 0; fi
+        return 1
+    }
+    # One look of a ticketed claim: look_head 1 when its ticket is the head, else look_why, and
+    # look_door 1 when nothing but a claim entering the queue stands before it.
+    door=""
+    ticket=""
+    ticket_base=""
+    queue_look() {
+        local i=0 own=-1 ahead=-1 mine=-1
+        look_head=0
+        look_door=0
+        look_why=""
+        door_drop
+        queue_scan claim
+        while ((i < q_n)); do
+            if [[ "${q_base[i]}" == "$ticket_base" ]]; then own=$i; fi
+            if [[ -n "$door" && "${q_base[i]}" == "${door##*/}" ]]; then mine=$i; fi
+            i=$((i + 1))
+        done
+        if ((own < 0)) || [[ "${q_kind[own]}" != ticket ]]; then
+            refuse "the queue ticket of this claim ($ticket) is gone or damaged; nothing was claimed"
+        fi
+        i=0
+        while ((i < q_n)); do
+            if ((i != own && i != mine)); then
+                case "${q_kind[i]}" in
+                    door | "vanished door") look_door=1 ;;
+                    ticket | damaged)
+                        if entry_before "$i" "$own" && { ((ahead < 0)) || entry_before "$i" "$ahead"; }; then ahead=$i; fi
+                        ;;
+                esac
+            fi
+            i=$((i + 1))
+        done
+        if ((ahead >= 0)); then
+            look_door=0
+            if [[ "${q_kind[ahead]}" == damaged ]]; then
+                look_why="queue: damaged entry $(shown "${q_base[ahead]}") is ahead (${q_why[ahead]}); a human removes it"
+            else
+                look_why="queue: ${q_name[ahead]} is ahead (waiting $(span $(($(date +%s) - q_key[ahead]))))"
+            fi
+        elif ((look_door)); then
+            look_why="queue: a claim is entering the queue"
+        else
+            look_head=1
+        fi
+    }
+    # This claim's door goes once its unlink removed it, or it is gone or damaged (no longer its own).
+    door_drop() {
+        local r=0
+        [[ -n "$door" ]] || return 0
+        q_run unlink "$door" empty || r=$?
+        if settled "$r"; then door=""; fi
+    }
+    # The ticket of a claim that may wait: door, key, ticket, door gone (the header). Keys stop at 18
+    # digits: when a live, unsure or damaged entry already holds the largest one, no ticket can be
+    # ordered after it, and the claim waits and tries again on each poll (queue_full).
+    queue_full=""
+    queue_publish() {
+        local LC_ALL=C ident i max=0 top="" key now
+        queue_full=""
+        [[ ! -L "$queue" ]] || refuse "the queue $queue is a symbolic link, not a directory; no ticket was written"
+        mkdir -p "$queue" 2>/dev/null || true
+        [[ -d "$queue" && ! -L "$queue" ]] || refuse "the queue $queue is not a directory; no ticket was written"
+        ident="$(proc_identity $$ || true)"
+        host_here
+        if [[ ! "$ident" =~ ^[A-Za-z0-9]{1,64}$ || ! "$here" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+            refuse "this claim cannot write its queue ticket: its process identity or the host name cannot be read"
+        fi
+        if [[ -z "$door" ]]; then
+            door="$queue/0+$name+$$+$ident+$here"
+            if ! (set -C && : >"$door") 2>/dev/null; then
+                door=""
+                refuse "this claim could not write its queue door under $queue"
+            fi
+        fi
+        # The keys after the door: one claim scan, which first removes stale entries, so a stale
+        # entry never holds the largest key; a damaged or unsure one does, and waits for a human.
+        queue_scan claim
+        i=0
+        while ((i < q_n)); do
+            if ((q_key[i] > max)); then
+                max="${q_key[i]}"
+                top="${q_base[i]}"
+            fi
+            i=$((i + 1))
+        done
+        if ((max >= 999999999999999999)); then
+            door_drop
+            queue_full="queue: no ticket can be ordered after $(shown "$top"), which holds the largest key; a human removes it"
+            return 0
+        fi
+        key=$((max + 1))
+        now="$(date +%s)"
+        if ((now > key)); then key=$now; fi
+        ticket_base="$key+$name+$$+$ident+$here"
+        ticket="$queue/$ticket_base"
+        if ! (set -C && : >"$ticket") 2>/dev/null; then
+            ticket=""
+            ticket_base=""
+            refuse "this claim could not write its queue ticket under $queue"
+        fi
+        door_drop
+    }
+    # proof_parse BASE: a `nextby` name into p_name, p_pid, p_ident, p_host and p_ino (an
+    # inode, or `new` for a reservation not yet published).
+    proof_parse() {
+        local LC_ALL=C
+        [[ "$1" =~ $proof_re ]] || return 1
+        p_name="${BASH_REMATCH[2]}"
+        p_pid="${BASH_REMATCH[3]}"
+        p_ident="${BASH_REMATCH[4]}"
+        p_host="${BASH_REMATCH[5]}"
+        p_ino="${BASH_REMATCH[6]}"
+    }
+    # next_read: one complete observation of `next` (q_perl read): n_kind empty, manual, auto (a
+    # reservation that is still exactly what it published) or opaque, and n_text, the name it holds
+    # or, when opaque, why it names nobody.
+    next_read() {
+        local out
+        out="$(q_run read "$next_file" "$nextby")" || out=""
+        if [[ "$out" != *" "* ]]; then out="opaque it cannot be read"; fi
+        n_kind="${out%% *}"
+        n_text="${out#* }"
+    }
+    # settled CODE: a q_perl unlink or publish outcome after which the entry is no longer this
+    # claim's to track (removed, damaged, gone); doubt and any unknown outcome keep it tracked.
+    settled() {
+        case "$1" in 0 | 2 | 3) return 0 ;; esac
+        return 1
+    }
+    # reservation_end PROOF NAME INODE LINE: empty `next` while it is still that reservation, then
+    # remove the proof, which goes only once `next` is emptied or proven to be something else (reclaim
+    # 0 or 2), and needs no removal when it is gone (3). On doubt or any unknown outcome the proof
+    # stays, so a later pass can still prove the reservation and empty it. Returns 1 when the proof
+    # stays. LINE, when set, is printed once `next` was emptied.
+    reservation_end() {
+        local r=0 u=0
+        q_run reclaim "$next_file" "$1" "$2" "$3" || r=$?
+        case "$r" in
+            3) return 0 ;;
+            0 | 2) ;;
+            *) return 1 ;;
+        esac
+        if ((r == 0)) && [[ -n "$4" ]]; then echo "$4" >&2; fi
+        q_run unlink "$1" empty || u=$?
+        settled "$u"
+    }
+    # Stale reservations (lead ruling): a proof whose claim is provably gone empties `next` only while
+    # `next` is still the very reservation it published. A prepared reservation of a gone claim goes
+    # when it is intact; a damaged `nextby` entry stays, and status names it.
+    reservation_sweep() {
+        local entry base
+        [[ -d "$nextby" && ! -L "$nextby" ]] || return 0
+        host_here
+        for entry in "$nextby"/*; do
+            base="${entry##*/}"
+            proof_parse "$base" || continue
+            [[ "$p_host" == "$here" ]] || continue
+            [[ "$(claimant_state "$p_pid" "$p_ident")" == gone ]] || continue
+            if [[ "$p_ino" == new ]]; then
+                q_run unlink "$entry" prep "$p_name" || true
+            elif q_run canon "$entry" empty; then
+                reservation_end "$entry" "$p_name" "$p_ino" "lane-lock: queue: emptied next, the reservation of $p_name, whose claim (pid $p_pid) is gone" || true
+            fi
+        done
+    }
+    # Whether the head may reserve `next`: absent, a plain empty file, or a reservation of another name.
+    next_reservable() {
+        next_read
+        [[ "$n_kind" == empty || ( "$n_kind" == auto && "$n_text" != "$name" ) ]]
+    }
+    own_prep=""
+    own_proof=""
+    own_ino=""
+    reserve_ok=0
+    # The head reserves `next` while it waits (the header); a reservation it cannot make costs nothing.
+    # Only files this claim created itself are its own to remove.
+    reserve_next() {
+        local prep stamp ino="" r=0
+        [[ -n "$ticket_base" ]] || return 0
+        next_reservable || return 0
+        if [[ -n "$own_proof" ]]; then
+            reservation_release
+            [[ -z "$own_proof" ]] || return 0
+        fi
+        [[ -z "$own_prep" && ! -L "$nextby" ]] || return 0
+        mkdir -p "$nextby" 2>/dev/null || return 0
+        [[ -d "$nextby" && ! -L "$nextby" ]] || return 0
+        prep="$nextby/$ticket_base+new"
+        stamp="$(date +%Y%m%d%H%M.%S)"
+        (set -C && printf '%s\n' "$name" >"$prep") 2>/dev/null || return 0
+        own_prep="$prep"
+        if touch -t "$stamp" "$prep" 2>/dev/null && ino="$(inode_of "$prep" 2>/dev/null)" &&
+            [[ "$ino" =~ ^[1-9][0-9]{0,19}$ ]] && (set -C && : >"$nextby/$ticket_base+$ino") 2>/dev/null; then
+            own_proof="$nextby/$ticket_base+$ino"
+            own_ino="$ino"
+            # One process checks the prepared file against its proof, reads `next` again and renames.
+            r=1
+            if touch -t "$stamp" "$own_proof" 2>/dev/null; then
+                r=0
+                q_run publish "$prep" "$own_proof" "$name" "$next_file" "$nextby" || r=$?
+            fi
+            if ((r == 0)); then
+                own_prep=""
+                echo "lane-lock: queue: $name is first in the queue; next now names it" >&2
+                return 0
+            fi
+            # An unknown outcome may have published it: the proof and the prepared file stay
+            # tracked, and reservation_release settles them.
+            settled "$r" || ((r == 1)) || return 0
+            if ((r == 3)); then own_prep=""; fi
+            # Not published, so the proof proves nothing yet.
+            r=0
+            q_run unlink "$own_proof" empty || r=$?
+            if settled "$r"; then
+                own_proof=""
+                own_ino=""
+            fi
+        fi
+        if [[ -n "$own_prep" ]]; then
+            r=0
+            q_run unlink "$own_prep" prep "$name" || r=$?
+            if settled "$r"; then own_prep=""; fi
+        fi
+    }
+    # Any end but a won claim, and a won claim whose `next` stays in doubt: this claim's reservation
+    # ends (reservation_end) and its own prepared file goes.
+    reservation_release() {
+        local r=0
+        if [[ -n "$own_proof" ]] && reservation_end "$own_proof" "$name" "$own_ino" ""; then
+            own_proof=""
+            own_ino=""
+        fi
+        if [[ -n "$own_prep" ]]; then
+            q_run unlink "$own_prep" prep "$name" || r=$?
+            if settled "$r"; then own_prep=""; fi
+        fi
+    }
+    # cancel-wait: the intact tickets and doors of the cancelled incarnation (name, pid, identity and
+    # this host, as its record has them); a damaged entry or a record of another host stays.
+    queue_forget() {
+        local LC_ALL=C entry base
+        [[ -d "$queue" && ! -L "$queue" ]] || return 0
+        host_here
+        for entry in "$queue"/*; do
+            base="${entry##*/}"
+            [[ "$base" =~ $entry_re ]] || continue
+            [[ "${BASH_REMATCH[2]}" == "$1" && "${BASH_REMATCH[3]}" == "$2" && "${BASH_REMATCH[4]}" == "$3" && "${BASH_REMATCH[5]}" == "$here" ]] || continue
+            q_run unlink "$entry" empty || true
+        done
+    }
+    # cancel-wait: the reservation of the cancelled incarnation. Its prepared file goes first, so a
+    # claim that is stopped and resumes later cannot publish it; then its proof empties `next` while
+    # `next` is still that reservation (reservation_end: on doubt the proof stays).
+    reservation_forget() {
+        local entry base pass
+        [[ -d "$nextby" && ! -L "$nextby" ]] || return 0
+        host_here
+        for pass in prep proof; do
+            for entry in "$nextby"/*; do
+                base="${entry##*/}"
+                proof_parse "$base" || continue
+                [[ "$p_name" == "$1" && "$p_pid" == "$2" && "$p_ident" == "$3" && "$p_host" == "$here" ]] || continue
+                if [[ "$p_ino" == new ]]; then
+                    if [[ "$pass" == prep ]]; then q_run unlink "$entry" prep "$p_name" || true; fi
+                elif [[ "$pass" == proof ]] && q_run canon "$entry" empty; then
+                    reservation_end "$entry" "$p_name" "$p_ino" "lane-lock: queue: emptied next, the reservation of the cancelled claim of $p_name (pid $p_pid)" || true
+                fi
+            done
+        done
+    }
+    # status: damaged `nextby` entries, which nothing removes but a human.
+    nextby_status() {
+        local entry base why
+        if [[ -L "$nextby" ]]; then
+            echo "nextby: $nextby is a symbolic link, not a directory"
+            return 0
+        fi
+        if [[ ! -d "$nextby" ]]; then
+            if [[ -e "$nextby" ]]; then echo "nextby: $nextby is not a directory"; fi
+            return 0
+        fi
+        for entry in "$nextby"/* "$nextby"/.[!.]* "$nextby"/..?*; do
+            base="${entry##*/}"
+            [[ -e "$entry" || -L "$entry" ]] || continue
+            why=""
+            if ! proof_parse "$base"; then
+                why="its name is not a reservation name"
+            elif [[ -L "$entry" ]]; then
+                why="it is a symbolic link"
+            elif [[ ! -f "$entry" ]]; then
+                why="it is not a plain file"
+            elif [[ "$p_ino" != new ]]; then
+                [[ ! -s "$entry" ]] || why="it is not empty"
+            elif ! q_run canon "$entry" prep "$p_name"; then
+                why="it does not hold exactly its name"
+            fi
+            [[ -z "$why" ]] || echo "nextby: damaged entry $(shown "$base") ($why); a human removes it"
+        done
+    }
+    # status: the queue in order after the holder and `next`.
+    queue_status() {
+        local pos=0 i best taken="" now state
+        if [[ -L "$queue" ]]; then
+            echo "queue: $queue is a symbolic link, not a directory"
+            return 0
+        fi
+        if [[ -e "$queue" && ! -d "$queue" ]]; then
+            echo "queue: $queue is not a directory"
+            return 0
+        fi
+        queue_scan status
+        if ((q_n == 0)); then
+            echo "queue: empty"
+            return 0
+        fi
+        now="$(date +%s)"
+        while ((pos < q_n)); do
+            best=-1
+            i=0
+            while ((i < q_n)); do
+                if [[ "$taken" != *" $i "* ]] && { ((best < 0)) || entry_before "$i" "$best"; }; then best=$i; fi
+                i=$((i + 1))
+            done
+            taken="$taken $best "
+            pos=$((pos + 1))
+            state="${q_state[best]}"
+            case "$state" in
+                stale) state="stale (${q_why[best]})" ;;
+                unsure) state="live (unsure: ${q_why[best]})" ;;
+            esac
+            case "${q_kind[best]}" in
+                damaged) echo "queue $pos: damaged entry $(shown "${q_base[best]}") (${q_why[best]}); a human removes it" ;;
+                door) echo "queue $pos: ${q_name[best]}, entering the queue, $state" ;;
+                *) echo "queue $pos: ${q_name[best]}, waiting $(span $((now - q_key[best]))), $state" ;;
+            esac
         done
     }
     case "$verb" in
@@ -1391,7 +2041,15 @@ LANE_LOCK := DISKFREE + "\n" + '''
                 echo "lane-lock does not clear a lock: ask the holder, then the lead or a human removes it by hand"
                 state=1
             fi
-            if [[ -s "$next_file" ]]; then echo "next: $(cat "$next_file")"; else echo "next: none"; fi
+            next_read
+            case "$n_kind" in
+                empty) echo "next: none" ;;
+                auto) echo "next: $n_text (reserved by the first ticket of the queue)" ;;
+                manual) echo "next: $n_text" ;;
+                *) echo "next: names no claim ($n_text); it blocks every claim until the lead clears it" ;;
+            esac
+            queue_status
+            nextby_status
             exit "$state"
             ;;
         release)
@@ -1510,6 +2168,10 @@ LANE_LOCK := DISKFREE + "\n" + '''
                 fi
                 sleep 1
             done
+            # Its own exit removed its ticket and reservation; a claim that has not ended cannot take
+            # the lock, so they go too rather than hold the queue and `next`.
+            queue_forget "$r_name" "$r_pid" "$r_ident"
+            reservation_forget "$r_name" "$r_pid" "$r_ident"
             if [[ -d "$rec" ]]; then
                 echo "lane-lock: cancel decided for $name, but pid $r_pid has not ended after 10 s; it cannot take the lock" >&2
                 exit 1
@@ -1525,9 +2187,13 @@ LANE_LOCK := DISKFREE + "\n" + '''
             attempt=0
             # The incarnation of a waiting claim goes with the claim, on every way out; TERM, INT and HUP
             # are exits so that it does (SIGKILL leaves a stale one, which cancel-wait consumes).
+            # So do its door, ticket and reservation (THE QUEUE).
             claim_cleanup() {
                 local status=$?
                 inc_remove "$inc"
+                reservation_release
+                door_drop
+                if [[ -n "$ticket" ]]; then q_run unlink "$ticket" empty || true; fi
                 exit "$status"
             }
             trap claim_cleanup EXIT
@@ -1539,12 +2205,46 @@ LANE_LOCK := DISKFREE + "\n" + '''
                     disk_floor lane-lock "$locks"
                     wait_leave
                 fi
-                if [[ ! -s "$next_file" || "$(cat "$next_file")" == "$name" ]]; then
+                reservation_sweep
+                if ((wait > 0)) && [[ -z "$ticket" ]]; then queue_publish; fi
+                head_ok=0
+                look_door=0
+                look_why=""
+                if [[ -n "$ticket" ]]; then
+                    queue_look
+                    if ((look_head)); then queue_look; fi
+                    head_ok=$look_head
+                fi
+                next_read
+                why=""
+                if [[ "$n_kind" == manual && "$n_text" == "$name" ]]; then
+                    admitted=1
+                elif [[ "$n_kind" == opaque ]]; then
+                    admitted=0
+                    look_door=0
+                    why="queue: next names no claim ($n_text); the lead clears it"
+                elif [[ -n "$queue_full" ]]; then
+                    admitted=0
+                    why="$queue_full"
+                elif [[ "$n_kind" != empty && "$n_text" != "$name" && ( -z "$ticket" || "$n_kind" == manual ) ]]; then
+                    admitted=0
+                    look_door=0
+                    why="queue: next is $n_text, not $name"
+                elif [[ -n "$ticket" ]] && ((head_ok == 0)); then
+                    admitted=0
+                    why="$look_why"
+                else
+                    admitted=1
+                fi
+                if ((admitted)); then
+                    look_door=0
                     # The cool-down: the queue lets this name through and the gate is free, so this is
                     # the moment the box is measured (see THERMAL). After a sleep the pass starts over,
                     # which re-checks the disk, leaves WAITING and looks at the queue and the gate again.
                     if ((cooled == 0)) && [[ ! -e "$gate" && ! -L "$gate" ]]; then
+                        reserve_ok=$head_ok
                         cool_down
+                        reserve_ok=0
                         if ((cool_slept)); then continue; fi
                     fi
                     # A standing gate is held and is not asked about: a `mkdir` that is not atomic reports
@@ -1555,10 +2255,25 @@ LANE_LOCK := DISKFREE + "\n" + '''
                         if err="$(mkdir "$gate" 2>&1)"; then made=yes; else made=no; fi
                     fi
                     if [[ "$made" == yes ]] && claim_owner; then
+                        if [[ -n "$ticket" ]]; then q_run unlink "$ticket" empty || true; fi
+                        ticket=""
+                        # A `next` naming this claim is emptied. Unless that is proven (emptied, or
+                        # naming another), its own reservation keeps its proof, and its exit or a
+                        # later claim's sweep empties it.
+                        cleared=0
+                        q_run clear "$next_file" "$name" || cleared=$?
+                        case "$cleared" in 0 | 2) reservation_release ;; esac
                         echo "lane-lock: claimed by $name"
                         thermal_line claim
                         bind_claim
-                        [[ ! -s "$next_file" ]] || echo "note: $next_file still names $(cat "$next_file"); the lead clears it"
+                        next_read
+                        case "$n_kind" in
+                            empty) ;;
+                            auto) echo "note: $next_file holds the queue's reservation of $n_text; the queue empties it once that claim ends" ;;
+                            opaque) echo "note: $next_file names no claim ($n_text); the lead clears it" ;;
+                            *) echo "note: $next_file still names $n_text; the lead clears it" ;;
+                        esac
+                        echo "bind runs to this claim: export AE_LANE_CLAIM=$name"
                         exit 0
                     fi
                     if [[ ! -e "$gate" && ! -L "$gate" ]]; then
@@ -1574,8 +2289,8 @@ LANE_LOCK := DISKFREE + "\n" + '''
                     else
                         why="$gate exists and is not a directory"
                     fi
-                else
-                    why="queue: next is $(cat "$next_file"), not $name"
+                    # The head waits behind a holder: it reserves `next` (THE QUEUE).
+                    if ((head_ok)); then reserve_next; fi
                 fi
                 left=$(( wait - ($(date +%s) - start) ))
                 if (( left <= 0 )); then
@@ -1584,7 +2299,10 @@ LANE_LOCK := DISKFREE + "\n" + '''
                 fi
                 wait_register
                 echo "lane-lock: waiting, ${left}s left: $why" >&2
-                if (( left < poll )); then nap "$left"; else nap "$poll"; fi
+                # A claim entering the queue stands for milliseconds: look again after a second.
+                step=$poll
+                if ((look_door)); then step=1; fi
+                if (( left < step )); then nap "$left"; else nap "$step"; fi
             done
             ;;
     esac
