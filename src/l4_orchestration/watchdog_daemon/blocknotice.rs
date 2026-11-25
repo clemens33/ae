@@ -24,7 +24,8 @@ impl Cycle<'_> {
     /// Tell each lead seat of this session, once, about every block on a scope
     /// this session can launch on ([`reach`]). A seat that is dead or on a
     /// human prompt waits for a later cycle, and so does a delivery that did
-    /// not land: only a delivered event is a receipt.
+    /// not land: only a notice that was delivered, or submitted without a
+    /// confirmation and so possibly delivered, leaves a receipt.
     ///
     /// `drawn` says a seat of this cycle drew a block: its
     /// [`crate::vendorblock::WRITTEN_ACTION`] row postdates the cycle's
@@ -165,7 +166,7 @@ impl Cycle<'_> {
         };
         let landed = matches!(
             crate::deliver::deliver_checked(&request, Some(&guard), false, &mut err),
-            Ok(Ok(_) | Err(crate::deliver::Failure::Unconfirmed { .. }))
+            Ok(Ok(_) | Err(crate::deliver::Failure::Unconfirmed { notice: false, .. }))
         );
         if landed {
             let _ = super::Journal {
