@@ -38,7 +38,9 @@ ae brief [name] [--all] [--since <dur>] [--full] [--seat <agent>]
                        --seat prints ONE seat's seed pack instead of the cards
 ae quota [--json]      Show bounded local quota snapshots for every configured account;
                        --json prints the same rows as one JSON document
-ae quota clear CLIENT  End one client scope's vendor block, the only way a block ends
+ae quota clear STEM [-y]
+                       The human ends one scope's vendor block, the only way a block ends;
+                       asks first, and an agent seat is refused
 ae usage [name…] [--hourly] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
@@ -1599,19 +1601,38 @@ seat and the vendor's own words; a provider record adds a `provider` row. The se
 journal action `limit` with the kind in its summary) and an auto reseat treats it like a usage
 limit.
 
-`ae quota` prints a `blocked scopes` section under the table, one line per blocked scope:
-`blocked (billing since 2026-09-08T09:10:00Z)`, the reason, the seat that saw it and
-`ae quota clear <stem>`. `spawn --using` and `--lead`, `--colead` and `--seat` on a blocked scope
-(including a `profile@client` selection, which keeps the profile's own provider) refuse before any
-seat or tmux effect and name the same command.
+`ae quota` and every human `ae list` print a `blocked scopes` section, one line per blocked scope,
+whether or not a seat sits on it: `blocked (billing since 2026-09-08T09:10:00Z)`, the reason, the
+seat that saw it and `ae quota clear <stem>`. `spawn --using` and `--lead`, `--colead` and `--seat`
+on a blocked scope (including a `profile@client` selection, which keeps the profile's own provider)
+refuse before any seat or tmux effect and name the same command.
 
-Only `ae quota clear <stem>` ends a block (`client-muse`, `provider-github-copilot`: the record's
-file name without `.rec`). No later quiet pane, completed turn or auto reseat does, because nothing
-measured proves the account works again. It removes that scope's record
-(whatever it holds, so a damaged file never strands the human) and says `no block recorded for
-<stem>` or `unknown scope <word>` otherwise, both with a non-zero exit. A record is hostile
-persisted state: a record that does not parse, sits at another scope's file, names another client,
-harness or provider than its scope or stamps a future time blocks nothing.
+A reseat judges a profile by the same one scope. An auto reseat skips a candidate on a blocked
+scope, and its record names the candidate with `[<stem> since <time>: <reason>] (vendor block)`; a
+seat with no unblocked destination holds where it stands. `ae reseat --using` onto a blocked scope
+refuses before anything is stopped, and the move checks again under the lifecycle lock (cause
+`scope-blocked`, a hold that is tried again). A running seat on a newly blocked scope is not
+stopped.
+
+Each session's own watchdog tells its own lead seat once per block on a scope the session can launch
+on: a configured profile on its own client, an approved `profile@client` pair onto the same adapter,
+or a seat's recorded client. The notice names the scope, the reason, the time and the human's clear
+command. Its delivered `send` event (action `vendorblock-notice`, ref `<identity>#<slot>`) is the
+receipt, so no later cycle, restart or resume repeats it; a cleared and reblocked scope is a new
+notice. The orchestrator session's watchdog tells its main seat the same way. A session with no
+running watchdog hears it on its next start. No watchdog sends to another session.
+
+Only the human's `ae quota clear <stem>` ends a block (`client-muse`, `provider-github-copilot`: the
+record's file name without `.rec`). No later quiet pane, completed turn or auto reseat does, because
+nothing measured proves the account works again. Run from an agent seat, or from any caller ae
+cannot prove is not one (a malformed `TMUX`, a pane id without `TMUX`, `TMUX` without a pane id, a
+pane tmux cannot read), it refuses with one line that names the human route, with or without `-y`.
+Inside tmux the human's attached client asks `(y/n)` and its `y` runs the clear; outside tmux the
+terminal asks `[y/N]`; with neither, the refusal names `-y`. The human's `-y` skips the question.
+It removes that scope's record (whatever it holds, so a damaged file never strands the human) and
+says `no block recorded for <stem>` or `unknown scope <word>` otherwise, both with a non-zero exit.
+A record is hostile persisted state: a record that does not parse, sits at another scope's file,
+names another client, harness or provider than its scope or stamps a future time blocks nothing.
 
 ### Machine-readable: `ae quota --json`
 

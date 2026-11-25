@@ -2224,6 +2224,21 @@ fn admit<'w>(
             return Err(refused);
         }
     };
+    // A destination whose scope its vendor refused is refused HERE, before
+    // anything is stopped: the move would only stop a working seat to start
+    // one on an account the vendor will not serve. The same hold as the
+    // lock-time recheck ([`blocked_guard`]), so a block that beat the
+    // admission spends no attempt either.
+    if let Some(record) = scope_blocked(
+        &dir,
+        &bytes,
+        &parsed.profile,
+        parsed.client.as_deref(),
+        crate::time::Timestamp::now().epoch(),
+    ) {
+        writeln!(err, "Error: {}. Nothing was reseated.", record.refusal())?;
+        return Err(Halt::End(Ended::Refused(CauseClass::ScopeBlocked)));
+    }
     let from_command = match source_command(&dir, &bytes, seated) {
         Ok(command) => command,
         Err(why) => {
@@ -2304,18 +2319,6 @@ fn destination(
             "Error: {}. Nothing was reseated.",
             crate::run::unusable_client(&seated.slot)
         ));
-    }
-    // A destination whose scope its vendor refused is refused HERE, before
-    // anything is stopped: the move would only stop a working seat to start
-    // one on an account the vendor will not serve.
-    if let Some(record) = scope_blocked(
-        dir,
-        bytes,
-        &parsed.profile,
-        parsed.client.as_deref(),
-        crate::time::Timestamp::now().epoch(),
-    ) {
-        return Err(format!("Error: {}. Nothing was reseated.", record.refusal()));
     }
     Ok(moving)
 }
@@ -2419,7 +2422,9 @@ fn requested_guard(
 /// the carry Check and the tool-change note — reads and stderr only.
 /// THE VENDOR BLOCK, read again under the lock and before anything is
 /// checked, copied or stopped: a block booked since the destination was chosen
-/// holds the move, and the next round's chooser skips it.
+/// holds the move, and the next round's chooser skips it. The clock is read
+/// HERE, under the lock: the request's own instant predates the wait, and a
+/// block stamped during it would read as a future stamp, which is no block.
 fn blocked_guard(
     ask: &Ask<'_>,
     seat: &Admitted<'_>,
@@ -2431,7 +2436,7 @@ fn blocked_guard(
         locked,
         &ask.parsed.profile,
         ask.parsed.client.as_deref(),
-        ask.now.epoch(),
+        crate::time::Timestamp::now().epoch(),
     ) {
         writeln!(err, "Error: {}. Nothing was reseated.", record.refusal())?;
         return Err(Halt::End(Ended::Refused(CauseClass::ScopeBlocked)));

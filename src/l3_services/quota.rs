@@ -23,6 +23,9 @@ pub mod view;
 mod pace_history_spec;
 
 #[cfg(test)]
+#[path = "quota/clear_asker_spec.rs"]
+mod clear_asker_spec;
+#[cfg(test)]
 #[path = "quota/credits_spec.rs"]
 mod credits_spec;
 
@@ -3275,11 +3278,10 @@ pub fn blocked_scopes(inputs: &Inputs<'_>) -> String {
 /// not one, is refused whatever flag it passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClearAsker {
-    /// No `TMUX` and no `TMUX_PANE`: the human's own terminal outside tmux.
+    /// No `TMUX` and no `TMUX_PANE`: the human's own terminal outside tmux,
+    /// or the job a confirmation on the human's client runs, which enters with
+    /// both markers removed.
     Terminal,
-    /// A tmux marker and no calling pane: a binding, a popup, or the job a
-    /// confirmation on the human's client runs.
-    Paneless,
     /// A pane that is no agent seat, in the tmux session this names: its
     /// attached client owns the confirmation.
     Pane(String),
@@ -3309,7 +3311,8 @@ pub struct PaneRead {
 
 /// The asker the caller's markers and its one pane reading name. On any doubt
 /// it is [`ClearAsker::Refused`]: a malformed marker, a pane id without a
-/// marker, a pane tmux cannot read or describe, or a pane that is a seat.
+/// marker, a marker without a pane id (nothing proves who is there), a pane
+/// tmux cannot read or describe, or a pane that is a seat.
 pub fn clear_asker(
     marker: Marker,
     pane: Option<&str>,
@@ -3317,9 +3320,10 @@ pub fn clear_asker(
 ) -> ClearAsker {
     let pane = pane.filter(|pane| !pane.is_empty());
     match (marker, pane) {
-        (Marker::Malformed, _) | (Marker::Absent, Some(_)) => ClearAsker::Refused,
+        (Marker::Malformed, _) | (Marker::Absent, Some(_)) | (Marker::Resolved, None) => {
+            ClearAsker::Refused
+        }
         (Marker::Absent, None) => ClearAsker::Terminal,
-        (Marker::Resolved, None) => ClearAsker::Paneless,
         (Marker::Resolved, Some(pane)) => match read(pane) {
             Some(PaneRead {
                 session: Some(session),

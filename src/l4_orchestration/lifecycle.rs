@@ -1612,23 +1612,23 @@ fn supervisor_argv_expecting(
     Some(DetachedArgv(argv, who.origin()))
 }
 
-/// `env -u TMUX_PANE [AE_HOME=<root>] [CONFIG_FILE=<file>] <core> quota clear
-/// <stem> -y` — the tmux job the human's `y` on their own client runs. It
-/// reads no calling pane, so it is the owner's act, and a checkout keeps the
-/// state root and config the asking command resolved: the tmux server's
-/// environment may name another. A published core is `$HOME`-pinned and
-/// reads neither variable, so it gets none.
+/// `env -u TMUX -u TMUX_PANE [AE_HOME=<root> CONFIG_FILE=<file>] <core> quota
+/// clear <stem> -y` — the tmux job the human's `y` on their own client runs. It
+/// enters with both tmux markers removed, so it reads as the owner at their own
+/// terminal and never as the pane tmux ran it in. `checkout` is the global
+/// config of a checkout, which reads `AE_HOME` and `CONFIG_FILE`: the job then
+/// clears in the state root and config the asking command resolved, whatever
+/// the tmux server's environment names. A published core is `$HOME`-pinned
+/// and gets neither.
 pub(crate) fn quota_clear_argv(
     stem: &str,
     root: &Path,
-    config: Option<&Path>,
+    checkout: Option<&Path>,
 ) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    let mut argv = vec!["env".to_owned(), "-u".to_owned(), "TMUX_PANE".to_owned()];
-    if crate::doors::ae_home().is_some() {
+    let mut argv = ["env", "-u", "TMUX", "-u", "TMUX_PANE"].map(ToOwned::to_owned).to_vec();
+    if let Some(config) = checkout {
         argv.push(format!("AE_HOME={}", root.display()));
-    }
-    if let Some(config) = config {
         argv.push(format!("CONFIG_FILE={}", config.display()));
     }
     argv.extend([

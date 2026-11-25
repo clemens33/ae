@@ -510,6 +510,12 @@ fn run_public_quota_clear(
         )?;
         return Ok(entry::EXIT_USAGE);
     };
+    // The stem first: no question is shown and no refusal repeats a word that
+    // names no record.
+    if vendorblock::Target::parse(client).is_none() {
+        writeln!(err, "ae quota: unknown scope {client}")?;
+        return Ok(state::EXIT_FAILED);
+    }
     let Some(root) = doors::state_root(shape) else {
         writeln!(err, "ae: {NO_STATE_ROOT}")?;
         return Ok(EXIT_UNAVAILABLE);
@@ -576,8 +582,10 @@ fn quota_clear_asked(
         (quota::ClearAsker::Refused, _) => return refuse(err, &quota::clear_refusal(client)),
         (_, true) => {}
         (quota::ClearAsker::Pane(session), false) => {
-            let config = doors::declared_config_file(shape);
-            let Some(argv) = lifecycle::quota_clear_argv(client, root, config.as_deref()) else {
+            let bound = shape
+                .honours_environment()
+                .then(|| doors::config_file(shape, root));
+            let Some(argv) = lifecycle::quota_clear_argv(client, root, bound.as_deref()) else {
                 return refuse(
                     err,
                     &format!(
@@ -614,7 +622,7 @@ fn quota_clear_asked(
                 return Ok(Some(state::EXIT_FAILED));
             }
         }
-        (quota::ClearAsker::Terminal | quota::ClearAsker::Paneless, false) => {
+        (quota::ClearAsker::Terminal, false) => {
             return refuse(
                 err,
                 &format!(

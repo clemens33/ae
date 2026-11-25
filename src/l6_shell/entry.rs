@@ -288,6 +288,9 @@ Usage:
                          that holds no record
   ae quota [--json]      Show local cached quota windows for configured agent profiles;
                          --json prints the same rows as one JSON document
+  ae quota clear <stem> [-y]
+                         The human ends a vendor block (client-LABEL or provider-NAME)
+                         after a confirmation; an agent seat is refused
   ae usage [name…] [--hourly] [--json]
                          Show API-equivalent list-price usage for live sessions
   ae worktree gc [--idle <days>] [--remove <token>]
