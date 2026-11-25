@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.118] - 2026-11-25
+- Add the frozen S3a acceptance specs for decision answers and new topics
+- Call the S3a compose cases from the live smoke and allow the frozen specs their lints
+- Answer a decision and start a topic from a chat line on the web page
+- End the asked-for chip only when the topic is filed
+- Pin the draft shape in a unit test and name the web smoke helpers in the Mac subset
+- Record the harness version a seat runs at each start and show it in list and doctor
+- Freeze the quarantine phase A acceptance tests
+- WIP quarantine phase A: reseat skips a blocked scope, human-only clear, one notice per block, list shows blocks
+- WIP quarantine phase A: review round 1
+- Fmt
+- WIP quarantine phase A: review round 2
+- Pin that a spawn pair is judged on the global file
+- A spawn judges a profile@client pair on the global file
+- WIP quarantine phase A: own-drawn block notice, live-profile seat reach, display pin
+- Fmt
+- WIP quarantine phase A: tell a drawn block on the cycle that drew it
+- WIP quarantine phase A: a blocked hold keeps its block witness whole
+- Fuzz the journal ref grammar of a vendor block notice
+- WIP quarantine phase A: a blocked hold leads with its first block witness
+- WIP quarantine phase A: clippy and the recovery ladder fixture
+- WIP quarantine phase A: notice by the seat leg, an 80-column clear prompt, quota census
+- A notice pointer that was never submitted leaves no receipt
+- Pin the lock-time block check, update the self-invocation census and the Mac subset helpers
+- Keep the frozen autoreseat module byte-identical: the lock-time pin lives under reseat
+- Pin the human terminal's no, end of input and yes on a vendor block clear outside tmux
+- Pin that a standing vendor block is named at reseat admission while the lifecycle lock is held
+- Write the vendor block hold prefix out in its unit test, independent of the helper that makes it
+- Name the blocks a cycle tells and the seat that can hear one, each with its own unit
+- Name when a block notice is due: a lead that can hear it and has no receipt for it
+- Share the watchdog's launch row selection with the block notice leg
+
 ## [v2026.11.117] - 2026-11-25
 - Log the package temperature at lane claim and release and cool before a free claim
 - Freeze orchestrator auto-reseat acceptance tests
