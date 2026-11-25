@@ -86,6 +86,12 @@ return {ok: shown && Object.keys(badges).length === Object.keys(expected).length
   Object.entries(expected).every(([slug, count]) => badges[slug] === count), saw};
 ";
 
+const ROLE_ABSENT: &str = r"
+const chip = document.querySelector('.top .chip')?.textContent;
+const rows = document.querySelectorAll('article.msg').length;
+return {ok: chip === 'no orchestrator · absent' && rows === 0, saw: {chip, rows}};
+";
+
 const PRIOR: &str = r"
 const old = [...document.querySelectorAll('article.msg')].find(row => row.textContent.includes(want));
 const saw = old?.querySelector('.who span')?.textContent || '';
@@ -131,12 +137,13 @@ const saw = {raw: localStorage.getItem('ae-web-pins'), pins: document.querySelec
 return {ok: saw.raw === want && saw.pins === 0 && saw.all === 'true', saw};
 ";
 
-const CLOSED_PIN: &str = r#"
-const panel = document.querySelector('[data-panel=topic][data-slug="' + want + '"]');
-const selected = document.querySelector('[role=tab][aria-selected=true][data-slug="' + want + '"]');
+const PINNED_STATE: &str = r#"
+const [slug, state] = JSON.parse(want);
+const panel = document.querySelector('[data-panel=topic][data-slug="' + slug + '"]');
+const selected = document.querySelector('[role=tab][aria-selected=true][data-slug="' + slug + '"]');
 const fields = [...(panel?.querySelectorAll('.fld p.raw') || [])].map(p => p.textContent);
 const saw = {pinned: !!selected?.hasAttribute('data-pinned'), fields};
-return {ok: saw.pinned && fields.includes('closed'), saw};
+return {ok: saw.pinned && fields.includes(state), saw};
 "#;
 
 const CLOSED_DECISION: &str = r#"
@@ -356,11 +363,17 @@ fn unread(tab: &mut Tab, rig: &Rig, path: &Path) -> Checked {
     turn(path, 3, "T2 next prompt", "#t2-01 #t2-02 T2 next");
     wait(tab, CHECK, BADGES, r#"[{"t2-02":"3"},"T2 next"]"#)?;
 
-    // The same transcript is read as a prior after a new harness conversation.
+    // A standing console reads predecessors only when it opens. Let the
+    // listener see the role absent, then restore it without reloading the page.
     let next = conversation(rig, NEXT, Some(CURRENT));
     turn(&next, 4, "T2 new conversation", "T2 untagged answer");
+    ae::meta::rewrite(&rig.dir, "meta_agent", None).expect("remove the T2 fixture role");
+    let gap = wait(tab, CHECK, ROLE_ABSENT, "").and_then(|()| wait(tab, CHECK, SELECTED, ""));
+    ae::meta::rewrite(&rig.dir, "meta_agent", Some("true")).expect("restore the T2 fixture role");
+    gap?;
     wait(tab, CHECK, PRIOR, "T2 baseline")?;
     tab.holds(CHECK, BADGES, r#"[{"t2-02":"3"},"T2 next"]"#)?;
+    select(tab, CHECK, "t2-01")?;
     ok(CHECK, WIDE);
     Ok(())
 }
@@ -380,11 +393,12 @@ fn pins_and_close(tab: &mut Tab, rig: &Rig) -> Checked {
     wait(tab, PIN_CHECK, PIN_STATE, pin)?;
     tab.holds(PIN_CHECK, STORAGE, r#"["t2-01","t2-02"]"#)?;
     memo(rig, "t2-01", "state: quiet");
+    wait(tab, PIN_CHECK, PINNED_STATE, r#"["t2-01","quiet"]"#)?;
     select(tab, PIN_CHECK, "")?;
     select(tab, PIN_CHECK, "t2-01")?;
 
     memo(rig, "t2-01", "state: closed | close: T2 pinned close");
-    wait(tab, CLOSE, CLOSED_PIN, "t2-01")?;
+    wait(tab, CLOSE, PINNED_STATE, r#"["t2-01","closed"]"#)?;
     script(tab, PIN_CHECK, "window.__aeStale = 1")?;
     tab.call("Page.reload", Value::Obj(Vec::new()));
     wait(tab, PIN_CHECK, READY, "")?;
