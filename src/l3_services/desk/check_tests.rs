@@ -10,7 +10,7 @@
 use super::{
     CLOSED_SHOWN, EXIT_UNBOARDED, Fate, Gap, Hint, Join, Journal, Kind, Report, Row, SessionInput,
     Wait, Witness, absent_label, board_error_line, degradation, evaluate, fate, fleet_gaps, hint,
-    holders, join, keyed_declaration, mentions, render, waits_of, witness_of,
+    holders, is_owner_opening, join, keyed_declaration, mentions, render, waits_of, witness_of,
 };
 use crate::desk::{Desk, parse_input};
 use crate::digest::Status;
@@ -1448,4 +1448,93 @@ fn the_request_index_reads_each_state_once_by_id() {
     );
     assert_eq!(answered.request_word("ask-1"), "replied");
     assert_eq!(answered.request_word("ask-2"), "pending");
+}
+
+/// The owner's ask in `ORCH`'s chat, with `pane` as the session uuid the
+/// console recorded for the pane it was typed in.
+fn owner_ask_in(id: &str, pane: &str) -> Event {
+    let fields = EventFields {
+        target_session_id: ORCH,
+        target_session_uuid: pane,
+        ..EventFields::new(
+            at(100),
+            tracked::CONSOLE_SINK,
+            "ask",
+            "boss",
+            id,
+            "",
+            "",
+            "main",
+            "orch",
+            "",
+            "",
+        )
+    };
+    Event::parse_line(tracked::event_line(&fields).trim_end()).expect("a record")
+}
+
+#[test]
+fn an_owner_opening_names_its_own_chat_or_no_pane_and_never_another_chat() {
+    for (pane, expected) in [("", true), (ORCH, true), (TARGET, false)] {
+        let event = owner_ask_in("ask-1", pane);
+        assert_eq!(is_owner_opening(&event, ORCH), expected, "pane {pane:?}");
+    }
+    let event = owner_ask_in("ask-1", ORCH);
+    assert!(
+        !is_owner_opening(&event, TARGET),
+        "an opening is the chat of its target session id only"
+    );
+}
+
+#[test]
+fn a_session_without_a_recorded_id_is_coverage_only_when_it_holds_claims_or_runs() {
+    let claims = vec![claim_line("relay-1", None, 100)];
+    for (index, (lines, status, gap)) in [
+        (claims.clone(), Status::Stopped, true),
+        (Vec::new(), Status::Running, true),
+        (claims, Status::Running, true),
+        (Vec::new(), Status::Stopped, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut input = session("noid", ORCH, status, &lines);
+        input.uuid = None;
+        let report = evaluate(None, &[input], Vec::new(), at(200));
+        let gaps: Vec<&Gap> = report
+            .unresolved
+            .iter()
+            .filter(|gap| gap.subject == "session noid")
+            .collect();
+        assert_eq!(gaps.len(), usize::from(gap), "case {index}");
+        if gap {
+            assert!(
+                gaps[0].reason.contains("no session id recorded"),
+                "case {index}: {}",
+                gaps[0].reason
+            );
+        }
+        assert!(report.unboarded.is_empty(), "case {index}");
+    }
+}
+
+#[test]
+fn only_a_running_seat_of_a_whole_record_lists_its_waits() {
+    let listed = |input: SessionInput| {
+        let report = evaluate(None, &[input], Vec::new(), at(200));
+        (report.unboarded.len(), report.unresolved.len())
+    };
+    let waiting = || with_waits(vec![wait(Some(100), Some(90))]);
+    assert_eq!(listed(waiting()), (1, 0), "the positive control");
+    let mut stopped = waiting();
+    stopped.status = Status::Stopped;
+    assert_eq!(listed(stopped), (0, 0), "a stopped session answers no wait");
+    let mut damaged = waiting();
+    damaged.record_gap = Some("record partly unreadable".to_owned());
+    let (rows, gaps) = listed(damaged);
+    assert_eq!(rows, 0, "a damaged record proves no wait");
+    assert_eq!(
+        gaps, 1,
+        "the damage is the session's own line, not a seat's"
+    );
 }
