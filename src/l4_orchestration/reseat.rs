@@ -1798,6 +1798,29 @@ pub(crate) struct Resolved {
     /// keys it, which its readings are matched by; `None` for a bare profile,
     /// whose readings are matched by its name.
     pub(crate) identity: Option<crate::quota::RecordedIdentity>,
+    /// The vendor block that stands on the one scope a launch of `name` is in
+    /// ([`scope_blocked`]), or `None`: a candidate the chooser skips, never
+    /// one it fails to resolve.
+    pub(crate) block: Option<crate::vendorblock::Record>,
+}
+
+/// The vendor block on the ONE scope the seat whose session dir is `dir` would
+/// run `profile` in (on the client `client` names, for a `profile@client`
+/// move), read from the session's own config and the fleet state root
+/// (`dir`'s grandparent) at `now`. The scope mapping is the spawn's
+/// ([`crate::vendorblock::profile_block`]), so a reseat refuses exactly the
+/// profiles a spawn would. A config ae cannot read is no block here: the move
+/// refuses it on its own words.
+pub(crate) fn scope_blocked(
+    dir: &Path,
+    bytes: &[u8],
+    profile: &str,
+    client: Option<&str>,
+    now: i64,
+) -> Option<crate::vendorblock::Record> {
+    let root = dir.parent()?.parent()?;
+    let cfg = identity_config(dir, bytes).ok()?;
+    crate::vendorblock::profile_block(&cfg, root, profile, client, now)
 }
 
 /// `name` for the seat whose session dir is `dir`, resolved exactly as a
@@ -1819,10 +1842,15 @@ pub(crate) fn resolution(dir: &Path, name: &str, agent: &str) -> Result<Resolved
         .as_ref()
         .and(moving.account.as_ref())
         .and_then(|account| account.identity(moving.tool));
+    let block = crate::session_launch::split_profile_client(name).and_then(|(profile, label)| {
+        let now = crate::time::Timestamp::now().epoch();
+        scope_blocked(dir, &bytes, &profile, label.as_deref(), now)
+    });
     Ok(Resolved {
         pin: moving.pin,
         tool: moving.tool,
         identity,
+        block,
     })
 }
 
@@ -2277,6 +2305,18 @@ fn destination(
             crate::run::unusable_client(&seated.slot)
         ));
     }
+    // A destination whose scope its vendor refused is refused HERE, before
+    // anything is stopped: the move would only stop a working seat to start
+    // one on an account the vendor will not serve.
+    if let Some(record) = scope_blocked(
+        dir,
+        bytes,
+        &parsed.profile,
+        parsed.client.as_deref(),
+        crate::time::Timestamp::now().epoch(),
+    ) {
+        return Err(format!("Error: {}. Nothing was reseated.", record.refusal()));
+    }
     Ok(moving)
 }
 
@@ -2377,6 +2417,28 @@ fn requested_guard(
 
 /// Under the lock and before the stop: the automatic gate, the keep question,
 /// the carry Check and the tool-change note — reads and stderr only.
+/// THE VENDOR BLOCK, read again under the lock and before anything is
+/// checked, copied or stopped: a block booked since the destination was chosen
+/// holds the move, and the next round's chooser skips it.
+fn blocked_guard(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    err: &mut impl Write,
+) -> Result<(), Halt> {
+    if let Some(record) = scope_blocked(
+        &seat.dir,
+        locked,
+        &ask.parsed.profile,
+        ask.parsed.client.as_deref(),
+        ask.now.epoch(),
+    ) {
+        writeln!(err, "Error: {}. Nothing was reseated.", record.refusal())?;
+        return Err(Halt::End(Ended::Refused(CauseClass::ScopeBlocked)));
+    }
+    Ok(())
+}
+
 fn prepare(
     ask: &Ask<'_>,
     seat: &Admitted<'_>,
@@ -2385,6 +2447,7 @@ fn prepare(
 ) -> Result<Prepared, Halt> {
     let (target, moving) = (&seat.target, &seat.moving);
     requested_guard(ask, seat, locked, err)?;
+    blocked_guard(ask, seat, locked, err)?;
     // THE ONE AUTOMATIC GATE, under the lock and before anything is checked,
     // copied or stopped: the persisted record at this read decides. A later
     // observation written under the meta lock alone is not seen (named residual).

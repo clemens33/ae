@@ -37,6 +37,13 @@ pub const CAP: u64 = 4096;
 /// The one record version this build writes and reads.
 const VERSION: &str = "1";
 
+/// The journal action of the one notice a session's watchdog gives its lead
+/// about one block ([`Record::notice`]). Its `ref` is the block's
+/// [`Record::identity`] and the recipient's slot, `<identity>#<slot>`: the
+/// delivered event is the receipt, so no restart and no later cycle repeats it,
+/// and a cleared-then-reblocked scope is a new identity.
+pub const NOTICE_ACTION: &str = "vendorblock-notice";
+
 /// The longest reason a record keeps, in chars.
 pub const REASON_MAX: usize = 200;
 
@@ -327,6 +334,50 @@ impl Record {
         )
     }
 
+    /// The identity of this block, for the notice key: the stem, the time,
+    /// the kind, the seat and a digest of the reason. A clear and a reblock of
+    /// the same scope in the same second by the same seat with the same words
+    /// share it (an accepted residual); any other reblock is a new identity.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        format!(
+            "{}@{}/{}/{}/{:016x}",
+            self.stem(),
+            self.since,
+            self.kind.word(),
+            self.seat,
+            fnv1a(self.reason.as_bytes())
+        )
+    }
+
+    /// The one line a lead is told about this block: the scope, the vendor's
+    /// reason, the time, and the clear only the human runs.
+    #[must_use]
+    pub fn notice(&self) -> String {
+        format!(
+            "vendor block: scope {} blocked ({}: {}) since {} ({}); spawns, launches and reseats refuse it until the human runs `{}` once the vendor has fixed it",
+            self.stem(),
+            self.kind.word(),
+            self.reason,
+            Timestamp::from_epoch(self.since),
+            self.witness(),
+            self.clear_command()
+        )
+    }
+
+    /// What a reseat record adds after a candidate it skipped for this block:
+    /// ` [<stem> since <UTC>: <reason>]`, the scope, the time and the stored
+    /// reason in the fewest words a bounded summary keeps.
+    #[must_use]
+    pub fn skip_detail(&self) -> String {
+        format!(
+            " [{} since {}: {}]",
+            self.stem(),
+            Timestamp::from_epoch(self.since),
+            self.reason
+        )
+    }
+
     /// Who saw the line, and on which client when the scope is a provider.
     fn witness(&self) -> String {
         match &self.provider {
@@ -352,7 +403,7 @@ impl Record {
     #[must_use]
     pub fn refusal(&self) -> String {
         format!(
-            "scope {} blocked ({}: {}) since {} ({}); run `{}` once the vendor has fixed it",
+            "scope {} blocked ({}: {}) since {} ({}); the human runs `{}` once the vendor has fixed it",
             self.stem(),
             self.kind.word(),
             self.reason,
@@ -556,8 +607,51 @@ pub fn scope_refusal_in(
     client: Option<&str>,
     now: i64,
 ) -> Option<String> {
+    profile_block(cfg, state_root, profile, client, now).map(|record| record.refusal())
+}
+
+/// The block that stands on the ONE scope a launch of `profile` (on the
+/// client `client` names, for `profile@client`) is in, or `None`. The same
+/// mapping the spawn and the launch refuse by, so a reseat never judges a
+/// profile by another scope than a spawn would.
+#[must_use]
+pub fn profile_block(
+    cfg: &crate::config::IdentityConfig,
+    state_root: &std::path::Path,
+    profile: &str,
+    client: Option<&str>,
+    now: i64,
+) -> Option<Record> {
     let scope = Scope::of_profile(cfg, profile, client)?;
-    block(state_root, &scope, now).map(|record| record.refusal())
+    block(state_root, &scope, now)
+}
+
+/// 64-bit FNV-1a: a stable digest for a key, never a secret.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash: u64, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Whether the notice `reference` (`<identity>#<slot>`, [`NOTICE_ACTION`])
+/// names a block that still stands under `state_root` at `now`: the same
+/// identity in its own scope's record. A reference that names no record stem,
+/// or a record that changed, cleared or no longer parses, stands for nothing.
+#[must_use]
+pub fn notice_stands(state_root: &std::path::Path, reference: &str, now: i64) -> bool {
+    let identity = reference.split_once('#').map_or(reference, |(id, _)| id);
+    let Some((stem, _)) = identity.split_once('@') else {
+        return false;
+    };
+    let (provider, word) = match Target::parse(stem) {
+        Some(Target::Client(label)) => (false, label),
+        Some(Target::Provider(name)) => (true, name),
+        None => return false,
+    };
+    matches!(
+        standing(state_root, provider, word),
+        Standing::Held(record) if record.stands_at(now) && record.identity() == identity
+    )
 }
 
 /// What a human typed after `ae quota clear`: a record stem.

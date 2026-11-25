@@ -127,6 +127,10 @@ pub enum CauseClass {
     /// The orchestrator's rules, judged now, leave it where it is: a hold that
     /// costs no attempt while the daemon tells the owner once.
     OrchestratorStays,
+    /// Under the lifecycle lock the destination's scope holds a vendor block
+    /// ([`crate::vendorblock`]) booked since it was chosen: a hold, tried
+    /// again, and the next round's chooser skips it.
+    ScopeBlocked,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -152,6 +156,7 @@ impl CauseClass {
             Self::FloorChanged => "floor-changed",
             Self::OrchestratorChanged => "orchestrator-changed",
             Self::OrchestratorStays => "orchestrator-stays",
+            Self::ScopeBlocked => "scope-blocked",
             Self::Other => "other",
         }
     }
@@ -169,6 +174,7 @@ impl CauseClass {
                 | Self::FloorChanged
                 | Self::OrchestratorChanged
                 | Self::OrchestratorStays
+                | Self::ScopeBlocked
         )
     }
 
@@ -2792,6 +2798,10 @@ pub struct Candidate {
     /// with the detail a record adds to the candidate's name. `None`: no
     /// floor judged it, or it passed.
     pub floor: Option<(Skip, String)>,
+    /// The vendor block on its scope, as a record adds it to the candidate's
+    /// name ([`crate::vendorblock::Record::skip_detail`]): the scope, the time
+    /// and the stored reason. `None`: no block stands there.
+    pub blocked: Option<String>,
 }
 
 /// Why a candidate was passed over.
@@ -2824,6 +2834,9 @@ pub enum Skip {
     OrchestratorModel,
     /// `auto_reseat_orchestrator = off`: the orchestrator is never moved.
     OrchestratorOff,
+    /// The one scope a launch of it is in holds a vendor block
+    /// ([`crate::vendorblock`]): only a human's clear ends it.
+    Blocked,
 }
 
 /// What links a seat to its pair partner, from the roster alone (#305).
@@ -3172,7 +3185,11 @@ fn choose_guarded(
             .or_else(|| passed_over(candidate, now, room))
             .or_else(guarded);
         if let Some(skip) = passed {
-            let detail = floored.map_or("", |(_, detail)| detail.as_str());
+            let detail = match (skip, floored) {
+                (Skip::Blocked, _) => candidate.blocked.as_deref().unwrap_or_default(),
+                (_, Some((_, detail))) => detail.as_str(),
+                (_, None) => "",
+            };
             let named = format!(
                 "{}{}{detail}",
                 candidate.profile,
@@ -3222,6 +3239,11 @@ fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip
     }
     if !candidate.configured {
         return Some(Skip::Unconfigured);
+    }
+    // A vendor block outranks every quota reading: no window says the vendor
+    // serves that account again, only a human's clear does.
+    if candidate.blocked.is_some() {
+        return Some(Skip::Blocked);
     }
     if candidate.peer_latched {
         return Some(Skip::PeerLatched);
@@ -4644,6 +4666,7 @@ mod tests {
             left_on_headroom: false,
             model: Model::default(),
             floor: None,
+            blocked: None,
         }
     }
 

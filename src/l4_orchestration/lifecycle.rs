@@ -1612,6 +1612,36 @@ fn supervisor_argv_expecting(
     Some(DetachedArgv(argv, who.origin()))
 }
 
+/// `env -u TMUX_PANE [AE_HOME=<root>] [CONFIG_FILE=<file>] <core> quota clear
+/// <stem> -y` — the tmux job the human's `y` on their own client runs. It
+/// reads no calling pane, so it is the owner's act, and a checkout keeps the
+/// state root and config the asking command resolved: the tmux server's
+/// environment may name another. A published core is `$HOME`-pinned and
+/// reads neither variable, so it gets none.
+pub(crate) fn quota_clear_argv(
+    stem: &str,
+    root: &Path,
+    config: Option<&Path>,
+) -> Option<DetachedArgv> {
+    let own = crate::shape::resolved_exe()?;
+    let mut argv = vec!["env".to_owned(), "-u".to_owned(), "TMUX_PANE".to_owned()];
+    if crate::doors::ae_home().is_some() {
+        argv.push(format!("AE_HOME={}", root.display()));
+    }
+    if let Some(config) = config {
+        argv.push(format!("CONFIG_FILE={}", config.display()));
+    }
+    argv.extend([
+        own.to_string_lossy().into_owned(),
+        "quota".to_owned(),
+        "clear".to_owned(),
+        stem.to_owned(),
+        "-y".to_owned(),
+    ]);
+    // Tmux runs this job, not the detached door: no policy applies to it.
+    Some(DetachedArgv(argv, Origin::Owner))
+}
+
 /// `<core> _stop --handoff <name>` — the short-lived tmux job which starts
 /// [`supervisor_argv`] and exits before the target session is killed.
 fn handoff_argv(name: &str, who: &Stopper) -> Option<DetachedArgv> {

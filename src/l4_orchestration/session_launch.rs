@@ -26,6 +26,9 @@ pub(crate) mod assets;
 mod caller;
 pub(crate) mod capture;
 #[cfg(test)]
+#[path = "session_launch/blocknotice_trim_spec.rs"]
+mod blocknotice_trim_spec;
+#[cfg(test)]
 #[path = "session_launch/effort_trim_bounded_spec.rs"]
 mod effort_trim_bounded_spec;
 #[cfg(test)]
@@ -3101,11 +3104,38 @@ fn trim_events(dir: &Path) {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or_default();
     let session = crate::events::SessionKey::new(name, parsed.session_id().unwrap_or_default());
+    let root = dir.parent().and_then(Path::parent);
+    let now = crate::time::Timestamp::now().epoch();
     crate::store::open(dir).retain_events_holding(
         EVENTS_KEEP,
         crate::restore::pins_clean_stop,
-        |dropped, window| crate::effort::retained(dropped, window, session, &live),
+        |dropped, window| {
+            let mut held = crate::effort::retained(dropped, window, session, &live);
+            held.resize(dropped.len(), false);
+            if let Some(root) = root {
+                for (keep, line) in held.iter_mut().zip(dropped) {
+                    *keep = *keep || standing_notice(root, line, now);
+                }
+            }
+            held
+        },
     );
+}
+
+/// Whether `line` is a vendor block notice receipt whose block still stands:
+/// the cut must keep it, or the next watchdog would tell the lead again about
+/// the block it was already told of.
+fn standing_notice(root: &Path, line: &str, now: i64) -> bool {
+    if !line.contains(crate::vendorblock::NOTICE_ACTION) {
+        return false;
+    }
+    crate::events::Event::parse_line(line).is_ok_and(|event| {
+        event.action == crate::vendorblock::NOTICE_ACTION
+            && event
+                .reference
+                .as_deref()
+                .is_some_and(|reference| crate::vendorblock::notice_stands(root, reference, now))
+    })
 }
 
 /// One spawned seat recovered from a resuming session's own meta.

@@ -3251,12 +3251,97 @@ fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> 
     if held.is_empty() {
         return String::new();
     }
-    let mut text = String::from("\nblocked scopes (spawn and launch refuse them until cleared):\n");
+    let mut text = String::from("\nblocked scopes (spawn, launch and reseat refuse them until the human clears them):\n");
     for record in &held {
         text.push_str(&record.quota_line());
         text.push('\n');
     }
     text
+}
+
+/// The blocked section `ae list` prints under its table: the same lines as
+/// `ae quota`'s ([`blocked_section`]), every configured scope a block stands
+/// on whether or not a seat sits there now. Empty when none is blocked or the
+/// config cannot be read, so a healthy listing is unchanged. Read-only.
+#[must_use]
+pub fn blocked_scopes(inputs: &Inputs<'_>) -> String {
+    crate::config::read_identity(inputs.global, inputs.local)
+        .map(|cfg| blocked_section(inputs, &cfg))
+        .unwrap_or_default()
+}
+
+/// Who asks `ae quota clear`, from ONE reading of the caller. Clearing a block
+/// is the human's act alone: an agent seat, and any caller ae cannot prove is
+/// not one, is refused whatever flag it passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClearAsker {
+    /// No `TMUX` and no `TMUX_PANE`: the human's own terminal outside tmux.
+    Terminal,
+    /// A tmux marker and no calling pane: a binding, a popup, or the job a
+    /// confirmation on the human's client runs.
+    Paneless,
+    /// A pane that is no agent seat, in the tmux session this names: its
+    /// attached client owns the confirmation.
+    Pane(String),
+    /// An agent seat, or a caller ae cannot read: refused.
+    Refused,
+}
+
+/// How the `TMUX` marker reads, as [`clear_asker`] needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
+    /// Unset or empty.
+    Absent,
+    /// Set but naming no absolute socket.
+    Malformed,
+    /// Naming a server.
+    Resolved,
+}
+
+/// What one reading of the calling pane said, for [`clear_asker`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneRead {
+    /// The pane's tmux session; `None` when tmux could not describe the pane.
+    pub session: Option<String>,
+    /// The pane is an ordinary pane ae proved is no agent seat.
+    pub human: bool,
+}
+
+/// The asker the caller's markers and its one pane reading name. On any doubt
+/// it is [`ClearAsker::Refused`]: a malformed marker, a pane id without a
+/// marker, a pane tmux cannot read or describe, or a pane that is a seat.
+pub fn clear_asker(
+    marker: Marker,
+    pane: Option<&str>,
+    read: impl FnOnce(&str) -> Option<PaneRead>,
+) -> ClearAsker {
+    let pane = pane.filter(|pane| !pane.is_empty());
+    match (marker, pane) {
+        (Marker::Malformed, _) | (Marker::Absent, Some(_)) => ClearAsker::Refused,
+        (Marker::Absent, None) => ClearAsker::Terminal,
+        (Marker::Resolved, None) => ClearAsker::Paneless,
+        (Marker::Resolved, Some(pane)) => match read(pane) {
+            Some(PaneRead {
+                session: Some(session),
+                human: true,
+            }) => ClearAsker::Pane(session),
+            _ => ClearAsker::Refused,
+        },
+    }
+}
+
+/// The one line an agent seat, or a caller ae cannot prove is the human, gets.
+#[must_use]
+pub fn clear_refusal(word: &str) -> String {
+    format!(
+        "ae quota: clearing a vendor block is the human's act — the human runs `ae quota clear {word}` in their own terminal; nothing was cleared"
+    )
+}
+
+/// The question the human's attached tmux client shows.
+#[must_use]
+pub fn clear_prompt(word: &str) -> String {
+    format!("Clear the vendor block on {word}? Spawns and reseats may use it again. (y/n)")
 }
 
 /// `ae quota clear <stem>`: remove one scope's block record, the ONLY way a

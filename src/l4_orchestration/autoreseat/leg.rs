@@ -988,6 +988,10 @@ pub(crate) fn candidates(
                     tool: resolved.as_ref().map(|found| found.tool),
                 },
                 floor: None,
+                blocked: resolved
+                    .as_ref()
+                    .and_then(|found| found.block.as_ref())
+                    .map(crate::vendorblock::Record::skip_detail),
             }
         })
         .collect()
@@ -1632,6 +1636,7 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
         Skip::Floor(super::Floor::Unusable) => Borrowed("the lead floor is unusable"),
         Skip::OrchestratorModel => Borrowed("the orchestrator keeps its model"),
         Skip::OrchestratorOff => Borrowed("the orchestrator never moves automatically"),
+        Skip::Blocked => Borrowed("vendor block"),
     }
 }
 
@@ -4034,6 +4039,7 @@ mod tests {
                 pin: None,
                 tool: crate::tool::ToolKind::Claude,
                 identity: None,
+                block: None,
             })
         };
         let choice = choose(
@@ -4315,6 +4321,7 @@ mod tests {
                     .map(|(_, pin)| (*pin).to_owned()),
                 tool: crate::tool::ToolKind::Claude,
                 identity: None,
+                block: None,
             })
         };
         choose(
@@ -4660,6 +4667,7 @@ mod tests {
             left_on_headroom: false,
             model: crate::autoreseat::Model::default(),
             floor: None,
+            blocked: None,
         };
         let full = candidate(
             "full",
@@ -4728,6 +4736,7 @@ mod tests {
                     pin: None,
                     tool: crate::tool::ToolKind::Claude,
                     identity: None,
+                    block: None,
                 })
             };
             let judged = candidates(
@@ -4846,6 +4855,7 @@ mod tests {
                         pin: None,
                         tool: crate::tool::ToolKind::Claude,
                         identity: None,
+                        block: None,
                     })
                 },
                 left,
@@ -5001,6 +5011,7 @@ mod tests {
                         pin: None,
                         tool: crate::tool::ToolKind::Claude,
                         identity: None,
+                        block: None,
                     })
                 },
                 left,
@@ -5953,6 +5964,7 @@ mod tests {
                         left_on_headroom: false,
                         model: crate::autoreseat::Model::default(),
                         floor: None,
+                        blocked: None,
                     })
                     .collect()
             }

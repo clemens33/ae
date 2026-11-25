@@ -31,6 +31,7 @@ fn runs(profile: &str, pin: Option<&str>, tool: Option<ToolKind>, how: Provenanc
             tool,
         },
         floor: None,
+        blocked: None,
     }
 }
 

@@ -484,19 +484,29 @@ fn run_public_quota(
     )
 }
 
-/// `ae quota clear <stem>`: the one way a vendor block ends. Exactly one
-/// record stem (`client-<label>` or `provider-<name>`), else usage (exit 2)
-/// before any state is read.
+/// `ae quota clear <stem> [-y]`: the one way a vendor block ends, and the
+/// human's act alone. Exactly one record stem (`client-<label>` or
+/// `provider-<name>`) and at most one `-y`, else usage (exit 2) before any
+/// state is read.
+///
+/// The caller is read once ([`quota::clear_asker`]): an agent seat, and any
+/// caller ae cannot prove is not one, gets one refusal line whatever it
+/// passes. The human's `-y` clears at once. Without it, a pane in tmux asks on
+/// the session's attached client, whose `y` runs the clear as a tmux job
+/// ([`lifecycle::quota_clear_argv`]), and a terminal outside tmux asks on its
+/// own stdin; with neither, the refusal names the `-y` route.
 fn run_public_quota_clear(
     shape: &shape::Shape,
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let [client] = tail else {
+    let yes = tail.iter().filter(|word| *word == "-y").count();
+    let words: Vec<&String> = tail.iter().filter(|word| *word != "-y").collect();
+    let ([client], 0 | 1) = (words.as_slice(), yes) else {
         writeln!(
             err,
-            "ae quota: usage: ae quota clear <client-LABEL|provider-NAME>"
+            "ae quota: usage: ae quota clear <client-LABEL|provider-NAME> [-y]"
         )?;
         return Ok(entry::EXIT_USAGE);
     };
@@ -504,6 +514,9 @@ fn run_public_quota_clear(
         writeln!(err, "ae: {NO_STATE_ROOT}")?;
         return Ok(EXIT_UNAVAILABLE);
     };
+    if let Some(code) = quota_clear_asked(shape, &root, client, yes == 1, out, err)? {
+        return Ok(code);
+    }
     let cwd = doors::cwd();
     let global = doors::config_file(shape, &root);
     let local = doors::local_config(&cwd, Some(&global));
@@ -520,6 +533,97 @@ fn run_public_quota_clear(
         out,
         err,
     )
+}
+
+/// The human proof of `ae quota clear` ([`run_public_quota_clear`]): `None`
+/// when the clear may go on now (the human's `-y`, or their `y` on their own
+/// terminal), else the exit code of a refusal or of a question handed to the
+/// human's attached tmux client.
+fn quota_clear_asked(
+    shape: &shape::Shape,
+    root: &std::path::Path,
+    client: &str,
+    yes: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let marker = match doors::caller_server_reading() {
+        doors::CallerServer::Absent => quota::Marker::Absent,
+        doors::CallerServer::Malformed => quota::Marker::Malformed,
+        doors::CallerServer::Resolved(_) => quota::Marker::Resolved,
+    };
+    let server = doors::caller_server();
+    let asker = quota::clear_asker(marker, doors::calling_pane_id().as_deref(), |pane| {
+        let server = server.as_ref()?;
+        let viewer = transport::reask_viewer(server, pane)?;
+        let human = match relay::seat_class(root, &viewer, server, pane) {
+            relay::SeatClass::Ordinary(identity) => matches!(
+                session_launch::LaunchCaller::of(identity),
+                session_launch::LaunchCaller::Pane(_)
+            ),
+            relay::SeatClass::Dispatcher(_) | relay::SeatClass::Unproven(_) => false,
+        };
+        Some(quota::PaneRead {
+            session: viewer.session,
+            human,
+        })
+    });
+    let refuse = |err: &mut dyn Write, line: &str| -> Result<Option<u8>> {
+        writeln!(err, "{line}")?;
+        Ok(Some(state::EXIT_FAILED))
+    };
+    match (&asker, yes) {
+        (quota::ClearAsker::Refused, _) => return refuse(err, &quota::clear_refusal(client)),
+        (_, true) => {}
+        (quota::ClearAsker::Pane(session), false) => {
+            let config = doors::declared_config_file(shape);
+            let Some(argv) = lifecycle::quota_clear_argv(client, root, config.as_deref()) else {
+                return refuse(
+                    err,
+                    &format!(
+                        "ae quota: ae cannot name its own executable to confirm on your client; run `ae quota clear {client} -y` yourself; nothing was cleared"
+                    ),
+                );
+            };
+            let Some(server) = server.as_ref() else {
+                return refuse(err, &quota::clear_refusal(client));
+            };
+            return match lifecycle::confirm_on_client(server, session, &quota::clear_prompt(client), &argv) {
+                lifecycle::ClientPrompt::Shown => {
+                    writeln!(out, "ae quota: confirm on your tmux client to clear the block on {client}")?;
+                    Ok(Some(0))
+                }
+                lifecycle::ClientPrompt::Nobody | lifecycle::ClientPrompt::Failed => refuse(
+                    err,
+                    &format!(
+                        "ae quota: no tmux client of {session} could confirm; the human runs `ae quota clear {client} -y` in their own terminal; nothing was cleared"
+                    ),
+                ),
+            };
+        }
+        (quota::ClearAsker::Terminal, false)
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) =>
+        {
+            write!(out, "{} [y/N] ", quota::clear_prompt(client).trim_end_matches(" (y/n)"))?;
+            out.flush()?;
+            let mut reply = String::new();
+            let answered = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut reply)
+                .is_ok_and(|read| read > 0);
+            if !answered || !reply.trim_start().starts_with(['y', 'Y']) {
+                writeln!(out, "ae quota: not cleared")?;
+                return Ok(Some(state::EXIT_FAILED));
+            }
+        }
+        (quota::ClearAsker::Terminal | quota::ClearAsker::Paneless, false) => {
+            return refuse(
+                err,
+                &format!(
+                    "ae quota: no terminal or tmux client to confirm on; the human runs `ae quota clear {client} -y`; nothing was cleared"
+                ),
+            );
+        }
+    }
+    Ok(None)
 }
 
 /// `ae worktree gc`: usage first (exit 2 before any state is read), then the
@@ -5111,6 +5215,27 @@ fn run_list(
         write_pending_renames(&root, err)?;
     }
     write!(out, "{}", listing::render(list_args, world))?;
+    // A blocked scope is the fleet's, not a session's: it shows whether or not
+    // a seat sits on it, under every human listing.
+    if !list_args.json
+        && let Some(root) = state_root()
+    {
+        let shape = shape::current();
+        let global = doors::config_file(shape, &root);
+        let local = doors::local_config(&doors::cwd(), Some(&global));
+        let roots = inventory::Roots::under(&root);
+        write!(
+            out,
+            "{}",
+            quota::blocked_scopes(&quota::Inputs {
+                home: None,
+                global: Some(&global),
+                local: local.as_deref(),
+                sessions: Some(roots.sessions()),
+                now: world.now.epoch(),
+            })
+        )?;
+    }
     Ok(0)
 }
 
