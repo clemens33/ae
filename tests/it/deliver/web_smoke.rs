@@ -1,8 +1,10 @@
 //! `just web-smoke`: the page in a real headless Chrome against a real
 //! listener. The gate has no JS engine, so every other web test reads
 //! the wire; this one reads what a browser makes of it. It is NEVER in `just
-//! test`, `just test-affected`, the Mac subset or mutants: the test is
-//! `#[ignore]`d AND gated on `AE_WEB_SMOKE=1`, which only the recipe sets.
+//! test`, `just test-affected`, the Mac subset or mutants: the live test is
+//! `#[ignore]`d AND gated on `AE_WEB_SMOKE=1`, which only the recipe sets. The
+//! one other test here needs no browser and runs in the gate: it holds the
+//! run's rigs apart.
 //!
 //! One listener on 127.0.0.1 over a scratch state root whose orchestrator is
 //! the fake TUI of [`super::Rig`], one Chrome started from the explicit path in
@@ -51,8 +53,10 @@ use std::collections::BTreeMap;
 use std::hash::BuildHasher as _;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -64,6 +68,8 @@ use ae::web::state::LiveSource;
 
 use super::{Rig, await_evidence};
 use crate::cli;
+use crate::parity::capture::raw;
+use crate::phase2::run_tmux;
 
 const GATE: &str = "AE_WEB_SMOKE";
 const CHROME: &str = "AE_WEB_SMOKE_CHROME";
@@ -326,8 +332,15 @@ fn out_dir() -> Option<PathBuf> {
 
 /// The orchestrator role on the compact rig, as the send specs set it up, and
 /// a memo with one hostile topic that needs the owner and one calm one.
+///
+/// A run builds more of these while earlier ones are alive, and a rig's scratch
+/// root, tmux socket and session are all named by its tag, with a root removed
+/// before it is made. So every call takes its own tag. The count is per process
+/// because every test process already has a scratch namespace of its own.
 fn smoke_rig() -> Rig {
-    let rig = Rig::compact("websmoke");
+    static BUILT: AtomicUsize = AtomicUsize::new(0);
+    let nth = BUILT.fetch_add(1, Ordering::Relaxed);
+    let rig = Rig::compact(&format!("websmoke{nth}"));
     let overlay = rig.scratch.join("orchestrator.config");
     std::fs::write(&overlay, "[workspace]\norchestrator = true\n")
         .unwrap_or_else(|error| panic!("write role overlay: {error}"));
@@ -357,6 +370,87 @@ fn smoke_rig() -> Rig {
     )
     .unwrap_or_else(|error| panic!("write memo: {error}"));
     rig
+}
+
+/// A rig's tmux server and fake TUI, each by pid and start time, so a reused
+/// pid never passes for the same process.
+///
+/// The query is the argv `Rig::tmux` builds, run through `phase2::run_tmux`:
+/// calling `Rig::tmux` from this file would make it a shared boundary helper
+/// that needs a pin of its own in the Mac subset.
+fn rig_processes(rig: &Rig, probe: &Path) -> Vec<(u32, String)> {
+    let mut args = ae::tmux::server_args(&rig.server());
+    let query = [
+        "display-message",
+        "-p",
+        "-t",
+        &rig.pane,
+        "#{pid} #{pane_pid}",
+    ];
+    args.extend(query.map(ToOwned::to_owned));
+    let (answered, line) = run_tmux(&args, &rig.scratch);
+    assert!(answered, "the rig's server answers on its socket: {line:?}");
+    let processes: Vec<(u32, String)> = line
+        .split_whitespace()
+        .map(|word| {
+            let pid = word
+                .parse()
+                .unwrap_or_else(|error| panic!("a pid in {line:?}: {error}"));
+            let started = raw::process_identity(pid, probe)
+                .unwrap_or_else(|| panic!("a start time for pid {pid}"));
+            (pid, started)
+        })
+        .collect();
+    assert_eq!(processes.len(), 2, "a server and a fake TUI: {line:?}");
+    processes
+}
+
+/// Waits, bounded, until every one of `processes` is gone: `kill-server` can
+/// answer before the pane's process has ended. One that cannot be judged counts
+/// as running.
+fn await_ended(processes: &[(u32, String)], probe: &Path) {
+    let ended = await_evidence(super::WITNESS_WAIT, || {
+        processes
+            .iter()
+            .all(|(pid, started)| raw::owner_is_dead(*pid, Some(started), probe))
+            .then_some(())
+    });
+    assert!(ended.is_some(), "still running: {processes:?}");
+}
+
+/// A web-smoke run builds more rigs while earlier ones are alive. `just
+/// web-smoke` is never in the gate, so this is what keeps those rigs apart: a
+/// later rig leaves an earlier one whole, and each ends its own tmux server and
+/// fake TUI when it drops, an unwinding stage included.
+#[test]
+fn each_smoke_rig_keeps_to_itself_and_ends_its_server_and_fake_tui() {
+    let probe = cli::OwnedScratch::root("dlv", "wsprobe");
+    let outer = smoke_rig();
+    let outer_ran = rig_processes(&outer, probe.path());
+    let nested = smoke_rig();
+    let nested_ran = rig_processes(&nested, probe.path());
+    // Printed first: a failure past this line may leave these running.
+    eprintln!("smoke rigs (pid, start): outer {outer_ran:?} nested {nested_ran:?}");
+    assert_ne!(nested.scratch, outer.scratch);
+    assert_ne!(nested.sock, outer.sock);
+    assert_ne!(nested.session, outer.session);
+    let unwound = std::panic::catch_unwind(AssertUnwindSafe(move || {
+        let _held_by_the_stage = nested;
+        panic!("planted: a stage panics while its rig is alive");
+    }));
+    assert!(unwound.is_err());
+    await_ended(&nested_ran, probe.path());
+    assert_eq!(rig_processes(&outer, probe.path()), outer_ran);
+    assert!(outer.dir.join("memo.tsv").is_file());
+    // While the rig lives `owner_is_dead` says no, so `await_ended` waits for a real end.
+    for (pid, started) in &outer_ran {
+        assert!(
+            !raw::owner_is_dead(*pid, Some(started), probe.path()),
+            "pid {pid} judged ended while its rig is alive"
+        );
+    }
+    drop(outer);
+    await_ended(&outer_ran, probe.path());
 }
 
 fn start_listener(root: &Path) -> Running {
