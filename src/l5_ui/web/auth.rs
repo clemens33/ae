@@ -29,10 +29,13 @@ pub enum Refused {
     Unknown,
 }
 
-/// One kept secret: its tag under `L` and the instant it was minted or last used.
+/// One kept secret: its tag under `L`, the instant it was minted or last used,
+/// and whether it is a code a refused request minted (a fresh link) rather
+/// than the code printed at start. Only the tag is kept, never the secret.
 struct Kept {
     tag: Vec<u8>,
     at: Instant,
+    fresh: bool,
 }
 
 /// The credentials of one listener.
@@ -53,14 +56,34 @@ impl Auth {
         }
     }
 
-    /// A fresh one-time code made of `random`, good until [`CODE_LIFE`] after `now`.
+    /// A one-time code made of `random`, good until [`CODE_LIFE`] after `now`:
+    /// the code printed at start. It never holds a fresh code back.
     pub fn mint_code(&mut self, random: [u8; 16], now: Instant) -> String {
+        self.push_code(random, now, false)
+    }
+
+    /// A fresh one-time code made of `random` for a page that has no session,
+    /// good until [`CODE_LIFE`] after `now`, or `None` while an earlier fresh
+    /// code is unredeemed and unexpired. A client that keeps asking then gets
+    /// one link and cannot fill the kept set to push the owner's codes out.
+    /// The check and the mint are one step under the caller's lock.
+    pub fn mint_fresh_code(&mut self, random: [u8; 16], now: Instant) -> Option<String> {
+        self.codes.retain(|kept| live(kept, CODE_LIFE, now));
+        if self.codes.iter().any(|kept| kept.fresh) {
+            return None;
+        }
+        Some(self.push_code(random, now, true))
+    }
+
+    fn push_code(&mut self, random: [u8; 16], now: Instant, fresh: bool) -> String {
         let code = hex(&random);
         self.codes.retain(|kept| live(kept, CODE_LIFE, now));
         if self.codes.len() == CODES_MAX {
             self.codes.remove(0);
         }
-        self.codes.push(self.keep(&code, now));
+        let mut kept = self.keep(&code, now);
+        kept.fresh = fresh;
+        self.codes.push(kept);
         code
     }
 
@@ -123,6 +146,7 @@ impl Auth {
         Kept {
             tag: hmac::sign(&self.key, secret.as_bytes()).as_ref().to_vec(),
             at: now,
+            fresh: false,
         }
     }
 }
@@ -188,6 +212,7 @@ mod tests {
         let kept = Kept {
             tag: Vec::new(),
             at,
+            fresh: false,
         };
         for life in [CODE_LIFE, IDLE] {
             let Some(just_under) = life.checked_sub(Duration::from_millis(1)) else {

@@ -644,7 +644,21 @@ impl Shared {
         )
     }
 
-    /// Print a fresh link, at most once per [`LINK_GAP`].
+    /// A fresh one-time code for a page that has no session, or `None` when
+    /// the random source failed or an earlier fresh code is still unredeemed
+    /// and unexpired.
+    fn mint_fresh(&self, now: Instant) -> Option<String> {
+        let mut random = [0_u8; 16];
+        self.random.fill(&mut random).ok()?;
+        self.auth
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .mint_fresh_code(random, now)
+    }
+
+    /// Print a fresh link, at most once per [`LINK_GAP`] and never while the
+    /// code of an earlier fresh link waits: the owner has that link already,
+    /// and a client that keeps asking must not push it out of the kept codes.
     fn fresh_link(&self) {
         let now = self.clock.now();
         let mut last = self
@@ -654,7 +668,7 @@ impl Shared {
         if last.is_some_and(|at| now.saturating_duration_since(at) < LINK_GAP) {
             return;
         }
-        if let Some(code) = self.mint() {
+        if let Some(code) = self.mint_fresh(now) {
             *last = Some(now);
             (self.links)(&format!(
                 "ae web: new link http://127.0.0.1:{}/#c={code}",
@@ -746,8 +760,7 @@ impl Shared {
 mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::{Shutdown, TcpStream};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, mpsc};
+    use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::time::{Duration, Instant};
 
     use super::{Cut, NoProbe, Options, Probe, Running, Seen, start};
@@ -1190,12 +1203,12 @@ mod tests {
 
     /// [`super::LINK_GAP`], "the least time between two fresh links printed
     /// for pages without a session": a gap of at least `LINK_GAP` allows the
-    /// next fresh link, so a page without a session gets one again exactly one
-    /// gap after the last.
+    /// next fresh link once the code of the last one is spent, so a page
+    /// without a session gets one again exactly one gap after the last.
     #[test]
     fn a_fresh_link_comes_exactly_one_link_gap_after_the_last() {
         let clock = Arc::new(ManualClock::new(1_795_000_000));
-        let printed = Arc::new(AtomicUsize::new(0));
+        let printed = Arc::new(Mutex::new(Vec::<String>::new()));
         let links = Arc::clone(&printed);
         let running = start(Options {
             port: 0,
@@ -1204,7 +1217,10 @@ mod tests {
             probe: Arc::new(NoProbe),
             links: Arc::new(move |line: &str| {
                 if line.starts_with("ae web: new link ") {
-                    links.fetch_add(1, Ordering::SeqCst);
+                    links
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(line.to_owned());
                 }
             }),
             version: "server-unit".to_owned(),
@@ -1212,18 +1228,32 @@ mod tests {
         .unwrap_or_else(|error| panic!("start: {error}"));
         let running = Listening(Some(running));
         let host = running.addr();
+        let count = || printed.lock().unwrap_or_else(PoisonError::into_inner).len();
         let no_session = format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\n\r\n");
         let first = reply(&running, &no_session);
         assert!(first.head.starts_with("HTTP/1.1 401 "), "{}", first.head);
-        assert_eq!(printed.load(Ordering::SeqCst), 1, "the first fresh link");
+        assert_eq!(count(), 1, "the first fresh link");
+        let line = printed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let code = line.rsplit_once("#c=").map_or("", |(_, code)| code);
+        let body = format!(r#"{{"code":"{code}"}}"#);
+        let spent = reply(
+            &running,
+            &format!(
+                "POST /api/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        assert!(spent.head.starts_with("HTTP/1.1 200 "), "{}", spent.head);
         clock.advance(super::LINK_GAP);
         let second = reply(&running, &no_session);
         running.shutdown();
         assert!(second.head.starts_with("HTTP/1.1 401 "), "{}", second.head);
-        assert_eq!(
-            printed.load(Ordering::SeqCst),
-            2,
-            "one more fresh link exactly one gap later"
-        );
+        assert_eq!(count(), 2, "one more fresh link exactly one gap later");
     }
 }

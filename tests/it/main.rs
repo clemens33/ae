@@ -269,6 +269,7 @@ mod web_claim_spec;
 mod web_http_spec;
 mod web_licenses_spec;
 mod web_lifecycle_spec;
+mod web_link_guard_spec;
 mod web_response_spec;
 mod web_run;
 #[allow(

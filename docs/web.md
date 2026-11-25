@@ -29,7 +29,17 @@ session secret, which it keeps in the tab's `sessionStorage`.
 - A session lives while it is used: 12 idle hours end it. At most 8 sessions live at once; a ninth
   ends the least recently used one.
 - A page without a live session shows `no session: open the newest link from ae web`, and the
-  terminal that runs `ae web` prints a fresh link (`ae web: new link …`), at most once per 10 s.
+  terminal that runs `ae web` prints a fresh link (`ae web: new link …`). The listener prints at
+  most one fresh link per 10 s, and none while the code of an earlier fresh link is unredeemed and
+  unexpired. The code printed at start never holds a fresh link back. So a client that keeps
+  asking cannot fill the set of kept codes and push out the code the owner is about to use. An
+  owner who lost both links waits up to 10 minutes for the next one, or restarts `ae web`.
+- A page that gets a `401` on its poll stops asking: the refusal that told it already printed the
+  link. It asks again only after a code is redeemed in that tab, by a link opened in the tab's
+  address bar (the page takes the code from the fragment without a reload) or by a reload that
+  carries the link. A tab opened with no session asks once. A tab opened with a code the listener
+  refuses asks nothing more. A tab that an older `ae web` loaded keeps asking until it is
+  reloaded once.
 
 ## What the page shows
 
@@ -260,9 +270,20 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   when another one leaves and returns; and a changed orchestrator route stops new sends while the
   open attempt checks its receipt with its first body. The checks replace only the replies of
   `/api/send` and the route id of `/api/state`.
-- After the four cells, a compose cell runs the owner lines on a second scratch listener, on the
-  two phone sizes and then in 1440x900 dark (`s3a-*` checks): touch targets of at least 44 px and
-  16 px inputs, the line and slug rules against the same cases as the server, Undo and a hidden
+- After the four cells, one signed-out stage runs in the same tab. Each load is a full document
+  load, and the page's own requests are counted by a script that runs first in each new document
+  and counts the fetches the page makes to `/api/state` (the browser's resource timing does not
+  list a refused fetch). A tab that
+  holds a dead session secret asks `/api/state` once, shows the refusal and clears the secret, and
+  then asks nothing for 12 s although three `visibilitychange` events wake it
+  (`signed-out-quiet`). A tab with no session asks once, and one with a refused code asks nothing
+  (`signed-out-bare`, `signed-out-code`). The three loads made the listener print exactly one
+  fresh link (`signed-out-links`). That link's code, set in the halted tab's address bar as a
+  fragment move, signs the tab in without a reload and brings the poll back
+  (`signed-out-resume`).
+- After the signed-out stage, a compose cell runs the owner lines on a second scratch listener, on
+  the two phone sizes and then in 1440x900 dark (`s3a-*` checks): touch targets of at least 44 px
+  and 16 px inputs, the line and slug rules against the same cases as the server, Undo and a hidden
   page, a card that is behind the board, a board that changes during the countdown, a route that
   changes, a lost receipt and Check again, the chip of a new topic and a cap refusal.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.

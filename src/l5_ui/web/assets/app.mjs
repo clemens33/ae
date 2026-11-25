@@ -1693,12 +1693,17 @@ function App() {
     // No wake polls before the startup exchange settled: an anonymous 401
     // landing after it would clear the fresh session.
     let ready = false;
+    // Signed out: a 401 said the session is gone, and the refusal that said it
+    // already printed the owner a link. Nothing asks again, on the timer or on
+    // a wake, until a code is redeemed in this tab; asking a listener that
+    // refuses every request only prints it more links.
+    let halted = false;
     const later = (ms) => {
       clearTimeout(timer);
       timer = setTimeout(poll, ms);
     };
     const poll = async () => {
-      if (stopped) {
+      if (stopped || halted) {
         return;
       }
       if (busy) {
@@ -1707,13 +1712,22 @@ function App() {
       }
       busy = true;
       clearTimeout(timer);
+      // The secret this request carries: an answer for a secret that is no
+      // longer the stored one (a code was redeemed meanwhile) says nothing
+      // about the new session.
+      const used = stored();
       try {
         const headers = tag.current ? { "If-None-Match": tag.current } : {};
         const answer = await api("state", { headers });
         if (answer.status === 401) {
-          keep("");
-          tag.current = "";
-          setProblem(NO_SESSION);
+          if (stored() === used) {
+            keep("");
+            tag.current = "";
+            setProblem(NO_SESSION);
+            halted = true;
+          } else {
+            again = true;
+          }
         } else if (answer.status === 200) {
           const next = await answer.json();
           tag.current = answer.headers.get("ETag") || "";
@@ -1731,7 +1745,9 @@ function App() {
       if (stopped) {
         return;
       }
-      if (again) {
+      if (halted) {
+        again = false;
+      } else if (again) {
         again = false;
         later(0);
       } else {
@@ -1742,7 +1758,9 @@ function App() {
       try {
         const code = takeCode();
         if (code && !(await redeem(code))) {
+          // The listener refused the code and printed the owner a new link.
           setProblem(NO_SESSION);
+          halted = true;
         }
       } catch (_) {
         setProblem("ae web is not reachable");
@@ -1753,17 +1771,47 @@ function App() {
       ready = true;
       poll();
     };
+    // A link opened in this tab after it loaded changes only the fragment, so
+    // the page is not reloaded: take the code from it here.
+    const open = async () => {
+      if (!ready) {
+        return;
+      }
+      const code = takeCode();
+      if (!code) {
+        return;
+      }
+      try {
+        const redeemed = await redeem(code);
+        if (stopped) {
+          return;
+        }
+        if (redeemed) {
+          halted = false;
+          setProblem("");
+          poll();
+        } else if (halted) {
+          setProblem(NO_SESSION);
+        }
+      } catch (_) {
+        if (!stopped) {
+          setProblem("ae web is not reachable");
+        }
+      }
+    };
     const wake = () => {
       if (ready && !document.hidden) {
         poll();
       }
     };
     document.addEventListener("visibilitychange", wake);
+    window.addEventListener("hashchange", open);
     start();
     return () => {
       stopped = true;
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("hashchange", open);
     };
   }, []);
 

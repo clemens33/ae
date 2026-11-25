@@ -26,6 +26,10 @@
 //! - `sent`, in the 1440x900 dark cell only: a click on Send shows the receipt
 //!   with its request id, and the fake TUI received the draft once.
 //!
+//! After the four cells one signed-out stage runs in the same tab (see
+//! `web_signedout_browser`): a page whose session is gone asks the listener
+//! once and then stops until a code is redeemed in its tab.
+//!
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
 //! web-smoke plant` passes only when it fails there and nowhere else.
@@ -43,7 +47,7 @@ use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ae::json::{self, Value};
@@ -343,13 +347,30 @@ fn smoke_rig() -> Rig {
 }
 
 fn start_listener(root: &Path) -> Running {
+    start_listener_with(root, Arc::new(|_| {}))
+}
+
+/// The same listener; the fresh link lines it prints are kept in `fresh`.
+fn start_listener_noting(root: &Path, fresh: &Arc<Mutex<Vec<String>>>) -> Running {
+    let kept = Arc::clone(fresh);
+    start_listener_with(
+        root,
+        Arc::new(move |line| {
+            kept.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line.to_owned());
+        }),
+    )
+}
+
+fn start_listener_with(root: &Path, links: Arc<dyn Fn(&str) + Send + Sync>) -> Running {
     server::start_with(
         Options {
             port: 0,
             clock: Arc::new(SystemClock),
             source: Arc::new(LiveSource::new(root.to_path_buf(), root.join("config"))),
             probe: Arc::new(NoProbe),
-            links: Arc::new(|_| {}),
+            links,
             version: "web-smoke".to_owned(),
         },
         Sends::live(root.to_path_buf()),
@@ -369,7 +390,8 @@ fn live_web_smoke() {
     let plant = planted();
     let out = out_dir();
     let rig = smoke_rig();
-    let listen = start_listener(&rig.scratch);
+    let fresh = Arc::new(Mutex::new(Vec::new()));
+    let listen = start_listener_noting(&rig.scratch, &fresh);
     assert!(
         listen.addr().ip().is_loopback(),
         "web-smoke: the listener left loopback"
@@ -407,9 +429,23 @@ fn live_web_smoke() {
             break;
         }
     }
-    // The S3a compose cases follow the four cells on the same tab, in the wide
-    // dark viewport they end in, and only when every earlier check passed, so a
-    // plant that fails an earlier check never reaches them.
+    // The signed-out stage runs once, right after the cells, in the tab they
+    // left and on their listener (a dead session secret is stored for that
+    // origin); a planted run has already failed at its own check and never
+    // reaches it. It leaves the tab on a signed-in page and clears the console
+    // entries of its own refusals, so the compose cases below start as before.
+    if failure.is_none() && plant.is_none() {
+        let base = format!("http://{}/", listen.addr());
+        if let Err(failed) = web_signedout_browser::check_signed_out(&mut tab, &base, &fresh) {
+            failure = Some(format!(
+                "web-smoke FAILED at {} (signed-out): {}",
+                failed.check, failed.detail
+            ));
+        }
+    }
+    // The S3a compose cases follow on the same tab, in the wide dark viewport
+    // the cells end in, and only when every earlier check passed, so a plant
+    // that fails an earlier check never reaches them.
     if failure.is_none() {
         let compose = Cell {
             width: 1440,
@@ -441,7 +477,7 @@ fn live_web_smoke() {
     if let Some(words) = failure {
         panic!("{words}");
     }
-    println!("web-smoke PASS: 4 cells, sends in the one send cell");
+    println!("web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage");
 }
 
 fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool) -> Checked {
@@ -1232,3 +1268,6 @@ mod web_guard_browser;
 )]
 #[path = "web_compose_browser_spec.rs"]
 mod web_compose_browser_spec;
+
+#[path = "web_signedout_browser.rs"]
+mod web_signedout_browser;
