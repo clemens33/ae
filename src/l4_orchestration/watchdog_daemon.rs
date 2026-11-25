@@ -2620,6 +2620,9 @@ impl Cycle<'_> {
         let mut by_pane: Vec<PaneMark> = Vec::new();
         // Cycle-wide: any seat leaving the limit this sweep requests ONE pass.
         let mut quota_refresh = false;
+        // A block a seat drew THIS cycle is told this cycle: its journal row
+        // postdates the cycle's event snapshot.
+        let mut drawn_block = false;
         // Every seat whose limit latch stands after its accounting.
         let mut auto_seats: Vec<AutoSeat> = Vec::new();
         // The return each seat on an automatic chain may make (#305), by slot.
@@ -2949,6 +2952,10 @@ impl Cycle<'_> {
                 .as_ref()
                 .and(desk.as_ref())
                 .and_then(|sight| sight.booking.clone());
+            drawn_block |= booked
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::BlockScope { .. }));
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             carried.desk = None;
             let standing = entry_mut(&mut carry.notices, &slot);
@@ -3109,7 +3116,7 @@ impl Cycle<'_> {
             carry.refresh_owed = false;
             self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
             self.tell_seats(&by_slot, &events, now);
-            self.tell_blocks(&by_slot, &events, now);
+            self.tell_blocks(&by_slot, &events, drawn_block, now);
         }
         self.auto_note(&mut carry.auto_noted, err)?;
         self.trust_note(&mut carry.trust_noted, err)?;

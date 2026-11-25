@@ -24,12 +24,19 @@ impl Cycle<'_> {
     /// this session can launch on ([`reach`]). A seat that is dead or on a
     /// human prompt waits for a later cycle, and so does a delivery that did
     /// not land: only a delivered event is a receipt.
+    ///
+    /// `drawn` says a seat of this cycle drew a block: its
+    /// [`crate::vendorblock::WRITTEN_ACTION`] row postdates the cycle's
+    /// snapshot `events`, so the journal is read again and the own lead is
+    /// told on this cycle, not the next ([`notice_source`]).
     pub(super) fn tell_blocks(
         &self,
         verdicts: &[(String, SeatVerdict)],
-        events: &[Event],
+        snapshot: &[Event],
+        drawn: bool,
         now: i64,
     ) {
+        let events = &*notice_source(snapshot, drawn, || super::read_events(self.meta_dir));
         let Some(root) = self.meta_dir.parent().and_then(std::path::Path::parent) else {
             return;
         };
@@ -118,6 +125,21 @@ impl Cycle<'_> {
     }
 }
 
+/// The events a cycle's notice step reads: the cycle's snapshot, or when a
+/// seat drew a block on this cycle the journal read again, so the row that
+/// the draw appended is in it.
+fn notice_source<'e>(
+    snapshot: &'e [Event],
+    drawn: bool,
+    reread: impl FnOnce() -> Vec<Event>,
+) -> std::borrow::Cow<'e, [Event]> {
+    if drawn {
+        std::borrow::Cow::Owned(reread())
+    } else {
+        std::borrow::Cow::Borrowed(snapshot)
+    }
+}
+
 /// The standing records this session's own seats drew, from the watchdog's
 /// [`crate::vendorblock::WRITTEN_ACTION`] events: the own lead hears of these
 /// whether or not a configured profile reaches the scope, and whether or not
@@ -186,7 +208,7 @@ pub(super) fn reach(
 
 #[cfg(test)]
 mod tests {
-    use super::{noticed, reach, written};
+    use super::{notice_source, noticed, reach, written};
     use crate::events::Event;
     use crate::meta::{
         RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
@@ -252,6 +274,23 @@ mod tests {
             ["client-opencode"],
             "a seat whose profile is gone proves no launch on its recorded client"
         );
+    }
+
+    /// A cycle on which a seat drew a block reads the journal again, so the
+    /// row the draw appended after the snapshot reaches this cycle's notice;
+    /// any other cycle reads its snapshot and nothing more.
+    #[test]
+    fn a_cycle_that_drew_a_block_reads_the_row_it_appended() {
+        let row = Event::parse_line(&format!(
+            r#"{{"ts":"2026-09-08T09:10:00Z","actor":"watchdog","action":"{}","ref":"client-ocbin@1"}}"#,
+            crate::vendorblock::WRITTEN_ACTION
+        ))
+        .expect("event");
+        let snapshot: Vec<Event> = Vec::new();
+        let drawn = notice_source(&snapshot, true, || vec![row.clone()]);
+        assert_eq!(drawn.len(), 1, "the drawn row is read this cycle");
+        let quiet = notice_source(&snapshot, false, || panic!("no reread"));
+        assert!(quiet.is_empty());
     }
 
     /// The blocks this session's own seat drew stand on their own, from the
