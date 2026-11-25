@@ -687,13 +687,27 @@ pub fn notice_stands(state_root: &std::path::Path, reference: &str, now: i64) ->
     standing_identity(state_root, identity, now).is_some()
 }
 
+/// The identity a journal ref names and the record stem it starts with, or
+/// `None`. A ref is hostile persisted text: `<identity>` or `<identity>#<slot>`,
+/// the identity cut at the first `#`, and its stem, before its first `@`, a
+/// word `ae quota clear` takes ([`Target::parse`]). Pure: reads nothing.
+#[must_use]
+pub fn notice_target(reference: &str) -> Option<(&str, Target<'_>)> {
+    let identity = reference.split_once('#').map_or(reference, |(id, _)| id);
+    let (stem, _) = identity.split_once('@')?;
+    Some((identity, Target::parse(stem)?))
+}
+
 /// The record that stands at `now` under `state_root` with exactly the
 /// [`Record::identity`] `identity`, or `None`: a cleared, replaced, damaged or
 /// future record is not it. Read-only.
 #[must_use]
 pub fn standing_identity(state_root: &std::path::Path, identity: &str, now: i64) -> Option<Record> {
-    let (stem, _) = identity.split_once('@')?;
-    let (provider, word) = match Target::parse(stem)? {
+    let (named, target) = notice_target(identity)?;
+    if named != identity {
+        return None;
+    }
+    let (provider, word) = match target {
         Target::Client(label) => (false, label),
         Target::Provider(name) => (true, name),
     };
