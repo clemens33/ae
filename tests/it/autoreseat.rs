@@ -2947,6 +2947,3 @@ mod orchreseat_spec;
 
 #[path = "autoreseat/quarantine2_spec.rs"]
 mod quarantine2_spec;
-
-#[path = "autoreseat/quarantine2_lock_spec.rs"]
-mod quarantine2_lock_spec;

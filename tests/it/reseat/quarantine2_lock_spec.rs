@@ -9,14 +9,16 @@
     reason = "fixture setup failures name the missing fact"
 )]
 
-use super::{Rig, limited_on};
+use super::Rig;
 use std::fs;
 use std::io::BufRead as _;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REASON: &str = "Fixture vendor account suspended late";
 
-/// The blocked profile names Copilot on the `ocfixture` client.
+/// Auto reseat on (so the destination's missing exit is warned about right
+/// after admission), and a blocked profile that names Copilot on the
+/// `ocfixture` client.
 fn install_scoped_profile(rig: &Rig) {
     let path = rig.scratch.join("config");
     let config = fs::read_to_string(&path).expect("fixture config");
@@ -28,14 +30,20 @@ fn install_scoped_profile(rig: &Rig) {
     );
     fs::write(
         path,
-        config.replace("[workspace]", &format!("{profile}[workspace]")),
+        config
+            .replace("[workspace]", &format!("{profile}[workspace]"))
+            .replace(
+                "layout = vertical\n",
+                "layout = vertical\nauto_reseat = on\n",
+            ),
     )
     .expect("the blocked profile");
 }
 
 #[test]
 fn a_block_stamped_while_the_move_waits_for_the_lock_holds_it() {
-    let (rig, pane) = limited_on("q2late", "claude-b", "on", "blocked-profile");
+    let rig = Rig::new("q2late");
+    let pane = rig.seat("spawned.0", "scout", "claude");
     install_scoped_profile(&rig);
     let original = rig.tool_pid(&pane, "claude").expect("original tool");
     let lock = rig
@@ -106,5 +114,5 @@ fn a_block_stamped_while_the_move_waits_for_the_lock_holds_it() {
         assert!(err.contains(part), "missing {part:?} in {err}");
     }
     assert_eq!(rig.tool_pid(&pane, "claude"), Some(original), "{err}");
-    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude");
 }

@@ -1324,3 +1324,6 @@ fn runparsed_lifecycle_lock_is_free_while_the_successor_waits_for_its_composer()
     drop(held);
     drop(child);
 }
+
+#[path = "reseat/quarantine2_lock_spec.rs"]
+mod quarantine2_lock_spec;
