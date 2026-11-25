@@ -53,10 +53,26 @@ a `304` and costs no render.
 Every text from an agent is shown as plain text, never as markup: control characters are removed,
 a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
 
-## The desk column
+## Topic tabs
 
-The column beside the chat lists the orchestrator's topics: **Needs you**, **Moving**, **Quiet**
-(the Revisit line, see below) and **All topics** with a search over slug and title. A narrow screen switches between Chat and Topics.
+A tab bar sits under the header. **All** comes first and is open when the page loads. A topic has a
+tab while it needs you: an open DECIDE item, the state `needs` or `moving`, or a filed topic (one
+with a title, a state or a review) whose state word cannot be read. The tabs follow the desk's
+order. A topic without a tab opens from the All tab, from the Revisit line or from the strip, and
+gets a tab that lasts only while it is open; the page keeps no pinned tabs. A tab whose topic no
+longer needs you leaves the bar, and when it was open the page shows All. A narrow screen shows the
+chat or the panel, with **Chat** and **Overview** (or **Topic**) at the bottom; a tab press shows
+the chat.
+
+- **All** shows the whole chat. Its panel holds the new-topic line first, then the Revisit line,
+  every DECIDE item under **Decisions**, **All topics** with a search over slug and title, and the
+  desk's gaps. A decision that tags no topic is answered there; a tagged one is listed with a link
+  to each tag's tab.
+- A topic tab shows the chat turns tagged with it, and its panel the topic's card with the
+  decisions that wait on it. A turn is tagged with each `#<slug>` of a desk topic in the first 512
+  bytes of its text, read as the board reads tags; a tag cut off by that limit does not count.
+  `GET /api/state` names them in each row's `tags`. A topic with no tagged turn says so.
+- `#reserved` marks a DECIDE item and names no topic.
 
 - A topic is a memo checkpoint under `topic-<slug>`, the slug `[a-z0-9][a-z0-9-]{0,47}`. One
   checkpoint line reads `title: Web UI | state: moving | what: … | last: … | next: … | src: … |
@@ -69,23 +85,22 @@ The column beside the chat lists the orchestrator's topics: **Needs you**, **Mov
 - **Last reviewed** is the time of the topic's newest record, whatever it carries.
 - A topic needs you when its state is `needs` or when something waits for you on it: a DECIDE item
   on the orchestrator's board, or your own open ask from `ae chat`, whose text tags it with
-  `#<slug>`. Every DECIDE item, tagged or not, is listed under **Decisions** with its own answer
-  line (see [Owner lines](#owner-lines-from-the-desk)); the card of a tagged topic shows the same line.
+  `#<slug>`. The card of a tagged topic shows each DECIDE item that tags it with its answer (see
+  [Owner lines](#owner-lines-from-the-desk)).
 - A checkpoint without a readable state is shown as an unreadable checkpoint with its raw text.
 - A memo over 8 MiB shows none of its topics, and the column names it until `ae web` restarts.
   Archives that are being written, damaged or not proven to come from the seat are counted, not
   read.
 
-Clicking a row opens its card, which `GET /api/topic/<slug>` answers from the same snapshot as the
-chat.
+Clicking a row opens the topic's tab. `GET /api/topic/<slug>` serves its card from the same
+snapshot as the chat.
 
 ## Revisit and the walk
 
-The **Quiet** block holds the Revisit line: one quiet topic by name, with its next step (else its
-last state, else what it is), its last review time, **Open topic**, **Next** and **Walk the quiet
-topics (n)**. On a narrow screen the same line sits above the chat and hides while the draft holds
-an attached topic. The shown topic lives only in the tab, and one that stops being quiet falls back
-to the first.
+The All tab holds the Revisit line: one quiet topic by name, with its next step (else its last
+state, else what it is), its last review time, **Open topic**, **Next** and **Walk the quiet
+topics (n)**. On a narrow screen the same line also sits above the All tab's chat. The shown topic
+lives only in the browser tab, and one that stops being quiet falls back to the first.
 
 - Quiet topics are ordered by last review, the oldest first. A review time that is no
   `YYYY-MM-DDTHH:MM:SSZ` (empty or hand-edited) counts as the oldest, and equal times go by slug.
@@ -114,8 +129,8 @@ to the first.
   topic wait until the answer.
 - **This page does nothing visible until the orchestrator's charter teaches the topic records and
   the verdict lines.** The charter is not part of `ae web`. A seat that writes `status:` or prose
-  in `state:` leaves every topic unreadable, so no topic is Quiet: the Quiet group, the Revisit
-  line, the strip above the chat and the walk do not appear. A seat without the verdict rule reads
+  in `state:` leaves every topic unreadable, so no topic is Quiet: the Revisit line, the strip
+  above the chat and the walk do not appear. A seat without the verdict rule reads
   a verdict line as a plain chat message and writes no record.
 - A server receipt settles a step. `sent` and `unknown: may have landed, not resent` are final:
   the walk shows the outcome and moves on, and the end screen lists each topic. A `refused`
@@ -136,9 +151,10 @@ to the first.
 
 The composer under the chat sends one owner ask to the orchestrator's main seat, the same ask `ae
 chat` opens: it passes the console's own admission, so the cap of five open asks holds and a cap
-refusal shows verbatim. `Attach #<slug>` puts the open topic's tag on the draft's first line,
-where it stays visible text. Ctrl+Enter or **Send** sends; opening a topic keeps the draft and the
-focus.
+refusal shows verbatim. On a topic tab a chip names the tag, and the draft is sent as
+`#<slug>: <draft>`; the chip's **×** sends that one draft without it. While an attempt is open the
+chip shows the tag that attempt carries. Ctrl+Enter or **Send** sends; opening a tab keeps the
+draft and the focus.
 
 - Every draft gets one draft id from `GET /api/nonce`. The page posts the text, the draft id and
   the route it shows (`POST /api/send`) and repeats that same post until it gets a receipt, so a
@@ -174,12 +190,24 @@ Two more lines go to the orchestrator's main seat through the same send path, th
 the same admission as the composer, so the cap of five open asks holds and a cap refusal shows
 verbatim.
 
-- **Answer a decision.** Each DECIDE item of the board has an answer box under **Decisions** and on
-  the card of the topic it tags. The page sends one chat line, `D<n> <answer>`: for example the
-  item `D67` and the answer `1` send `D67 1`. The answer is 1 to 120 Unicode scalar values, with no
-  control character, line break or paragraph break, and no space at either end (the page trims it
-  as Rust's `str::trim` does). **Answer** stays off while the box is empty or invalid.
-- **Ask for a new topic.** The box under the topic search takes a title of 1 to 80 scalar values
+- **Answer a decision.** A DECIDE item is answered on the tab of each topic it tags, or on All
+  when it tags none. The page sends one chat line, `D<n> <answer>`: for example the item `D67` and
+  the answer `1` send `D67 1`.
+  - A text `Question? 1) a 2) b (recommend 2) #slug` offers the options as one choice. The options
+    are numbered `1)` to at most `9)` in order, each at the start of a word, and `(recommend N)` or
+    `(Empfehlung N)` may follow the last one. Trailing `#slug` words belong to no option. The
+    answer is the chosen number. **Pick the recommended** only selects it.
+  - Any other text takes a typed answer of 1 to 120 Unicode scalar values, with no control
+    character, line break or paragraph break, and no space at either end (the page trims it as
+    Rust's `str::trim` does).
+  - **Answer** stays off while nothing valid is chosen or typed.
+  - `GET /api/state` names each item's `choices` (`null` for a typed answer) and `reserved`.
+  - **Talk it over** sends a question or objection instead, as the ordinary chat line
+    `#<slug> D<n>: <text>` (without `#<slug> ` on All), with no countdown and no decision proof.
+    It does not answer the item.
+- **Reserved items.** An item tagged `#reserved` is shown and cannot be answered here: confirm it
+  in the orchestrator pane or on Telegram. This is the page's rule, not a server one.
+- **Ask for a new topic.** The box at the top of the All tab takes a title of 1 to 80 scalar values
   and suggests a slug: umlauts folded, lowercase, every other run of characters one hyphen, at most
   48 characters. **Edit slug** turns the slug into a field of its own, and it stays one. The line is
   `#<slug> new <title>`, shown before it is sent. A slug that does not fit `[a-z0-9][a-z0-9-]*` or
@@ -253,11 +281,11 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   (`fits`).
 - A wide cell types a draft, clicks a topic row and checks that the card opens while the draft
   keeps its text (`draft-kept`) and the focus (`focus-kept`). A narrow cell takes the same draft
-  through Topics, the card and back to Chat (`draft-kept`).
+  through Overview, the topic and back to Chat (`draft-kept`).
 - Every cell checks the Revisit line: the oldest quiet topic shows, Next cycles through the
   fixture's three quiet topics and wraps (`revisit`), and on a narrow screen the walk dialog fits
   the viewport with the focus on Keep (`walk-fits`).
-- The 1440x900 dark cell clicks Send and waits for the `sent to …` receipt with its request id;
+- The 1440x900 dark cell opens the All tab, clicks Send and waits for the `sent to …` receipt with its request id;
   the fake TUI must have received the draft once (`sent`). It then walks the three quiet topics,
   each verdict reaching the fake TUI once as the exact line (`walk-keep`, `walk-ask`,
   `walk-close`), and runs the edge cases against a held send endpoint: no dismissal while a
@@ -285,7 +313,13 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   the two phone sizes and then in 1440x900 dark (`s3a-*` checks): touch targets of at least 44 px
   and 16 px inputs, the line and slug rules against the same cases as the server, Undo and a hidden
   page, a card that is behind the board, a board that changes during the countdown, a route that
-  changes, a lost receipt and Check again, the chip of a new topic and a cap refusal.
+  changes, a lost receipt and Check again, the chip of a new topic and a cap refusal. While the
+  new topic waits, the rows its open ask adds appear without moving its form or **Check again**.
+- After the compose cell, the topic tab cases run on listeners of their own in 1440x900 dark
+  (`t1-*` and `tab-focus-kept`): which topics have a tab, the chat each tab shows, a tab press
+  that keeps the draft and its focus, choices with and without a recommendation, reserved items,
+  an answer by choice with Undo beside a discussion, a board that changes under a choice, and
+  tagged, untagged and verdict-like drafts as the fake TUI receives them.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
@@ -294,4 +328,6 @@ guard that keeps the focus in the draft. The recipe passes only when that run fa
 with the walk's Keep sending the Ask line and passes only when the run fails at `walk-keep
 (1440x900 dark)` and at no other check. `just web-smoke plant-undo` serves `app.mjs` with the Undo
 of an owner line hiding the line while its countdown still sends it one second late, and passes
-only when the run fails at `s3a-undo (1440x900 dark)` and at no other check.
+only when the run fails at `s3a-undo (1440x900 dark)` and at no other check. `just web-smoke
+plant-tab` serves `app.mjs` without the topic tab's mousedown `preventDefault` and passes only
+when the run fails at `tab-focus-kept (1440x900 dark)` and at no other check.

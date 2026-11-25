@@ -92,7 +92,7 @@ function clock(micros) {
 }
 
 function Row({ row }) {
-  return html`<article class=${"msg " + row.voice + " k-" + row.kind}>
+  return html`<article class=${"msg " + row.voice + " k-" + row.kind} data-tags=${(row.tags || []).join(" ")}>
     <div class="who">
       <b>${row.who}</b>
       ${row.what ? html`<span>${row.what}</span>` : null}
@@ -102,7 +102,8 @@ function Row({ row }) {
   </article>`;
 }
 
-function Stream({ chat }) {
+// The shared chat; on a topic's tab, the turns the server tagged with it.
+function Stream({ chat, tag }) {
   const end = useRef(null);
   const pinned = useRef(true);
   const onScroll = useCallback((event) => {
@@ -114,9 +115,10 @@ function Stream({ chat }) {
       end.current.scrollIntoView({ block: "end" });
     }
   }, [chat]);
+  const rows = tag ? chat.rows.filter((row) => (row.tags || []).includes(tag)) : chat.rows;
   const items = [];
   let shown = "";
-  for (const row of chat.rows) {
+  for (const row of rows) {
     const date = day(row.micros);
     if (date !== shown) {
       shown = date;
@@ -128,6 +130,7 @@ function Stream({ chat }) {
     <div class="inner">
       ${chat.cut > 0 ? html`<p class="gap">${chat.cut} older turns are not shown.</p>` : null}
       ${chat.coverage.map((gap) => html`<p class="gap" key=${"c" + gap}>coverage incomplete: ${gap}</p>`)}
+      ${tag && !rows.length ? html`<p class="gap">No messages with #${tag} yet.</p>` : null}
       ${items}
       <div ref=${end}></div>
     </div>
@@ -158,11 +161,11 @@ const GROUPS = {
   unreadable: "Unreadable",
 };
 
-function TopicRow({ row, group, chosen, choose }) {
+function TopicRow({ row, group, choose }) {
   const waits = row.waits.length;
   // A press keeps the focus where it was, so a draft being typed stays focused.
   return html`<button
-    class=${"row" + (chosen === row.slug ? " sel" : "")}
+    class="row"
     onMouseDown=${(event) => event.preventDefault()}
     onClick=${() => choose(row.slug)}
   >
@@ -173,50 +176,133 @@ function TopicRow({ row, group, chosen, choose }) {
   </button>`;
 }
 
-function Desk({ desk, chosen, choose, revisit, lines, route }) {
+// A topic keeps a tab while it needs the owner: an open DECIDE item, the state
+// needs or moving, or a filed topic whose state word cannot be read. Any other
+// topic has a tab only while the owner has opened it.
+const keepsTab = (row) =>
+  row.waits.some((wait) => wait.kind === "decide") ||
+  row.state === "needs" ||
+  row.state === "moving" ||
+  (row.state === null && filed(row));
+
+// The tabs after All: the topics that keep one, in the desk's order, then
+// `temp`, the topic the owner opened that keeps none. It lives in this page only.
+function topicTabs(desk, temp) {
+  const tabs = [];
+  let opened = null;
+  for (const group of desk.groups) {
+    for (const row of group.rows) {
+      if (keepsTab(row)) {
+        tabs.push({ row, group: group.group });
+      } else if (row.slug === temp) {
+        opened = { row, group: group.group };
+      }
+    }
+  }
+  return opened ? tabs.concat(opened) : tabs;
+}
+
+// One tab. A press keeps the focus where it was, so a draft being typed stays
+// focused.
+function Tab({ role, slug, label, title, group, active, select }) {
+  return html`<button
+    type="button"
+    role="tab"
+    class=${"tab" + (active ? " on" : "")}
+    data-role=${role}
+    data-slug=${slug || null}
+    aria-selected=${active ? "true" : "false"}
+    title=${title || null}
+    onMouseDown=${(press) => press.preventDefault()}
+    onClick=${() => select(slug)}
+  >
+    ${group ? html`<span class=${"dot " + group}></span>` : null}
+    <span class="tl">${label}</span>
+  </button>`;
+}
+
+// All first, then one tab per topic of `tabs`; `active` is "" for All.
+function TabBar({ tabs, active, select }) {
+  return html`<nav class="tabbar" role="tablist" aria-label="Topics">
+    <${Tab} key="all" role="tab-all" slug="" label="All" active=${!active} select=${select} />
+    ${tabs.map(
+      ({ row, group }) => html`<${Tab}
+        key=${"t" + row.slug}
+        role="tab"
+        slug=${row.slug}
+        label=${row.title || row.slug}
+        title=${"#" + row.slug + " · " + (GROUPS[group] || group)}
+        group=${group}
+        active=${active === row.slug}
+        select=${select}
+      />`,
+    )}
+  </nav>`;
+}
+
+// The All tab's panel. The new-topic line comes first, above every list that
+// grows on its own, so no control moves under the pointer. Every decision is
+// listed; one that tags no topic is answered here, a tagged one on its tab.
+function AllPanel({ desk, open, revisit, lines, route }) {
   const [query, setQuery] = useState("");
-  const rows = (name) => {
-    const found = desk.groups.find((group) => group.group === name);
-    return found ? found.rows : [];
-  };
-  const listed = (name) =>
-    rows(name).map(
-      (row) => html`<${TopicRow} key=${name + row.slug} row=${row} group=${name} chosen=${chosen} choose=${choose} />`,
-    );
   const needle = query.trim().toLowerCase();
   const all = [];
   for (const group of desk.groups) {
     for (const row of group.rows) {
       const words = (row.slug + " " + (row.title || "")).toLowerCase();
       if (!needle || words.includes(needle)) {
-        all.push(html`<${TopicRow} key=${"a" + row.slug} row=${row} group=${group.group} chosen=${chosen} choose=${choose} />`);
+        all.push(html`<${TopicRow} key=${"a" + row.slug} row=${row} group=${group.group} choose=${open} />`);
       }
     }
   }
+  const untagged = desk.decide.filter((row) => row.tags.length === 0);
+  const tagged = desk.decide.filter((row) => row.tags.length > 0);
   const skipped = desk.skipped;
   const left = skipped.claimed + skipped.unproven + skipped.invalid;
-  return html`<nav class="col" aria-label="Topics">
-    <div class="grp need"><span>${GROUPS.needs_you}</span><span>${rows("needs_you").length}</span></div>
-    ${listed("needs_you")}
-    ${desk.decide.length
-      ? html`<div class="grp need"><span>Decisions</span><span>${desk.decide.length}</span></div>
-          ${desk.decide.map(
-            (row) => html`<${DecisionAnswer}
-              key=${row.item}
-              lines=${lines}
-              route=${route}
-              item=${row.item}
-              text=${row.text}
-              decision=${row}
-              compose=${desk.compose || COMPOSE}
-            />`,
-          )}`
-      : null}
-    <div class="grp"><span>${GROUPS.moving}</span><span>${rows("moving").length}</span></div>
-    ${listed("moving")}
+  return html`<aside class="panel allp" data-panel="all" aria-label="All topics">
+    <${NewTopic} lines=${lines} route=${route} desk=${desk} />
     ${revisit.entry
-      ? html`<div class="grp"><span>${GROUPS.quiet}</span><span>${revisit.count}</span></div>
-          <${Revisit} entry=${revisit.entry} count=${revisit.count} next=${revisit.next} open=${choose} walk=${revisit.walk} />`
+      ? html`<${Revisit} entry=${revisit.entry} count=${revisit.count} next=${revisit.next} open=${open} walk=${revisit.walk} />`
+      : null}
+    ${desk.decide.length
+      ? html`<section class="decisions" data-section="decisions">
+          <div class="grp need"><span>Decisions</span><span>${desk.decide.length}</span></div>
+          ${untagged.length
+            ? html`<div data-section="untagged">
+                <div class="grp"><span>Decisions without a topic</span></div>
+                ${untagged.map(
+                  (row) => html`<${DecisionAnswer}
+                    key=${row.item}
+                    lines=${lines}
+                    route=${route}
+                    item=${row.item}
+                    text=${row.text}
+                    decision=${row}
+                    compose=${desk.compose || COMPOSE}
+                    tag=""
+                  />`,
+                )}
+              </div>`
+            : null}
+          ${tagged.map(
+            (row) => html`<div class="dline" key=${row.item} data-item=${row.item}>
+              <p class="dq-text"><span class="mute sm">${row.item}</span> ${row.text}</p>
+              <p class="dlinks">
+                ${row.reserved ? html`<span class="mute sm">reserved</span>` : null}
+                ${row.tags.map(
+                  (tag) => html`<button
+                    type="button"
+                    class="link"
+                    key=${tag}
+                    data-action="open-tab"
+                    data-slug=${tag}
+                    onClick=${() => open(tag)}
+                  >#${tag}</button>`,
+                )}
+              </p>
+            </div>`,
+          )}
+        </section>`
       : null}
     <div class="grp"><span>All topics</span><span>${all.length}</span></div>
     <input
@@ -226,7 +312,6 @@ function Desk({ desk, chosen, choose, revisit, lines, route }) {
       value=${query}
       onInput=${(event) => setQuery(event.currentTarget.value)}
     />
-    <${NewTopic} lines=${lines} route=${route} desk=${desk} />
     ${all}
     ${desk.gaps.map((gap, at) => html`<p class="note" key=${"g" + at}>${gap}</p>`)}
     ${left > 0
@@ -235,7 +320,7 @@ function Desk({ desk, chosen, choose, revisit, lines, route }) {
           the orchestrator seat, ${skipped.invalid} damaged.
         </p>`
       : null}
-  </nav>`;
+  </aside>`;
 }
 
 // Every shown field of a card, each with the record it came from.
@@ -263,17 +348,17 @@ function Source({ origin }) {
   </span>`;
 }
 
-function Card({ card, close, closeLine, outcome, lines, route, decide, compose }) {
+// A topic tab's panel: the topic's card and the decisions that wait on it.
+function Card({ card, closeLine, outcome, lines, route, decide, compose }) {
   const fields = card.fields;
   // Only Quiet, Moving and Parked cards can be closed from here; a card with a
   // wait shows the button disabled and says why, a closed or unreadable one
   // shows none.
   const closable = Boolean(card.verdict);
   const blocked = card.group === "needs_you";
-  return html`<aside class="card" aria-label="Topic">
+  return html`<aside class="panel card" data-panel="topic" data-slug=${card.slug} aria-label="Topic">
     <div class="hd">
       <h2>${fields.title ? fields.title.value : card.slug}</h2>
-      <button class="x" aria-label="Close topic" onClick=${close}>×</button>
     </div>
     <p class="sub">#${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
     ${WAITS.map(([kind, name]) => {
@@ -291,6 +376,7 @@ function Card({ card, close, closeLine, outcome, lines, route, decide, compose }
                     decision=${decide.find((row) => row.item === wait.item && row.text === wait.text) || null}
                     compose=${compose}
                     mark=${wait.id}
+                    tag=${card.slug}
                   />`
                 : html`${wait.text}${wait.id ? html` <span class="mute sm">${wait.id}</span>` : null}`}</li>`,
             )}</ul>
@@ -525,13 +611,19 @@ const BLANK = Object.freeze({
   deadline: 0,
 });
 
+// What the owner says about one decision before anything is sent.
+const QUIET_TALK = Object.freeze({ shown: false, text: "", phase: "idle", note: null, body: "" });
+// The longest question or objection, in Unicode scalar values.
+const TALK_MAX = 500;
+
 // The lines in flight, one record per key: "<item> <bind>" for a decision and
 // "topic" for a new topic. A record is idle (editable), count (undo window),
 // send (drafting or carrying), open (no receipt: the same body is asked again)
 // or sent (a decision already answered). The decision's text is part of its
 // key, so a board that changed the text starts a new record: an answer, a
-// receipt or a Check again never lands on text it was not made for. The
-// Decisions block and the card of one decision share one record.
+// receipt or a Check again never lands on text it was not made for. Every tab
+// that shows one decision shares one record, and its talk, so an open attempt
+// outlives a tab change.
 function makeLines(live, redraw) {
   const rec = (key, item, bind) => {
     if (!live.recs.has(key)) {
@@ -560,13 +652,85 @@ function makeLines(live, redraw) {
         r.item,
         line("error", "An earlier answer to " + r.item + " may have reached the orchestrator: the decision changed, reload."),
       );
-    } else if (r.phase === "idle" && r.fields.answer) {
+    } else if (r.phase === "idle" && (r.fields.answer || r.fields.choice)) {
       live.said.set(r.item, line("error", "The decision changed: your answer was cleared."));
     }
     ticking();
     redraw();
   };
+  const talking = (item) => {
+    if (!live.talks.has(item)) {
+      live.talks.set(item, { ...QUIET_TALK });
+    }
+    return live.talks.get(item);
+  };
   const api = {
+    talk: (item) => live.talks.get(item) || QUIET_TALK,
+    showTalk(item) {
+      talking(item).shown = true;
+      redraw();
+    },
+    typeTalk(item, text) {
+      const t = talking(item);
+      if (t.phase !== "idle") {
+        return;
+      }
+      t.text = text;
+      t.note = null;
+      redraw();
+    },
+    // A question or objection is an ordinary chat line, `#<tag> D67: <words>`,
+    // sent as the composer sends: no countdown and no decision proof. An open
+    // attempt posts its exact body again.
+    async discuss(item, tag, words) {
+      const t = talking(item);
+      if (t.phase === "send") {
+        return;
+      }
+      if (!t.body && !live.route) {
+        t.note = line("error", "No proven orchestrator to send to");
+        redraw();
+        return;
+      }
+      t.phase = "send";
+      t.note = line("wait", t.body ? "asking again" : "sending");
+      redraw();
+      try {
+        if (!t.body) {
+          const made = await draft(live.route, (tag ? "#" + tag + " " : "") + item + ": " + words);
+          if (!made.body) {
+            t.phase = "idle";
+            t.note = made.note;
+            redraw();
+            return;
+          }
+          t.body = made.body;
+        }
+        const done = await carry(t.body, (note) => {
+          t.note = note;
+          redraw();
+        });
+        if (done.receipt) {
+          t.note = receiptNote(done.receipt);
+          t.body = "";
+          t.phase = "idle";
+          if (t.note.kind !== "refused") {
+            t.text = "";
+          }
+        } else if (done.spent) {
+          t.note = done.note;
+          t.body = "";
+          t.phase = "idle";
+        } else {
+          t.note = done.note;
+          t.phase = "open";
+        }
+      } catch (_) {
+        t.phase = t.body ? "open" : "idle";
+        t.note = line("error", UNREACHABLE + (t.body ? "; Check again asks once more" : ""));
+      }
+      redraw();
+    },
     key: (item, bind) => item + " " + bind,
     get: (key) => live.recs.get(key) || BLANK,
     said: (item) => live.said.get(item) || null,
@@ -584,9 +748,23 @@ function makeLines(live, redraw) {
       live.said.delete(r.item);
       redraw();
     },
-    press(key, text, decide, slug) {
+    // A decision is pressed only while the board's own row still holds its
+    // bind, is not reserved and offers `choice`, "" for a typed answer.
+    press(key, text, decide, slug, choice) {
       const r = rec(key, decide ? decide.item : "", decide ? decide.bind : "");
       if (r.phase !== "idle") {
+        return;
+      }
+      const row = decide ? current(decide.item) : null;
+      const offered =
+        !decide ||
+        (Boolean(row) &&
+          row.bind === decide.bind &&
+          !row.reserved &&
+          (choice ? Boolean(row.choices) && row.choices.options.some((one) => String(one.n) === choice) : !row.choices));
+      if (!offered) {
+        r.note = line("error", "Not sent: the decision changed, reload.");
+        redraw();
         return;
       }
       if (!live.route) {
@@ -774,7 +952,7 @@ function useLines(state) {
   const [, setVersion] = useState(0);
   const box = useRef(null);
   if (box.current === null) {
-    const live = { recs: new Map(), said: new Map(), asked: [], askedTimer: 0, known: new Set(), occupied: new Set(), tick: 0, route: null, decide: [] };
+    const live = { recs: new Map(), talks: new Map(), said: new Map(), asked: [], askedTimer: 0, known: new Set(), occupied: new Set(), tick: 0, route: null, decide: [] };
     live.api = makeLines(live, () => setVersion((n) => n + 1));
     box.current = live;
   }
@@ -864,59 +1042,167 @@ function LineActions({ lines, id, r, pasted, said, focus }) {
       : null}`;
 }
 
-// One decision of the board with its answer line. `decision` is the board's own
-// row for it, and the control is live only when its text is the text shown
-// here: a card that is behind the board shows its text with Answer off.
-function DecisionAnswer({ lines, route, item, text, decision, compose, mark }) {
+// One decision of the board with its answer. `decision` is the board's own row
+// for it, and the controls are live only when its text is the text shown here: a
+// card that is behind the board shows its text with Answer off. A reserved
+// decision is shown and never answered here. A text that reads as numbered
+// options is answered by one of them, as `D67 2`; any other by one line. `tag`
+// is the topic whose tab shows it, for talk about it.
+function DecisionAnswer({ lines, route, item, text, decision, compose, mark, tag }) {
   const aligned = Boolean(decision) && decision.text === text;
+  const reserved = aligned && decision.reserved;
+  const choices = aligned ? decision.choices : null;
   const key = aligned ? lines.key(item, decision.bind) : "";
   const r = aligned ? lines.get(key) : BLANK;
   const [pasted, setPasted] = useState("");
   const input = useRef(null);
+  const form = useRef(null);
   const raw = r.fields.answer || "";
   const checked = lineText(raw, compose.answer_max);
+  const picked =
+    choices && choices.options.some((option) => String(option.n) === r.fields.choice) ? r.fields.choice : "";
+  const reply = choices ? picked : checked.problem ? "" : checked.text;
   const idle = r.phase === "idle";
-  const ready = aligned && idle && Boolean(route) && checked.text !== "" && checked.problem === "";
+  const ready = aligned && idle && Boolean(route) && reply !== "";
+  const pick = (number) => lines.set(key, "choice", String(number), { item, bind: decision.bind });
   const submit = (event) => {
     event.preventDefault();
-    if (ready) {
-      lines.press(key, item + " " + checked.text, { item, bind: decision.bind });
+    if (ready && !reserved) {
+      lines.press(key, item + " " + reply, { item, bind: decision.bind }, "", picked);
     }
   };
-  return html`<form class="decision-answer dq" data-item=${item} onSubmit=${submit}>
-    <p class="dq-text"><span class="mute sm">${item}</span> ${text}${mark ? html` <span class="mute sm">${mark}</span>` : null}</p>
-    <div class="dq-row">
-      <input
-        ref=${input}
-        class="dq-input"
-        type="text"
-        data-field="answer"
-        aria-label=${"Answer to " + item}
-        placeholder="Answer"
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        enterkeyhint="send"
-        value=${raw}
-        readOnly=${!idle}
-        disabled=${!aligned}
-        onInput=${(event) => {
-          setPasted("");
-          lines.set(key, "answer", event.currentTarget.value, { item, bind: decision.bind });
-        }}
-        onPaste=${(event) => {
-          if (refusesPaste(event)) {
-            setPasted(PASTE_REFUSED);
-          }
-        }}
-      />
-      <button type="submit" class="dq-go" data-action="answer" disabled=${!ready}>Answer</button>
-    </div>
-    ${aligned && idle && checked.problem ? html`<p class="dq-hint" data-role="problem">${checked.problem}</p>` : null}
+  const heading = (words) =>
+    html`<p class="dq-text"><span class="mute sm">${item}</span> ${words}${mark ? html` <span class="mute sm">${mark}</span>` : null}</p>`;
+  if (reserved) {
+    return html`<form class="decision-answer dq" data-item=${item} data-reserved="" onSubmit=${submit}>
+      ${heading(text)}
+      <p class="dq-reserved" data-role="reserved">Reserved: confirm in the orchestrator pane or on Telegram.</p>
+      <${Note} note=${lines.said(item)} />
+    </form>`;
+  }
+  const answer = html`<button type="submit" class="dq-go" data-action="answer" disabled=${!ready}>Answer</button>`;
+  return html`<form ref=${form} class="decision-answer dq" data-item=${item} tabIndex="-1" onSubmit=${submit}>
+    ${heading(choices ? choices.question : text)}
+    ${choices
+      ? html`<fieldset class="dq-choices" data-role="choices" disabled=${!idle} aria-label=${"Options for " + item}>
+            ${choices.options.map(
+              (option) => html`<label
+                key=${option.n}
+                class="dq-choice"
+                data-recommended=${option.n === choices.recommend ? "" : null}
+              >
+                <input
+                  type="radio"
+                  name=${"choice-" + item}
+                  data-choice=${option.n}
+                  value=${option.n}
+                  checked=${picked === String(option.n)}
+                  onChange=${() => pick(option.n)}
+                />
+                <span>${option.n}) ${option.label}</span>
+                ${option.n === choices.recommend ? html`<span class="dq-rec">recommended</span>` : null}
+              </label>`,
+            )}
+          </fieldset>
+          <div class="dq-row">
+            ${answer}
+            ${choices.recommend
+              ? html`<button type="button" class="dq-btn" data-action="recommend" disabled=${!idle} onClick=${() => pick(choices.recommend)}>
+                  Pick the recommended
+                </button>`
+              : null}
+          </div>`
+      : html`<div class="dq-row">
+          <input
+            ref=${input}
+            class="dq-input"
+            type="text"
+            data-field="answer"
+            aria-label=${"Answer to " + item}
+            placeholder="Answer"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            enterkeyhint="send"
+            value=${raw}
+            readOnly=${!idle}
+            disabled=${!aligned}
+            onInput=${(event) => {
+              setPasted("");
+              lines.set(key, "answer", event.currentTarget.value, { item, bind: decision.bind });
+            }}
+            onPaste=${(event) => {
+              if (refusesPaste(event)) {
+                setPasted(PASTE_REFUSED);
+              }
+            }}
+          />
+          ${answer}
+        </div>`}
+    ${aligned && idle && !choices && checked.problem ? html`<p class="dq-hint" data-role="problem">${checked.problem}</p>` : null}
     ${aligned
-      ? html`<${LineActions} lines=${lines} id=${key} r=${r} pasted=${pasted} said=${lines.said(item)} focus=${input} />`
+      ? html`<${LineActions} lines=${lines} id=${key} r=${r} pasted=${pasted} said=${lines.said(item)} focus=${choices ? form : input} />`
       : html`<p class="dq-hint" data-role="problem">This text is not the board's now: waiting for the next refresh.</p>`}
+    ${aligned ? html`<${Talk} lines=${lines} item=${item} tag=${tag} />` : null}
   </form>`;
+}
+
+// Talk about one decision instead of answering it: its own line, its own
+// status and Check again. It sits after the answer's status in the form, and
+// Enter in it never presses Answer.
+function Talk({ lines, item, tag }) {
+  const t = lines.talk(item);
+  const [pasted, setPasted] = useState("");
+  const checked = lineText(t.text, TALK_MAX);
+  const idle = t.phase === "idle";
+  const open = t.phase === "open";
+  const ready = open || (idle && checked.text !== "" && checked.problem === "");
+  const send = () => {
+    if (ready) {
+      lines.discuss(item, tag, checked.text);
+    }
+  };
+  return html`<div class="dq-talk">
+    ${t.shown
+      ? html`<div class="dq-row">
+          <input
+            class="dq-input"
+            type="text"
+            data-field="talk"
+            aria-label=${"Question or objection about " + item}
+            placeholder="Question or objection"
+            autocomplete="off"
+            enterkeyhint="send"
+            value=${t.text}
+            readOnly=${!idle}
+            onInput=${(event) => {
+              setPasted("");
+              lines.typeTalk(item, event.currentTarget.value);
+            }}
+            onPaste=${(event) => {
+              if (refusesPaste(event)) {
+                setPasted(PASTE_REFUSED);
+              }
+            }}
+            onKeyDown=${(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (!event.isComposing) {
+                  send();
+                }
+              }
+            }}
+          />
+          <button type="button" class="dq-btn" data-action="talk-send" disabled=${!ready} onClick=${send}>
+            ${open ? "Check again" : "Send"}
+          </button>
+        </div>`
+      : html`<button type="button" class="dq-btn" data-action="talk" onClick=${() => lines.showTalk(item)}>
+          Talk it over
+        </button>`}
+    ${idle && t.shown && checked.problem ? html`<p class="dq-hint" data-role="problem">${checked.problem}</p>` : null}
+    <${Note} note=${pasted ? line("error", pasted) : t.note} />
+  </div>`;
 }
 
 // A request for a new topic: a title, the slug it suggests (or one typed) and
@@ -945,7 +1231,7 @@ function NewTopic({ lines, route, desk }) {
   const submit = (event) => {
     event.preventDefault();
     if (ready) {
-      lines.press("topic", preview, null, slug);
+      lines.press("topic", preview, null, slug, "");
     }
   };
   const onPaste = (event) => {
@@ -1018,32 +1304,21 @@ function NewTopic({ lines, route, desk }) {
 // verbatim on every retry and every later check until an answer settles it,
 // so the server carries a draft at most once and a check always finds its
 // receipt. While an attempt is open the draft cannot change.
-function Composer({ route, slug, onAttached }) {
+//
+// On a topic's tab, `slug`, a draft is sent as `#<slug>: <text>` and the chip
+// shows the tag. Removing it sends this one draft untagged. While an attempt is
+// made or open, the chip shows the tag that attempt carries.
+function Composer({ route, slug, untagged, setUntagged }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [attempt, setAttempt] = useState("");
+  const [carried, setCarried] = useState("");
   const [note, setNote] = useState(null);
   const box = useRef(null);
   const frozen = sending || Boolean(attempt);
-  // A draft whose first line is a bare #slug is the one Attach wrote.
-  const attached = /^#[a-z0-9][a-z0-9-]*$/.test(text.split("\n", 1)[0]);
-  useEffect(() => {
-    if (onAttached) {
-      onAttached(attached);
-    }
-  }, [attached, onAttached]);
+  const tag = untagged ? "" : slug;
+  const chip = frozen ? carried : tag;
   const ready = Boolean(attempt || (route && text.trim()));
-
-  const attach = () => {
-    if (frozen) {
-      return;
-    }
-    const first = "#" + slug;
-    setText((now) => (now.split("\n", 1)[0] === first ? now : first + "\n" + now));
-    if (box.current) {
-      box.current.focus();
-    }
-  };
 
   // A receipt settles the attempt. A refused draft stays to be edited and
   // sent as a new one; one that was sent or may have landed leaves the
@@ -1054,6 +1329,7 @@ function Composer({ route, slug, onAttached }) {
     setNote(shown);
     if (shown.kind !== "refused") {
       setText("");
+      setUntagged(false);
     }
   };
 
@@ -1065,7 +1341,7 @@ function Composer({ route, slug, onAttached }) {
     if (!route || !text.trim()) {
       return "";
     }
-    const made = await draft(route, text);
+    const made = await draft(route, tag ? "#" + tag + ": " + text : text);
     if (!made.body) {
       setNote(made.note);
       return "";
@@ -1077,6 +1353,9 @@ function Composer({ route, slug, onAttached }) {
   const send = async () => {
     if (sending || !ready) {
       return;
+    }
+    if (!attempt) {
+      setCarried(tag);
     }
     setSending(true);
     setNote(line("wait", attempt ? "asking again" : "sending"));
@@ -1135,16 +1414,18 @@ function Composer({ route, slug, onAttached }) {
       onKeyDown=${onKeyDown}
     ></textarea>
     <div class="bar">
-      ${slug
-        ? html`<button
-            type="button"
-            class="attach"
-            disabled=${frozen}
-            onMouseDown=${(event) => event.preventDefault()}
-            onClick=${attach}
-          >
-            Attach #${slug}
-          </button>`
+      ${chip
+        ? html`<span class="tag-chip" data-role="tag-chip" data-slug=${chip}>
+            <span class="tag-name" title=${"#" + chip}>#${chip}</span>
+            <button
+              type="button"
+              data-action="untag"
+              aria-label=${"Send without #" + chip}
+              disabled=${frozen}
+              onMouseDown=${(event) => event.preventDefault()}
+              onClick=${() => setUntagged(true)}
+            >×</button>
+          </span>`
         : null}
       <span class="sp"></span>
       <span class="mute sm">Ctrl+Enter</span>
@@ -1156,8 +1437,8 @@ function Composer({ route, slug, onAttached }) {
 }
 
 
-// The Revisit line: one quiet topic by name with its next step, in the desk
-// column. Next cycles through the quiet topics in the order the server sends.
+// The Revisit line: one quiet topic by name with its next step, on the All
+// tab. Next cycles through the quiet topics in the order the server sends.
 function Revisit({ entry, count, next, open, walk }) {
   return html`<div class="revisit" data-slug=${entry.slug}>
     <div class="hd">
@@ -1565,18 +1846,25 @@ function App() {
   const lines = useLines(state);
   const [problem, setProblem] = useState("");
   const tag = useRef("");
-  // The topic open in the card, its last answer and that answer's tag; the
-  // view names what a narrow screen shows.
+  // The open tab's topic, "" for All; the topic the owner opened that keeps no
+  // tab; whether this tab's draft goes untagged; the open topic's card, that
+  // answer's tag; and what a narrow screen shows, the chat or the panel.
   const [chosen, setChosen] = useState("");
+  const [temp, setTemp] = useState("");
+  const [untagged, setUntagged] = useState(false);
   const [card, setCard] = useState(null);
   const [view, setView] = useState("chat");
   const [cardProblem, setCardProblem] = useState("");
   const cardTag = useRef("");
-  // The Revisit line's shown topic, the walk or close dialog and whether the
-  // draft holds an attached topic (the strip hides then).
+  const desk = state && state.desk ? state.desk : null;
+  const tabs = desk ? topicTabs(desk, temp) : [];
+  // A tab that left the bar shows All at once.
+  const active = tabs.some((one) => one.row.slug === chosen) ? chosen : "";
+  const kept = (slug) =>
+    Boolean(desk) && desk.groups.some((group) => group.rows.some((row) => row.slug === slug && keepsTab(row)));
+  // The Revisit line's shown topic and the walk or close dialog.
   const [rv, setRv] = useState("");
   const [walk, setWalk] = useState(null);
-  const [attached, setAttached] = useState(false);
   const quiet = (state && state.desk && state.desk.revisit) || [];
   // A shown topic that left the quiet list falls back to the first of it.
   const current = quiet.find((entry) => entry.slug === rv) || quiet[0] || null;
@@ -1619,43 +1907,60 @@ function App() {
   };
   const revisitProps = { entry: current, count: quiet.length, next: nextRevisit, walk: startWalk };
 
-  // Choosing the open topic again only shows its card: its answer and tag
-  // stay, because no new snapshot would bring them back. A card that could
-  // not be read leaves no selection, so choosing it again reads it again.
-  const choose = useCallback((slug) => {
+  const leave = () => {
+    cardTag.current = "";
+    setCard(null);
+    setChosen("");
+    setTemp("");
+    setUntagged(false);
+  };
+  // Opens a tab, "" for All, and shows the chat or the panel on a narrow
+  // screen. A topic that keeps no tab gets one until another tab is opened.
+  // Choosing the open tab again keeps its card and its draft's tag: no new
+  // snapshot would bring the card back.
+  const open = (slug, shows) => {
     setCardProblem("");
     if (slug !== chosen) {
       cardTag.current = "";
       setCard(null);
       setChosen(slug);
+      setUntagged(false);
     }
-    setView("topic");
-  }, [chosen]);
-  const close = useCallback(() => {
-    cardTag.current = "";
-    setCard(null);
-    setChosen("");
-    setCardProblem("");
-    setView("topics");
-  }, []);
+    setTemp(slug && !kept(slug) ? slug : "");
+    setView(shows);
+  };
+  const selectTab = (slug) => open(slug, "chat");
+  const openTopic = (slug) => open(slug, "panel");
+
+  // A tab that left the bar is closed for good, so it does not open again by
+  // itself when it comes back. An opened tab the board now keeps is one of its
+  // own from then on.
+  useEffect(() => {
+    if (!desk) {
+      return;
+    }
+    if (chosen && !active) {
+      leave();
+    } else if (temp && kept(temp)) {
+      setTemp("");
+    }
+  }, [state]);
 
   // The open card follows every new snapshot: it is read from the same one.
   useEffect(() => {
-    if (!chosen) {
+    if (!active) {
       return undefined;
     }
     let gone = false;
-    // A failed read drops the selection and says why.
+    // A failed read shows All and says why.
     const fail = (why) => {
-      cardTag.current = "";
-      setCard(null);
-      setChosen("");
-      setCardProblem("#" + chosen + ": " + why);
+      leave();
+      setCardProblem("#" + active + ": " + why);
     };
     const read = async () => {
       try {
         const headers = cardTag.current ? { "If-None-Match": cardTag.current } : {};
-        const answer = await api("topic/" + chosen, { headers });
+        const answer = await api("topic/" + active, { headers });
         if (gone) {
           return;
         }
@@ -1681,7 +1986,7 @@ function App() {
     return () => {
       gone = true;
     };
-  }, [chosen, state]);
+  }, [active, state]);
 
   useEffect(() => {
     let stopped = false;
@@ -1815,39 +2120,51 @@ function App() {
     };
   }, []);
 
-  // A narrow screen shows the list until the chosen card has arrived.
-  const shown = view === "topic" && !card ? "topics" : view;
-  return html`<div class=${"app view-" + shown + (card ? " has-card" : "")}>
+  const shown = card && card.slug === active ? card : null;
+  let panel = html`<aside class="panel" aria-label="Topics"></aside>`;
+  if (desk && !active) {
+    panel = html`<${AllPanel} desk=${desk} open=${openTopic} revisit=${revisitProps} lines=${lines} route=${state.route} />`;
+  } else if (shown) {
+    panel = html`<${Card}
+      key=${shown.slug}
+      card=${shown}
+      closeLine=${startClose}
+      outcome=${closed && closed.slug === shown.slug ? closed.text : ""}
+      lines=${lines}
+      route=${state ? state.route : null}
+      decide=${desk ? desk.decide : []}
+      compose=${(desk && desk.compose) || COMPOSE}
+    />`;
+  } else if (active) {
+    panel = html`<aside class="panel" aria-label="Topic"><p class="note">Reading #${active}.</p></aside>`;
+  }
+  return html`<div class=${"app view-" + view}>
     <${Head} state=${state} />
+    <${TabBar} tabs=${tabs} active=${active} select=${selectTab} />
     ${problem ? html`<p class="problem" role="status">${problem}</p>` : null}
     ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>
-      ${state && state.desk
-        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} revisit=${revisitProps} lines=${lines} route=${state.route} />`
-        : html`<nav class="col" aria-label="Topics"></nav>`}
       <section class="chat" aria-label="Chat">
-        ${current && !attached && !walk
-          ? html`<${Strip} entry=${current} count=${quiet.length} next=${nextRevisit} open=${choose} />`
+        ${current && !active && !walk
+          ? html`<${Strip} entry=${current} count=${quiet.length} next=${nextRevisit} open=${openTopic} />`
           : null}
-        ${state ? html`<${Stream} chat=${state.chat} />` : html`<div class="stream"></div>`}
-        <${Composer} route=${state ? state.route : null} slug=${card ? card.slug : ""} onAttached=${setAttached} />
+        ${state ? html`<${Stream} key=${"s" + active} chat=${state.chat} tag=${active} />` : html`<div class="stream"></div>`}
+        <${Composer}
+          route=${state ? state.route : null}
+          slug=${active}
+          untagged=${untagged}
+          setUntagged=${setUntagged}
+        />
       </section>
-      ${card
-        ? html`<${Card}
-            card=${card}
-            close=${close}
-            closeLine=${startClose}
-            outcome=${closed && closed.slug === card.slug ? closed.text : ""}
-            lines=${lines}
-            route=${state ? state.route : null}
-            decide=${state && state.desk ? state.desk.decide : []}
-            compose=${(state && state.desk && state.desk.compose) || COMPOSE}
-          />`
-        : null}
+      ${panel}
     </main>
-    <nav class="tabs" aria-label="Views">
-      <button class=${view === "chat" ? "on" : ""} onClick=${() => setView("chat")}>Chat</button>
-      <button class=${view === "chat" ? "" : "on"} onClick=${() => setView("topics")}>Topics</button>
+    <nav class="views" aria-label="Views">
+      <button type="button" data-role="view-chat" class=${view === "chat" ? "on" : ""} onClick=${() => setView("chat")}>
+        Chat
+      </button>
+      <button type="button" data-role="view-panel" class=${view === "panel" ? "on" : ""} onClick=${() => setView("panel")}>
+        ${active ? "Topic" : "Overview"}
+      </button>
     </nav>
     ${walk
       ? html`<${Walk} walk=${walk} route=${state ? state.route : null} state=${state} stop=${stopWalk} />`

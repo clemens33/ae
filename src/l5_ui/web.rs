@@ -5,6 +5,7 @@
 pub mod assets;
 pub mod auth;
 pub mod chat;
+pub mod choice;
 pub mod claim;
 pub mod clock;
 pub mod http;

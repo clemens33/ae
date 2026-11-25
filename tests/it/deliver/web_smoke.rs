@@ -21,14 +21,17 @@
 //! - wide cells, `draft-kept` and `focus-kept`: a click into the draft box,
 //!   typed text, then a click on a topic row opens its card while the draft
 //!   keeps its text and the focus.
-//! - narrow cells, `draft-kept`: the same draft survives Topics, the card and
-//!   the way back to Chat.
-//! - `sent`, in the 1440x900 dark cell only: a click on Send shows the receipt
-//!   with its request id, and the fake TUI received the draft once.
+//! - narrow cells, `draft-kept`: the same draft survives Overview, the topic
+//!   and the way back to Chat.
+//! - `sent`, in the 1440x900 dark cell only: on the All tab, a click on Send
+//!   shows the receipt with its request id, and the fake TUI received the draft
+//!   once.
 //!
 //! After the four cells one signed-out stage runs in the same tab (see
 //! `web_signedout_browser`): a page whose session is gone asks the listener
-//! once and then stops until a code is redeemed in its tab.
+//! once and then stops until a code is redeemed in its tab. The compose cases
+//! (`web_compose_browser_spec`) and then the topic tab cases
+//! (`web_topic_tabs_browser_spec`) follow, each on listeners of their own.
 //!
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
@@ -40,6 +43,9 @@
 //! line hiding the line but leaving its countdown to send it one second after
 //! its deadline. That run must fail at `s3a-undo (1440x900 dark)`: `just
 //! web-smoke plant-undo` passes only when it fails there and nowhere else.
+//! `AE_WEB_SMOKE_PLANT=tab` serves `app.mjs` without the topic tab's mousedown
+//! `preventDefault`. That run must fail at `tab-focus-kept (1440x900 dark)`:
+//! `just web-smoke plant-tab` passes only when it fails there and nowhere else.
 
 use std::collections::BTreeMap;
 use std::hash::BuildHasher as _;
@@ -100,6 +106,12 @@ const WALK_PLANTED: &str = "onClick=${() => act(\"ask\")}";
 /// running, so the line is sent a second after its deadline.
 const UNDO_GUARD: &str = "clearTimeout(r.timer);\n      r.phase = \"idle\";";
 const UNDO_PLANTED: &str = "r.phase = \"idle\";\n      setTimeout(() => {\n        r.phase = \"count\";\n        api.fire(key);\n      }, Math.max(0, r.deadline - Date.now()) + 1000);";
+
+/// A topic tab's focus guard as `app.mjs` serves it, and what the tab plant
+/// serves instead: the same tab without its mousedown `preventDefault`.
+const TAB_GUARD: &str =
+    "onMouseDown=${(press) => press.preventDefault()}\n    onClick=${() => select(slug)}";
+const TAB_PLANTED: &str = "onClick=${() => select(slug)}";
 
 /// What each check's script sees: `tag` names an element, `row` finds the
 /// smoke topic's first row, `box` is the draft box.
@@ -166,9 +178,9 @@ const RECEIPT: &str = "const sent = document.querySelector('.composer .receipt.k
 
 /// The centre of `want`'s element and whether a press there lands on it.
 const SPOT: &str = "const el = want === 'box' ? box() : want === 'row' ? row() : want === 'send' \
-     ? document.querySelector('.composer button.send') : want === 'topics' ? \
-     document.querySelectorAll('.tabs button')[1] : want === 'chat' ? \
-     document.querySelectorAll('.tabs button')[0] : null; if (!el) { return { ok: false, saw: \
+     ? document.querySelector('.composer button.send') : want === 'panel' ? \
+     document.querySelector('[data-role=view-panel]') : want === 'chat' ? \
+     document.querySelector('[data-role=view-chat]') : null; if (!el) { return { ok: false, saw: \
      'no ' + want }; } el.scrollIntoView({ block: 'nearest' }); const r = \
      el.getBoundingClientRect(); const x = Math.round(r.left + r.width / 2); const y = \
      Math.round(r.top + r.height / 2); const hit = document.elementFromPoint(x, y); return { ok: \
@@ -296,9 +308,10 @@ fn planted() -> Option<&'static str> {
         Some("focus") => Some("focus"),
         Some("walk") => Some("walk"),
         Some("undo") => Some("undo"),
+        Some("tab") => Some("tab"),
         Some(other) => {
             panic!(
-                "web-smoke: {PLANT}={other:?}; the planted faults are `focus`, `walk` and `undo`"
+                "web-smoke: {PLANT}={other:?}; the planted faults are `focus`, `walk`, `undo` and `tab`"
             )
         }
     }
@@ -443,31 +456,19 @@ fn live_web_smoke() {
             ));
         }
     }
-    // The S3a compose cases follow on the same tab, in the wide dark viewport
-    // the cells end in, and only when every earlier check passed, so a plant
-    // that fails an earlier check never reaches them.
+    // The S3a compose cases follow on the same tab, and the topic tab cases
+    // after them, each only when every earlier check passed, so a plant that
+    // fails an earlier check never reaches them.
     if failure.is_none() {
-        let compose = Cell {
-            width: 1440,
-            height: 900,
-            dark: true,
-        };
-        let result = web_compose_browser_spec::check_s3a(&mut tab);
-        // Only a failure is pictured here: a pass keeps the receipt shot of the
-        // 1440x900 dark cell, taken before the compose cases changed the page.
-        if result.is_err()
-            && let Err(why) = tab.shot(out.as_deref(), compose, true)
-        {
-            eprintln!("web-smoke shot: {why}");
-        }
-        if let Err(failed) = result {
-            failure = Some(format!(
-                "web-smoke FAILED at {} ({}): {}",
-                failed.check,
-                compose.name(),
-                failed.detail
-            ));
-        }
+        failure = later_stage(
+            &mut tab,
+            out.as_deref(),
+            web_compose_browser_spec::check_s3a,
+        );
+    }
+    if failure.is_none() {
+        let check = web_topic_tabs_browser_spec::check_t1;
+        failure = later_stage(&mut tab, out.as_deref(), check);
     }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
@@ -477,7 +478,36 @@ fn live_web_smoke() {
     if let Some(words) = failure {
         panic!("{words}");
     }
-    println!("web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage");
+    println!(
+        "web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage, the \
+         compose cases and the topic tab cases"
+    );
+}
+
+/// One stage after the cells, in the wide dark viewport they end in, and its
+/// failure as the run tells it. Only a failure is pictured here: a pass keeps
+/// the receipt shot of the 1440x900 dark cell, taken before the stages changed
+/// the page.
+fn later_stage(
+    tab: &mut Tab,
+    out: Option<&Path>,
+    check: fn(&mut Tab) -> Checked,
+) -> Option<String> {
+    let cell = Cell {
+        width: 1440,
+        height: 900,
+        dark: true,
+    };
+    let failed = check(tab).err()?;
+    if let Err(why) = tab.shot(out, cell, true) {
+        eprintln!("web-smoke shot: {why}");
+    }
+    Some(format!(
+        "web-smoke FAILED at {} ({}): {}",
+        failed.check,
+        cell.name(),
+        failed.detail
+    ))
 }
 
 fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool) -> Checked {
@@ -524,10 +554,10 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
         tab.holds("focus-kept", FOCUS_KEPT, "")?;
         ok("focus-kept", cell);
     } else {
-        tab.click("card-open", "topics")?;
-        tab.until("card-open", VIEW, "view-topics", PAGE_WAIT)?;
+        tab.click("card-open", "panel")?;
+        tab.until("card-open", VIEW, "view-panel", PAGE_WAIT)?;
         tab.click("card-open", "row")?;
-        tab.until("card-open", VIEW, "view-topic", PAGE_WAIT)?;
+        tab.until("card-open", VIEW, "view-panel", PAGE_WAIT)?;
         tab.until("card-open", CARD, HOSTILE, PAGE_WAIT)?;
         tab.click("draft-kept", "chat")?;
         tab.until("draft-kept", VIEW, "view-chat", PAGE_WAIT)?;
@@ -535,10 +565,13 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
         ok("draft-kept", cell);
     }
     if send {
+        // On the All tab the draft goes as typed, and the walk is there.
+        show_all(tab, "sent")?;
         sent(tab, rig)?;
         ok("sent", cell);
         web_walk_browser_spec::check_walk(tab, rig, cell)?;
         web_walk_browser_spec::check_edges(tab, rig, cell)?;
+        show_all(tab, "guard-skip")?;
         web_guard_browser::check_guards(tab, rig, cell)?;
     }
     tab.flush();
@@ -546,6 +579,19 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
         return Err(Failed::new("modules", tab.problems.join("; ")));
     }
     Ok(())
+}
+
+/// A real click on the All tab, until the draft carries no topic tag.
+fn show_all(tab: &mut Tab, check: &'static str) -> Checked {
+    tab.click_selector(check, "[data-role=tab-all]")?;
+    tab.until(
+        check,
+        "const saw = {chip: !!document.querySelector('[data-role=tag-chip]'), all: \
+         !!document.querySelector('[data-panel=all]')}; return {ok: !saw.chip && saw.all, saw};",
+        "",
+        PAGE_WAIT,
+    )
+    .map(drop)
 }
 
 /// A real click on Send, its receipt in the page, and the draft once in the
@@ -861,7 +907,8 @@ struct Tab {
     problems: Vec<String>,
     /// How many times the plant served its `app.mjs`.
     planted: usize,
-    /// The planted fault, when the run has one: `focus` or `walk`.
+    /// The planted fault, when the run has one: `focus`, `walk`, `undo` or
+    /// `tab`.
     fault: Option<&'static str>,
 }
 
@@ -948,9 +995,10 @@ impl Tab {
         }
     }
 
-    /// The planted fault: `app.mjs` served with its topic row's focus guard
-    /// removed, or with the walk's Keep sending the Ask line, every other
-    /// byte and header as the listener sent them.
+    /// The planted fault: `app.mjs` served with its topic row's or topic tab's
+    /// focus guard removed, with the walk's Keep sending the Ask line, or with
+    /// an owner line's Undo leaving its countdown running; every other byte and
+    /// header as the listener sent them.
     fn plant(&mut self, params: &Value) {
         let id = params.get_str("requestId").unwrap_or_default().to_owned();
         let body = self.call(
@@ -967,6 +1015,7 @@ impl Tab {
         let (guard, planted, what) = match self.fault {
             Some("walk") => (WALK_GUARD, WALK_PLANTED, "walk Keep buttons"),
             Some("undo") => (UNDO_GUARD, UNDO_PLANTED, "owner line Undo cancels"),
+            Some("tab") => (TAB_GUARD, TAB_PLANTED, "topic tab focus guards"),
             _ => (ROW_GUARD, ROW_PLANTED, "topic row focus guards"),
         };
         let sites = text.matches(guard).count();
@@ -1008,6 +1057,11 @@ impl Tab {
                 "web-smoke plant: /assets/app.mjs served without the owner line's stopped \
                  countdown (Undo hides the line and the countdown still sends it, 1 site); \
                  s3a-undo must fail"
+            );
+        } else if self.fault == Some("tab") {
+            println!(
+                "web-smoke plant: /assets/app.mjs served without the topic tab's mousedown \
+                 preventDefault (1 site); tab-focus-kept must fail"
             );
         } else if self.fault == Some("walk") {
             println!(
@@ -1268,6 +1322,16 @@ mod web_guard_browser;
 )]
 #[path = "web_compose_browser_spec.rs"]
 mod web_compose_browser_spec;
+
+#[allow(
+    clippy::expect_used,
+    clippy::format_push_string,
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "the frozen spec's case tables and long checks keep the bytes nav froze"
+)]
+#[path = "web_topic_tabs_browser_spec.rs"]
+mod web_topic_tabs_browser_spec;
 
 #[path = "web_signedout_browser.rs"]
 mod web_signedout_browser;

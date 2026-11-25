@@ -18,6 +18,10 @@ use crate::topic::{self, Card, Group};
 /// source contributes nothing.
 pub const MEMO_MAX: u64 = 8 * 1024 * 1024;
 
+/// The tag that marks a DECIDE item the page may only show. It names no
+/// topic: no wait joins it and no chat row carries it.
+pub const RESERVED: &str = "reserved";
+
 /// What kind of owner action a wait is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitKind {
@@ -337,6 +341,19 @@ fn memo(
     }
 }
 
+/// Whether `text` marks its item [`RESERVED`].
+#[must_use]
+pub fn is_reserved(text: &str) -> bool {
+    topic::tags(text).contains(&RESERVED)
+}
+
+/// The topics `text` tags: its `#slug` tags without [`RESERVED`].
+fn topic_tags(text: &str) -> Vec<&str> {
+    let mut tags = topic::tags(text);
+    tags.retain(|tag| *tag != RESERVED);
+    tags
+}
+
 /// Add `wait` to each slug its text tags, or to the untagged list when
 /// `untagged` takes them.
 fn join(column: &mut Column, tags: &[&str], wait: Wait, untagged: bool) {
@@ -368,7 +385,7 @@ fn decide_waits(seat: &Seat, column: &mut Column) {
         if item.id.section != crate::desk::Section::Decide {
             continue;
         }
-        let tags = topic::tags(&item.text);
+        let tags = topic_tags(&item.text);
         let wait = Wait {
             kind: WaitKind::Decide,
             text: item.text.clone(),
@@ -424,7 +441,7 @@ fn ask_waits(seat: &Seat, column: &mut Column) {
             crate::console::lane::Body::Whole(text) => text,
             _ => opening.summary.clone().unwrap_or_default(),
         };
-        let tags = topic::tags(&text);
+        let tags = topic_tags(&text);
         let wait = Wait {
             kind: WaitKind::Ask,
             text: text.lines().next().unwrap_or_default().to_owned(),
@@ -443,7 +460,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{Column, Sticky, Wait, WaitKind, arrange, collect};
+    use super::{Column, Sticky, Wait, WaitKind, arrange, collect, is_reserved, topic_tags};
     use crate::json::Value;
     use crate::topic::{self, Group};
 
@@ -471,6 +488,16 @@ mod tests {
 
     fn write(path: &std::path::Path, bytes: impl AsRef<[u8]>) {
         std::fs::write(path, bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+
+    /// `#reserved` marks an item and names no topic; only the whole tag does.
+    #[test]
+    fn the_reserved_tag_marks_and_names_no_topic() {
+        let text = "Go? #reserved #ship #reserved_extra";
+        assert!(is_reserved(text));
+        assert_eq!(topic_tags(text), ["ship"]);
+        assert!(!is_reserved("Go? #reserved_extra #reserved-too #ship"));
+        assert_eq!(topic_tags("#reserved-too"), ["reserved-too"]);
     }
 
     #[test]

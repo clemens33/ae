@@ -7,11 +7,13 @@
 //! document carries at most [`chat::ROWS_MAX`] rows and each text within its
 //! cap, control characters removed.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::chat::{self, Chat};
+use super::choice::{self, Choices};
 use super::clock::Clock;
 use super::topics::{self, Sticky, Wait};
 use crate::console::lane::Seat;
@@ -282,6 +284,15 @@ pub fn render(read: Arc<Read>, version: &str, read_at: i64, key: &[u8; 32]) -> S
     let chat = &read.chat;
     let over = chat.rows.len().saturating_sub(chat::ROWS_MAX);
     let rows = chat.rows.get(over..).unwrap_or_default();
+    // The topics a row may tag: every card of the desk.
+    let known: BTreeSet<&str> = read
+        .desk
+        .groups
+        .iter()
+        .flat_map(|(_, cards)| cards)
+        .map(|card| card.slug.as_str())
+        .filter(|slug| *slug != topics::RESERVED)
+        .collect();
     // A tab or a quote doubles on the wire; reserve for the worst case.
     let texts: usize = rows
         .iter()
@@ -320,6 +331,10 @@ pub fn render(read: Arc<Read>, version: &str, read_at: i64, key: &[u8; 32]) -> S
         }
         out.push_str(",\"body\":");
         string(&mut out, &chat::plain(&row.body, chat::BODY_MAX));
+        // Read from the turn's own text, as the board reads an item's: removing
+        // a control character must not make a tag.
+        out.push_str(",\"tags\":");
+        slugs(&mut out, chat::row_tags(&row.body, &known));
         out.push('}');
     }
     out.push_str("],\"coverage\":[");
@@ -532,8 +547,11 @@ fn decide_message(item: &str, text: &str) -> Vec<u8> {
 }
 
 /// The DECIDE items as a JSON array in board order: the id, the text, the
-/// topics it tags and the bind the page sends back with its answer.
+/// topics it tags, whether it is reserved, the choices its text offers and the
+/// bind the page sends back with its answer.
 fn decisions(out: &mut String, items: &[topics::DecideItem], key: &[u8; 32]) {
+    use std::fmt::Write as _;
+
     out.push('[');
     for (at, each) in items.iter().enumerate() {
         if at > 0 {
@@ -544,18 +562,60 @@ fn decisions(out: &mut String, items: &[topics::DecideItem], key: &[u8; 32]) {
         string(out, &id);
         out.push_str(",\"text\":");
         body(out, &each.text);
-        out.push_str(",\"tags\":[");
-        for (place, tag) in each.tags.iter().enumerate() {
-            if place > 0 {
-                out.push(',');
-            }
-            string(out, tag);
-        }
-        out.push_str("],\"bind\":");
+        out.push_str(",\"tags\":");
+        slugs(out, each.tags.iter().map(String::as_str));
+        let _ = write!(
+            out,
+            ",\"reserved\":{},\"choices\":",
+            topics::is_reserved(&each.text)
+        );
+        choices(out, choice::parse(&each.text).as_ref());
+        out.push_str(",\"bind\":");
         string(out, &decide_bind(key, &id, &each.text));
         out.push('}');
     }
     out.push(']');
+}
+
+/// `names` as a JSON array of strings.
+fn slugs<'a>(out: &mut String, names: impl IntoIterator<Item = &'a str>) {
+    out.push('[');
+    for (at, name) in names.into_iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        string(out, name);
+    }
+    out.push(']');
+}
+
+/// The choices of a DECIDE text as the page offers them, or `null`.
+fn choices(out: &mut String, choices: Option<&Choices>) {
+    use std::fmt::Write as _;
+
+    let Some(choices) = choices else {
+        out.push_str("null");
+        return;
+    };
+    out.push_str("{\"question\":");
+    body(out, &choices.question);
+    out.push_str(",\"options\":[");
+    for (at, text) in choices.options.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{{\"n\":{},\"label\":", at + 1);
+        body(out, text);
+        out.push('}');
+    }
+    out.push_str("],\"recommend\":");
+    match choices.recommend {
+        Some(number) => {
+            let _ = write!(out, "{number}");
+        }
+        None => out.push_str("null"),
+    }
+    out.push('}');
 }
 
 /// The waits as a JSON array: kind, text, the ask's id and the DECIDE item's.
@@ -928,8 +988,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        Cache, Card, Group, LiveSource, Read, RouteFacts, Source, Standing, Wait, desk, route_id,
-        string, topic, topics,
+        Cache, Card, Group, LiveSource, Read, RouteFacts, Source, Standing, Wait, chat, decisions,
+        desk, render, route_id, string, topic, topics,
     };
     use crate::inventory::ServerId;
     use crate::json::{self, Value};
@@ -1211,6 +1271,72 @@ mod tests {
             "the tags of one decision: {out}"
         );
         assert_eq!(array(parsed.get("gaps")).len(), 2, "gaps: {out}");
+    }
+
+    /// A turn's tags come from its own text: removing a control character for
+    /// the page makes no tag.
+    #[test]
+    fn removing_a_control_character_makes_no_tag() {
+        let mut read = Read::default();
+        read.desk.groups = vec![(Group::Moving, vec![Card::bare("smoke")])];
+        read.chat.rows = vec![chat::Row {
+            body: "#smo\u{1}ke".to_owned(),
+            ..chat::Row::default()
+        }];
+        let snapshot = render(Arc::new(read), "v", 0, &[7; 32]);
+        let text = String::from_utf8_lossy(&snapshot.body).into_owned();
+        let parsed = json::parse(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+        let rows = array(parsed.get("chat").and_then(|each| each.get("rows")));
+        let row = rows.first().unwrap_or_else(|| panic!("no row: {text}"));
+        assert_eq!(row.get_str("body"), Some("#smoke"), "{text}");
+        assert!(array(row.get("tags")).is_empty(), "{text}");
+    }
+
+    /// T1 wire: a DECIDE item says whether it is reserved and offers the
+    /// choices its text reads as, `null` when it reads as none.
+    #[test]
+    fn a_decision_carries_its_reserved_mark_and_choices() {
+        let item = |number, text: &str| topics::DecideItem {
+            item: crate::desk::Id {
+                section: crate::desk::Section::Decide,
+                number,
+            },
+            text: text.to_owned(),
+            tags: Vec::new(),
+        };
+        let mut out = String::new();
+        decisions(
+            &mut out,
+            &[
+                item(1, "Ship? 1) Yes 2) No (recommend 2) #reserved"),
+                item(2, "Wait? 1) Now 2) Later #reserved_x"),
+                item(3, "Prose only"),
+            ],
+            &[7; 32],
+        );
+        let parsed = json::parse(&out).unwrap_or_else(|error| panic!("{error}: {out}"));
+        let seen: Vec<(String, String)> = array(Some(&parsed))
+            .iter()
+            .map(|each| {
+                let field = |key| each.get(key).map(Value::render).unwrap_or_default();
+                (field("reserved"), field("choices"))
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    "true".to_owned(),
+                    r#"{"question":"Ship?","options":[{"n":1,"label":"Yes"},{"n":2,"label":"No"}],"recommend":2}"#.to_owned(),
+                ),
+                (
+                    "false".to_owned(),
+                    r#"{"question":"Wait?","options":[{"n":1,"label":"Now"},{"n":2,"label":"Later #reserved_x"}],"recommend":null}"#.to_owned(),
+                ),
+                ("false".to_owned(), "null".to_owned()),
+            ],
+            "{out}"
+        );
     }
 
     /// RFC 8259 §5 for the topic document: a card with two history entries

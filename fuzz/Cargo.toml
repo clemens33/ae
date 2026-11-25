@@ -573,3 +573,10 @@ path = "fuzz_targets/tool_version.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "web_decide_choices"
+path = "fuzz_targets/web_decide_choices.rs"
+test = false
+doc = false
+bench = false

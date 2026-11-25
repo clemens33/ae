@@ -4,9 +4,11 @@
 //! and capped with [`plain`] and [`words`], whatever built the chat.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use crate::app::{LaneVoice, lane_head, lane_key};
 use crate::console::lane::{Kind, Lane};
+use crate::topic;
 
 /// The most rows a snapshot carries, newest kept.
 pub const ROWS_MAX: usize = 500;
@@ -14,6 +16,8 @@ pub const ROWS_MAX: usize = 500;
 pub const BODY_MAX: usize = 65_536;
 /// The most characters of a speaker, a qualifier or a name.
 pub const WORDS_MAX: usize = 200;
+/// How many bytes of a row's body [`row_tags`] reads for `#slug` tags.
+pub const TAGS_WINDOW: usize = 512;
 
 /// One turn of the chat.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -106,6 +110,41 @@ fn voice_word(voice: LaneVoice) -> &'static str {
     }
 }
 
+/// The topics of `known` that `body` tags, in text order, each once. Only the
+/// first [`TAGS_WINDOW`] bytes count, which bounds the scan for every row of a
+/// snapshot; a tag the window would cut short is not read.
+#[must_use]
+pub fn row_tags<'a>(body: &'a str, known: &BTreeSet<&str>) -> Vec<&'a str> {
+    let mut tags = topic::tags(window(body));
+    tags.retain(|tag| known.contains(tag));
+    tags
+}
+
+/// The part of `body` the tag scan reads. When the character after the window
+/// cannot continue a slug, it is read too, so a tag that ends at the edge is
+/// judged by the character that follows it, as in the whole text. Otherwise
+/// the cut falls before the last whitespace in the window, so no part of a
+/// longer word reads as a tag.
+fn window(body: &str) -> &str {
+    if body.len() <= TAGS_WINDOW {
+        return body;
+    }
+    let mut end = TAGS_WINDOW;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let (head, tail) = body.split_at(end);
+    match tail.chars().next() {
+        Some(next) if !matches!(next, 'a'..='z' | '0'..='9' | '-') => {
+            body.get(..end + next.len_utf8()).unwrap_or(head)
+        }
+        _ => head
+            .rfind(char::is_whitespace)
+            .and_then(|cut| head.get(..cut))
+            .unwrap_or_default(),
+    }
+}
+
 /// `text` with every control character but newline and tab removed, then
 /// cut at a character boundary to at most `cap` bytes; borrowed when nothing
 /// changes, which a byte scan decides (`0xC2` leads every C1 control, so it
@@ -156,8 +195,22 @@ pub fn words(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::collections::BTreeSet;
 
-    use super::plain;
+    use super::{TAGS_WINDOW, plain, row_tags};
+
+    /// A body of exactly [`TAGS_WINDOW`] bytes is read whole, and a longer one
+    /// keeps a tag whose closer is the first character past the window, even
+    /// when that character is more than one byte.
+    #[test]
+    fn a_tag_at_the_window_edge_is_read_whole() {
+        let known = BTreeSet::from(["calm"]);
+        let whole = format!("{} #calm", "x".repeat(TAGS_WINDOW - 6));
+        assert_eq!(whole.len(), TAGS_WINDOW);
+        assert_eq!(row_tags(&whole, &known), ["calm"]);
+        assert_eq!(row_tags(&format!("{whole}\u{3000}end"), &known), ["calm"]);
+        assert!(row_tags(&format!("{whole}9 end"), &known).is_empty());
+    }
 
     /// docs/web.md: every agent text is plain, control characters removed, and
     /// capped. A short text with a control byte is cleaned, not passed through,

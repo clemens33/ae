@@ -3473,7 +3473,7 @@ LLVM_COV_VERSION := "0.9.0"
 # `cargo +{{ FUZZ_TOOLCHAIN }}`; compile checks use the product's unchanged pin.
 CARGO_FUZZ_VERSION := "0.13.2"
 FUZZ_TOOLCHAIN := "nightly-2026-08-20"
-FUZZ_TARGETS := "archive_harness console_draft_name config_parse meta_parse launch_cmd_lex config_command config_roster_edit quota_claude_cache quota_feed quota_codex_rollout quota_grok_log quota_agy_output quota_go_usage quota_copilot_user quota_muse_usage agy_limit_pane quota_history usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents launch_stamp last_live_epochs sanitize_field request_id_select events_parse worker_birth event_stamp journal_append board_claude board_codex board_grok board_muse board_agy board_opencode brief_retry_record self_reseat_request challenge_summary console_command app_view app_instance ask_unframe lease_holder card_body effort_flag effort_record effort_fold token_parse codex_developer_record link_scan reader_decode reader_markdown panel_episode startup_dialog unreach_fold jump_return wait_moved autoreseat_episode stats_fold stats_store stats_disk tool_calls_claude tool_calls_codex usage_lines tool_stats_fold tool_stats_incr tool_stats_doc memo_view worktree_porcelain opencode_variant redact_text desk_record desk_pin watchdog_checkpoint web_request topic_card vendorblock_record tool_version"
+FUZZ_TARGETS := "archive_harness console_draft_name config_parse meta_parse launch_cmd_lex config_command config_roster_edit quota_claude_cache quota_feed quota_codex_rollout quota_grok_log quota_agy_output quota_go_usage quota_copilot_user quota_muse_usage agy_limit_pane quota_history usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents launch_stamp last_live_epochs sanitize_field request_id_select events_parse worker_birth event_stamp journal_append board_claude board_codex board_grok board_muse board_agy board_opencode brief_retry_record self_reseat_request challenge_summary console_command app_view app_instance ask_unframe lease_holder card_body effort_flag effort_record effort_fold token_parse codex_developer_record link_scan reader_decode reader_markdown panel_episode startup_dialog unreach_fold jump_return wait_moved autoreseat_episode stats_fold stats_store stats_disk tool_calls_claude tool_calls_codex usage_lines tool_stats_fold tool_stats_incr tool_stats_doc memo_view worktree_porcelain opencode_variant redact_text desk_record desk_pin watchdog_checkpoint web_request topic_card vendorblock_record tool_version web_decide_choices"
 # Arrived with the FIRST runtime dependency (P4.3): cargo-deny gates the graph's
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.
@@ -5255,8 +5255,10 @@ harness-smoke mode="":
 # when the run fails at focus-kept and at no other check; `just web-smoke plant-walk` serves the
 # walk's Keep sending the Ask line and passes only when the run fails at walk-keep;
 # `just web-smoke plant-undo` serves the owner line's Undo with its countdown left running and
-# passes only when the run fails at s3a-undo. tests/it/gate.rs
-# pins the filter, the gate variable and both run lines byte for byte: change them together.
+# passes only when the run fails at s3a-undo; `just web-smoke plant-tab` serves app.mjs without
+# the topic tab's focus guard and passes only when the run fails at tab-focus-kept.
+# tests/it/gate.rs pins the filter, the gate variable and both run lines byte for byte: change
+# them together.
 web-smoke mode="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -5265,7 +5267,8 @@ web-smoke mode="":
         plant) plant=focus ;;
         plant-walk) plant=walk ;;
         plant-undo) plant=undo ;;
-        *) echo "usage: just web-smoke [plant|plant-walk|plant-undo]" >&2; exit 2 ;;
+        plant-tab) plant=tab ;;
+        *) echo "usage: just web-smoke [plant|plant-walk|plant-undo|plant-tab]" >&2; exit 2 ;;
     esac
     chrome="${AE_WEB_SMOKE_CHROME:-}"
     if [[ -z "$chrome" ]]; then
@@ -5292,11 +5295,13 @@ web-smoke mode="":
     cat "$out/run.log"
     # The plant passes only when the run failed, said the fault was served, and every failure it
     # reports is the one check its fault must break: the focus check of the first cell, or the
-    # walk's Keep check of the one cell that sends, or the owner line's undo check of the compose cell.
+    # walk's Keep check of the one cell that sends, the owner line's undo check of the compose cell,
+    # or the tab focus check of the topic tab cases.
     case "$plant" in
         focus) check='focus-kept (1440x900 light)' ;;
         walk) check='walk-keep (1440x900 dark)' ;;
         undo) check='s3a-undo (1440x900 dark)' ;;
+        tab) check='tab-focus-kept (1440x900 dark)' ;;
     esac
     caught="web-smoke FAILED at $check: "
     if ((status != 0)) \

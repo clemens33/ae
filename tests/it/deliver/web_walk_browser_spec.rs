@@ -1,6 +1,6 @@
 //! S2 acceptance cells for the real headless browser.
 
-use super::{Cell, Checked, Failed, PAGE_WAIT, Rig, SEND_WAIT, Tab, VIEW, ok};
+use super::{Cell, Checked, Failed, PAGE_WAIT, Rig, SEND_WAIT, Tab, ok};
 use ae::json::Value;
 
 pub(super) const EXTRA_MEMOS: &str = concat!(
@@ -55,13 +55,38 @@ pub(super) fn check_revisit(tab: &mut Tab, cell: Cell) -> Checked {
         shown(tab, selector, slug)?;
     }
     if !cell.wide() {
-        tab.click("revisit", "topics")?;
-        tab.until("revisit", VIEW, "view-topics", PAGE_WAIT)?;
+        tab.click_selector("revisit", "[data-role=view-panel]")?;
         shown(tab, ".revisit", "s2-a")?;
         check_walk_fits(tab)?;
-        tab.click("revisit", "chat")?;
-        tab.until("revisit", VIEW, "view-chat", PAGE_WAIT)?;
+        tab.click_selector("revisit", "[data-role=view-chat]")?;
         shown(tab, ".pq", "s2-a")?;
+
+        let draft = "Revisit preserves this draft";
+        tab.click("revisit", "box")?;
+        tab.call(
+            "Input.insertText",
+            Value::obj([("text", Value::str(draft))]),
+        );
+        tab.click_selector("revisit", "[data-role=tab][data-slug=smoke]")?;
+        tab.holds(
+            "revisit",
+            "const saw = document.querySelector('[data-role=tab][data-slug=smoke]')?.ariaSelected; \
+             return {ok: saw === 'true', saw};",
+            "",
+        )?;
+        tab.click_selector("revisit", "[data-role=tab-all]")?;
+        shown(tab, ".pq", "s2-a")?;
+        tab.holds(
+            "revisit",
+            "const saw = document.querySelector('.composer textarea')?.value; \
+             return {ok: saw === want, saw};",
+            draft,
+        )?;
+        tab.eval(
+            "const draft = document.querySelector('.composer textarea'); draft.value = ''; \
+             draft.dispatchEvent(new InputEvent('input', {bubbles: true}));",
+        )
+        .map_err(|why| Failed::new("revisit", why))?;
     }
     ok("revisit", cell);
     Ok(())
@@ -353,14 +378,18 @@ fn cap_refusal(tab: &mut Tab, cell: Cell) -> Checked {
 
 fn open_card(tab: &mut Tab, slug: &str) -> Checked {
     const CASE: &str = "walk-card";
+    tab.click_selector(CASE, "[data-role=tab-all]")?;
     tab.holds(
         CASE,
-        "const row = [...document.querySelectorAll('.col button.row')].find(e => \
+        "const row = [...document.querySelectorAll('[data-panel=all] button.row')].find(e => \
          e.querySelector('.ln')?.textContent?.split(' ')[0] === '#' + want); \
          if (row) row.dataset.s2TestSlug = want; return {ok: !!row, saw: want};",
         slug,
     )?;
-    tab.click_selector(CASE, &format!(".col button[data-s2-test-slug='{slug}']"))?;
+    tab.click_selector(
+        CASE,
+        &format!("[data-panel=all] button[data-s2-test-slug='{slug}']"),
+    )?;
     tab.until(
         CASE,
         "const saw = document.querySelector('.card .sub')?.textContent; \

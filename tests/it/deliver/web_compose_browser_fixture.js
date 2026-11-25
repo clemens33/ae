@@ -31,7 +31,7 @@
       if (response.status === 200) s.state = await response.clone().json();
       return response;
     }
-    if (url === "/api/topic/smoke" && s.skew !== null) {
+    if (url === "/api/topic/calm" && s.skew !== null) {
       const headers = new Headers(init?.headers);
       headers.delete("If-None-Match");
       const response = await real(url, {...init, headers});
@@ -68,9 +68,9 @@
   };
 
   s.root = (which) => document.querySelector({
-    desk: '.col .decision-answer[data-item="D67"]',
-    card: '.card .decision-answer[data-item="D67"]',
-    topic: '.new-topic'
+    desk: '[data-panel=topic][data-slug=smoke] .decision-answer[data-item="D67"]',
+    card: '[data-panel=topic][data-slug=calm] .decision-answer[data-item="D67"]',
+    topic: '[data-panel=all] .new-topic'
   }[which]);
   s.field = (which, field) => s.root(which)?.querySelector('input[data-field="' + field + '"]');
   s.button = (which, action) => s.root(which)?.querySelector('button[data-action="' + action + '"]');

@@ -5,15 +5,14 @@ use std::time::{Duration, Instant};
 use ae::json::Value;
 
 use super::{
-    Cell, Checked, Failed, PAGE_WAIT, READY, Rig, SEND_WAIT, Tab, VIEW, ok, smoke_rig,
-    start_listener,
+    Cell, Checked, Failed, PAGE_WAIT, READY, Rig, SEND_WAIT, Tab, ok, smoke_rig, start_listener,
 };
 
-const DESK: &str = r#".col .decision-answer[data-item="D67"]"#;
-const CARD: &str = r#".card .decision-answer[data-item="D67"]"#;
-const TOPIC: &str = ".new-topic";
-const QUESTION: &str = "Choose <img src=x onerror=alert(1)> #smoke";
-const REPLACEMENT: &str = "Replacement question #smoke";
+const DESK: &str = r#"[data-panel=topic][data-slug=smoke] .decision-answer[data-item="D67"]"#;
+const CARD: &str = r#"[data-panel=topic][data-slug=calm] .decision-answer[data-item="D67"]"#;
+const TOPIC: &str = "[data-panel=all] .new-topic";
+const QUESTION: &str = "Choose <img src=x onerror=alert(1)> #smoke #calm";
+const REPLACEMENT: &str = "Replacement question #smoke #calm";
 const TITLE: &str = "Übergabe | #note";
 const SLUG: &str = "uebergabe-note";
 const TOPIC_LINE: &str = "#uebergabe-note new Übergabe | #note";
@@ -31,6 +30,7 @@ fn wait(tab: &mut Tab, check: &'static str, body: &str, want: &str) -> Checked {
 }
 
 fn edit(tab: &mut Tab, which: &str, field: &str, value: &str) -> Checked {
+    at_panel(tab, CASE, which)?;
     let value = Value::str(value).render();
     script(
         tab,
@@ -40,17 +40,35 @@ fn edit(tab: &mut Tab, which: &str, field: &str, value: &str) -> Checked {
 }
 
 fn click(tab: &mut Tab, check: &'static str, root: &str, action: &str) -> Checked {
+    let which = match root {
+        DESK => "desk",
+        CARD => "card",
+        TOPIC => "topic",
+        _ => unreachable!("unexpected form selector"),
+    };
+    at_panel(tab, check, which)?;
     tab.click_selector(check, &format!(r#"{root} button[data-action="{action}"]"#))
 }
 
-fn open_card(tab: &mut Tab, check: &'static str) -> Checked {
-    tab.click(check, "row")?;
+fn at_panel(tab: &mut Tab, check: &'static str, which: &str) -> Checked {
+    let (select, panel) = match which {
+        "desk" => (
+            "[data-role=tab][data-slug=smoke]",
+            "[data-panel=topic][data-slug=smoke]",
+        ),
+        "card" => (
+            "[data-role=tab][data-slug=calm]",
+            "[data-panel=topic][data-slug=calm]",
+        ),
+        "topic" => ("[data-role=tab-all]", "[data-panel=all]"),
+        _ => unreachable!("unknown form location"),
+    };
+    tab.click_selector(check, select)?;
     wait(
         tab,
         check,
-        "const saw = document.querySelector('.card .sub')?.textContent; \
-         return {ok: saw?.startsWith('#smoke '), saw};",
-        "",
+        "const panel = document.querySelector(want); return {ok: !!panel, saw: panel?.dataset};",
+        panel,
     )
 }
 
@@ -100,13 +118,16 @@ fn phone(tab: &mut Tab, cell: Cell) -> Checked {
             ("maxTouchPoints", Value::Num(1)),
         ]),
     );
-    tab.click(CHECK, "topics")?;
-    wait(tab, CHECK, VIEW, "view-topics")?;
-    measure(tab, DESK, "answer", "answer")?;
-    measure(tab, TOPIC, "new-topic", "title")?;
-    open_card(tab, CHECK)?;
-    measure(tab, CARD, "answer", "answer")?;
-    tab.click_selector(CHECK, ".card button[aria-label='Close topic']")?;
+    for (which, root, action, field) in [
+        ("topic", TOPIC, "new-topic", "title"),
+        ("desk", DESK, "answer", "answer"),
+        ("card", CARD, "answer", "answer"),
+    ] {
+        at_panel(tab, CHECK, which)?;
+        tab.click_selector(CHECK, "[data-role=view-panel]")?;
+        measure(tab, root, action, field)?;
+    }
+    at_panel(tab, CHECK, "topic")?;
     ok(CHECK, cell);
     Ok(())
 }
@@ -230,14 +251,19 @@ fn no_carry_for(tab: &mut Tab, rig: &Rig, check: &'static str, until: Instant) -
 }
 
 fn both_buttons(tab: &mut Tab, check: &'static str, enabled: bool) -> Checked {
-    wait(
-        tab,
-        check,
-        "const a = __s3.button('desk', 'answer'), b = __s3.button('card', 'answer'); \
-         const saw = [a?.disabled, b?.disabled]; \
-         return {ok: !!a && !!b && saw.every(v => v === (want === 'disabled')), saw};",
-        if enabled { "enabled" } else { "disabled" },
-    )
+    for which in ["desk", "card"] {
+        at_panel(tab, check, which)?;
+        wait(
+            tab,
+            check,
+            &format!(
+                "const b = __s3.button('{which}', 'answer'); const saw = b?.disabled; \
+                 return {{ok: !!b && saw === (want === 'disabled'), saw}};"
+            ),
+            if enabled { "enabled" } else { "disabled" },
+        )?;
+    }
+    at_panel(tab, check, "desk")
 }
 
 fn enable_aligned_answers(tab: &mut Tab, check: &'static str) -> Checked {
@@ -293,13 +319,29 @@ fn undo_and_hide(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
     Ok(())
 }
 
+fn both_literals(tab: &mut Tab, check: &'static str, text: &str) -> Checked {
+    for which in ["desk", "card"] {
+        at_panel(tab, check, which)?;
+        wait(
+            tab,
+            check,
+            &format!(
+                "const root = __s3.root('{which}'); const saw = root?.textContent; \
+                 return {{ok: saw?.includes(want) && !root.querySelector('img'), saw}};"
+            ),
+            text,
+        )?;
+    }
+    Ok(())
+}
+
 fn card_skew(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
     const CHECK: &str = "s3a-card-skew";
     enable_aligned_answers(tab, CHECK)?;
-    let literal = "const a = __s3.root('desk'), b = __s3.root('card');                    const saw = [a?.textContent, b?.textContent];                    return {ok: saw.every(x => x?.includes(want)) &&                    !a.querySelector('img') && !b.querySelector('img'), saw};";
-    tab.holds(CHECK, literal, QUESTION)?;
+    both_literals(tab, CHECK, QUESTION)?;
 
     for skew in [REPLACEMENT, "missing", QUESTION] {
+        at_panel(tab, CHECK, "desk")?;
         if skew == QUESTION {
             publish_board(rig, REPLACEMENT);
             wait(
@@ -311,10 +353,9 @@ fn card_skew(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
         }
         let value = Value::str(skew).render();
         script(tab, CHECK, &format!("__s3.skew = {value}"))?;
-        tab.click_selector(CHECK, ".card button[aria-label='Close topic']")?;
-        open_card(tab, CHECK)?;
+        at_panel(tab, CHECK, "card")?;
         let selector = if skew == "missing" {
-            r#".card .decision-answer[data-item="D98"]"#
+            r#"[data-panel=topic][data-slug=calm] .decision-answer[data-item="D98"]"#
         } else {
             CARD
         };
@@ -342,7 +383,7 @@ fn card_skew(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
     ae::store::open(&rig.dir)
         .append_memo(b"2026-11-22T10:10:00Z\ttui\ttopic-smoke\twhat: Refresh the open card\n")
         .expect("publish a real snapshot change to refresh the open card");
-    wait(tab, CHECK, literal, REPLACEMENT)?;
+    both_literals(tab, CHECK, REPLACEMENT)?;
     enable_aligned_answers(tab, CHECK)?;
     ok(CHECK, cell);
     Ok(())
@@ -396,6 +437,27 @@ fn change_route(rig: &Rig, before: &str, after: &str) {
     std::fs::rename(next, path).expect("publish fixture route");
 }
 
+fn both_statuses(
+    tab: &mut Tab,
+    check: &'static str,
+    locations: [&str; 2],
+    pattern: &str,
+) -> Checked {
+    for which in locations {
+        at_panel(tab, check, which)?;
+        wait(
+            tab,
+            check,
+            &format!(
+                "const saw = __s3.status('{which}'); \
+                 return {{ok: new RegExp(want, 'i').test(saw), saw}};"
+            ),
+            pattern,
+        )?;
+    }
+    Ok(())
+}
+
 fn route_moves(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
     const CHECK: &str = "s3a-route";
     edit(tab, "desk", "answer", "1")?;
@@ -405,13 +467,7 @@ fn route_moves(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
         click(tab, CHECK, root, action)?;
     }
     change_route(rig, "seat.worker.0=side-old", "seat.worker.0=side-s3a");
-    wait(
-        tab,
-        CHECK,
-        "const saw = ['desk','topic'].map(w => __s3.status(w)); \
-         return {ok: saw.every(x => /the orchestrator changed/i.test(x)), saw};",
-        "",
-    )?;
+    both_statuses(tab, CHECK, ["desk", "topic"], "the orchestrator changed")?;
     no_carry_for(tab, rig, CHECK, until)?;
 
     script(
@@ -425,13 +481,7 @@ fn route_moves(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
         click(tab, CHECK, root, action)?;
     }
     change_route(rig, "seat.worker.0=side-s3a", "seat.worker.0=side-old");
-    wait(
-        tab,
-        CHECK,
-        "const saw = ['desk','topic'].map(w => __s3.status(w)); \
-         return {ok: saw.every(x => /the orchestrator changed/i.test(x)), saw};",
-        "",
-    )?;
+    both_statuses(tab, CHECK, ["desk", "topic"], "the orchestrator changed")?;
     tab.holds(
         CHECK,
         "const bodies = __s3.posts.map(p => JSON.parse(p.body)); __s3.spent = bodies.map(b => b.nonce); \
@@ -483,6 +533,9 @@ fn check_again(tab: &mut Tab, rig: &Rig, cell: Cell, decision: bool) -> Checked 
         edit(tab, which, field, input)?;
     }
     script(tab, check, "__s3.reset(); __s3.loss = true;")?;
+    if !decision {
+        script(tab, check, "__s3.holdState = true;")?;
+    }
     click(tab, check, root, action)?;
     let body = format!(
         "const saw = __s3.status('{which}'); return {{ok: \
@@ -522,14 +575,16 @@ fn check_again(tab: &mut Tab, rig: &Rig, cell: Cell, decision: bool) -> Checked 
         )?;
     }
     assert_eq!(rig.enter_count(), count);
+    if !decision {
+        wait_for_new_topic_rows(tab, cell)?;
+    }
     click(tab, check, root, "check")?;
     if decision {
-        wait(
+        both_statuses(
             tab,
             check,
-            "const saw = ['desk','card'].map(w => __s3.status(w)); \
-             return {ok: saw.every(x => /answered.*waiting for the orchestrator/i.test(x)), saw};",
-            "",
+            ["desk", "card"],
+            "answered.*waiting for the orchestrator",
         )?;
     } else {
         wait(
@@ -563,12 +618,61 @@ fn check_again(tab: &mut Tab, rig: &Rig, cell: Cell, decision: bool) -> Checked 
     Ok(())
 }
 
+fn wait_for_new_topic_rows(tab: &mut Tab, cell: Cell) -> Checked {
+    const CHECK: &str = "s3a-new-topic-layout";
+    // The send has reached the seat. Keep the new snapshot out until we have
+    // measured the open form, then wait for the real rows to render.
+    tab.holds(
+        CHECK,
+        r"
+        __s3.waitingRows = () => ['note', 'uebergabe-note'].map(slug =>
+            [...document.querySelectorAll('[data-panel=all] button.row')].some(row => {
+                const line = row.querySelector('.ln')?.textContent;
+                return line?.split(' ')[0] === '#' + slug && line.includes('waits on you') &&
+                    row.querySelector('.nm')?.textContent === slug;
+            }));
+        __s3.checkAgain = () => {
+            const button = __s3.button('topic', 'check');
+            return button && !button.disabled && button.textContent.includes('Check again') ? button : null;
+        };
+        __s3.newTopicRects = () => [__s3.root('topic'), __s3.checkAgain()].map(node => {
+            if (!node) return null;
+            const {x, y, width, height} = node.getBoundingClientRect();
+            return [x, y, width, height];
+        });
+        const rows = __s3.waitingRows();
+        const rects = __s3.rectsBeforePublish = __s3.newTopicRects();
+        return {ok: rows.every(present => !present) && rects.every(r => r && r[2] > 0 && r[3] > 0),
+            saw: {rows, rects}};
+        ",
+        "",
+    )?;
+    script(tab, CHECK, "__s3.holdState = false; __s3.wake()")?;
+    wait(
+        tab,
+        CHECK,
+        "const rows = __s3.waitingRows(), check = !!__s3.checkAgain(); \
+         return {ok: rows.every(Boolean) && check, saw: {rows, check}};",
+        "",
+    )?;
+    tab.holds(
+        CHECK,
+        "const before = __s3.rectsBeforePublish, after = __s3.newTopicRects(); \
+         return {ok: after.every((r, i) => r?.every((value, j) => \
+         Math.abs(value - before[i][j]) < 1)), saw: {before, after}};",
+        "",
+    )?;
+    ok(CHECK, cell);
+    Ok(())
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "read the test rig's own memo fixture"
 )]
 fn finish_topic(tab: &mut Tab, rig: &Rig) -> Checked {
     const CHECK: &str = "s3a-topic-chip";
+    at_panel(tab, CHECK, "topic")?;
     assert!(
         !rig.dir.join("memo.tsv").exists()
             || !std::fs::read_to_string(rig.dir.join("memo.tsv"))
@@ -584,7 +688,7 @@ fn finish_topic(tab: &mut Tab, rig: &Rig) -> Checked {
     wait(
         tab,
         CHECK,
-        "const row = [...document.querySelectorAll('.col button.row .ln')].find(\
+        "const row = [...document.querySelectorAll('[data-panel=all] button.row .ln')].find(\
          e => e.textContent.split(' ')[0] === '#' + want);          const saw = {row: !!row, chip: __s3.chip(want)}; return {ok: saw.row && !saw.chip, saw};",
         SLUG,
     )
@@ -609,6 +713,7 @@ fn cap_refusal(tab: &mut Tab, rig: &Rig, cell: Cell) -> Checked {
             .expect("fill the remaining console slots");
     }
     publish_board(rig, REPLACEMENT);
+    at_panel(tab, CHECK, "desk")?;
     wait(
         tab,
         CHECK,
@@ -672,7 +777,6 @@ pub(super) fn check_s3a(tab: &mut Tab) -> Checked {
             Value::obj([("enabled", Value::Bool(false))]),
         );
         script(tab, CASE, INSTALL)?;
-        open_card(tab, CASE)?;
         both_buttons(tab, "s3a-answer-disabled", false)?;
         controls_and_parser_parity(tab)?;
         undo_and_hide(tab, &rig, wide)?;

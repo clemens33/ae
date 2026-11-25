@@ -34,17 +34,27 @@ body {
   border-bottom: 1px solid var(--need); flex: none;
 }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
-.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
-.col { border-right: 1px solid var(--line); overflow: auto; padding: 10px 8px 24px; background: var(--bg); }
-.card { overflow: auto; background: var(--bg); border-left: 1px solid var(--line); padding: 16px 18px 32px; }
-@media (min-width: 1180px) { .has-card main { grid-template-columns: 280px minmax(0, 1fr) 392px; } }
-@media (min-width: 760px) and (max-width: 1179px) {
-  .has-card .card {
-    position: fixed; right: 0; top: 48px; bottom: 0; width: min(410px, 92vw); z-index: 20;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
-  }
+/* One line of tabs of a fixed height, so a tab that comes or goes moves nothing below it. */
+.tabbar {
+  display: flex; flex: none; flex-wrap: nowrap; gap: 2px; height: 45px; padding: 0 8px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); background: var(--panel);
 }
+.tab {
+  display: flex; flex: 0 0 auto; align-items: center; gap: 7px; min-width: 44px; max-width: 220px;
+  padding: 0 12px; color: var(--mute); font-weight: 600; border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+.tab .dot { flex: none; }
+.tab .tl { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 34vw, 420px); }
+.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
+.panel {
+  min-width: 0; overflow: auto; scrollbar-gutter: stable; padding: 10px 8px 24px;
+  background: var(--bg); border-left: 1px solid var(--line);
+}
+.panel.card { padding: 16px 18px 32px; }
 .grp {
   margin: 14px 8px 4px; font-size: .74em; letter-spacing: .09em; text-transform: uppercase; color: var(--mute);
   display: flex; justify-content: space-between;
@@ -55,8 +65,6 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minma
   width: 100%; text-align: left; padding: 8px; border-radius: 8px;
 }
 .row:hover { background: var(--soft); }
-.row.sel { background: var(--accent-soft); }
-.row.sel .ln, .row.sel .meta { color: var(--ink); }
 .row .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .ln { grid-column: 2 / 4; color: var(--mute); font-size: .88em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .meta { font-size: .8em; color: var(--mute); white-space: nowrap; }
@@ -65,7 +73,7 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minma
 .dot.quiet, .dot.parked { background: transparent; border: 1.5px solid var(--mute); }
 .dot.closed { background: var(--mute); } .dot.unreadable { background: transparent; border: 1.5px dashed var(--need); }
 input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
-.col input {
+.allp > input {
   font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--edge); border-radius: 8px;
   padding: 5px 8px; width: 100%; margin: 2px 0 6px;
 }
@@ -74,7 +82,6 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .note { color: var(--mute); border-left: 3px solid var(--line); }
 .card .hd { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
 .card h2 { margin: 0; font-size: 1.25em; overflow-wrap: anywhere; }
-.card .x { font-size: 1.3em; line-height: 1; color: var(--mute); }
 .card .sub { color: var(--mute); font-size: .86em; margin: 2px 0 4px; }
 .fld { margin-top: 16px; }
 .fld h3 {
@@ -85,7 +92,7 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .fld ul { margin: 0; padding-left: 18px; } .fld li { margin: 3px 0; }
 .src { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--accent); font-size: .92em; overflow-wrap: anywhere; text-align: right; }
 .raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tabs { display: none; }
+.views { display: none; }
 .stream { flex: 1; overflow: auto; padding: 18px 18px 8px; }
 .inner { max-width: 760px; margin: 0 auto; }
 .day { text-align: center; color: var(--mute); font-size: .8em; margin: 14px 0 10px; }
@@ -114,8 +121,14 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .composer textarea[readonly] { color: var(--mute); }
 .composer .bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .composer .sp { flex: 1; }
-.composer .attach { color: var(--accent); font-size: .9em; overflow-wrap: anywhere; text-align: left; }
-.composer .attach:disabled { color: var(--mute); cursor: default; }
+.composer .tag-chip {
+  display: inline-flex; align-items: center; min-width: 0; padding-left: 10px;
+  border-radius: 99px; background: var(--accent-soft); font-size: .86em; white-space: nowrap;
+}
+/* A long slug is cut with an ellipsis, so the remove button stays inside the chip. */
+.composer .tag-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.composer .tag-chip button { flex: none; min-width: 32px; min-height: 32px; font-size: 1.3em; line-height: 1; }
+.composer .tag-chip button:disabled { opacity: .45; cursor: default; }
 .composer .send { padding: 6px 16px; border-radius: var(--r); background: var(--accent); color: var(--panel); font-weight: 600; }
 .composer .send:disabled { opacity: .45; cursor: default; }
 .receipt {
@@ -176,11 +189,11 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .card .dq { margin: 0; }
 .dq-text { margin: 0 0 4px; font-size: .9em; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 3px solid var(--need); padding-left: 9px; }
 .dq-row { display: flex; gap: 6px; align-items: stretch; }
-.col .dq .dq-input, .card .dq .dq-input {
+.panel .dq .dq-input {
   flex: 1 1 auto; min-width: 0; width: auto; margin: 0; min-height: 44px; font-size: 16px; line-height: 1.3;
   color: var(--ink); background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; padding: 6px 10px;
 }
-.col .dq .dq-slug, .card .dq .dq-slug { display: block; flex: none; width: 100%; margin-top: 6px; }
+.panel .dq .dq-slug { display: block; flex: none; width: 100%; margin-top: 6px; }
 .dq .dq-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .dq .dq-input[readonly] { color: var(--mute); }
 .dq .dq-input:disabled { opacity: .55; }
@@ -197,6 +210,26 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .dq-preview { margin: 4px 0 0; font-size: .86em; color: var(--mute); overflow-wrap: anywhere; min-height: 1.45em; }
 .dq-asked { margin: 6px 0 0; padding-left: 9px; font-size: .88em; color: var(--accent); border-left: 3px solid var(--accent); overflow-wrap: anywhere; }
 .fld ul.dqs { padding-left: 0; list-style: none; }
+/* A decision's numbered options, one choice: the whole row is the target. */
+.dq-choices { min-width: 0; margin: 0 0 6px; padding: 0; border: 0; }
+.dq-choice {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 0 0 4px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer;
+}
+.dq-choice[data-recommended] { border-color: var(--accent); }
+.dq-choice input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.dq-choice input + span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dq-choice input:checked + span { font-weight: 600; }
+.dq-choices:disabled .dq-choice { opacity: .6; cursor: default; }
+.dq-rec { flex: none; font-size: .8em; color: var(--mute); }
+.dq-row .dq-btn { margin-top: 0; }
+.dq-reserved { margin: 0; font-size: .86em; color: var(--need); }
+.dq-talk { margin-top: 8px; }
+.dq-talk > .dq-btn { margin-top: 0; }
+.dline { margin: 4px 8px 10px; }
+.dline .dq-text { margin: 0; }
+.dlinks { display: flex; flex-wrap: wrap; align-items: center; gap: 0 12px; margin: 0; padding-left: 12px; }
+.dlinks .link { min-width: 44px; min-height: 44px; }
 @media (max-width: 759px) {
   .pq {
     display: flex; justify-content: space-between; gap: 10px; padding: 7px 12px;
@@ -208,11 +241,10 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
   .composer { padding: 8px 12px 10px; }
   .msg { max-width: 94%; }
   main { grid-template-columns: minmax(0, 1fr); }
-  .col, .chat, .card { display: none; border: 0; }
+  .chat, .panel { display: none; border: 0; }
   .view-chat .chat { display: flex; }
-  .view-topics .col { display: block; }
-  .view-topic .card { display: block; }
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); background: var(--panel); flex: none; }
-  .tabs button { padding: 11px 0 13px; color: var(--mute); font-weight: 600; }
-  .tabs button.on { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+  .view-panel .panel { display: block; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); background: var(--panel); flex: none; }
+  .views button { padding: 11px 0 13px; color: var(--mute); font-weight: 600; }
+  .views button.on { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
 }
