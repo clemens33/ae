@@ -1204,7 +1204,6 @@ fn a_click_while_writing_opens_the_link_and_the_close_keeps_the_draft() {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     }));
     app.take(input::Reading::Owner, Instant::now());

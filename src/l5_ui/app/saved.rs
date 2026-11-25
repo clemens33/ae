@@ -2,7 +2,10 @@
 //! fresh `ae` or `ae app` restores the app's layout from.
 //!
 //! The file holds exactly what [`handover::render_file`] writes: one canonical
-//! handover line, bound to no pane, and one line feed. It is hostile input
+//! handover line, bound to no pane, and one line feed. An older core's file
+//! may also carry the retired `|desk=` suffix of its board column between the
+//! line and the line feed: the reader drops it and the next write omits it. It
+//! is hostile input
 //! like the restart handover, so the read never follows a link, never opens a
 //! node that is not a regular file, never waits on one and never reads past
 //! [`handover::FILE_CAP`]; anything else it finds reads as no file. A damaged
@@ -36,7 +39,8 @@ pub fn path(root: &Path) -> PathBuf {
 /// The handover the file at `path` holds, or `None` for anything else: no
 /// file, a link or any other node that is not a regular file, a file over
 /// [`handover::FILE_CAP`], bytes that are not exactly what
-/// [`handover::render_file`] writes, or a target that cannot refuse links. The
+/// [`handover::render_file`] writes (a retired `|desk=` suffix before the line
+/// feed, which `render_file` omits, also reads), or a target that cannot refuse links. The
 /// open itself refuses a link swapped in after the check and never waits on a
 /// FIFO swapped in.
 #[must_use]

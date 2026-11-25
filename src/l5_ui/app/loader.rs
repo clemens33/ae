@@ -20,7 +20,6 @@ use super::menu::Dialog;
 use super::peek::{self, Body};
 use super::saved;
 use super::{REFRESH, facts_of, filedoor, fleet, proven_pane, reader};
-use crate::console::deskview::DeskView;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::link::Base;
@@ -216,13 +215,6 @@ pub(super) enum Answer {
         at: Instant,
     },
     View(ViewRead),
-    /// The fleet's live part beside the orchestrator's board, computed for
-    /// the incarnation `id` the same read found: at most once a
-    /// [`crate::desklive::CACHE_SECS`] per reader.
-    Live {
-        id: String,
-        live: Box<crate::desklive::Live>,
-    },
     /// The settings overlay's bodies for `generation`. Quota rides every
     /// answer; config, about and instructions ride the first per open, then
     /// stay.
@@ -444,9 +436,6 @@ pub(super) struct ViewRead {
     pub(super) needs: Option<Section>,
     /// The roster `/open` names, after a settled read.
     pub(super) roster: Option<Vec<SeatRef>>,
-    /// The orchestrator's board as this read found it; `None` for every other
-    /// session.
-    pub(super) desk: Option<DeskView>,
 }
 
 /// How eagerly a session is kept read.
@@ -578,9 +567,6 @@ pub(super) struct Reader {
     focus_at: Instant,
     fleet_at: Option<Instant>,
     live_facts: Option<(Vec<crate::quota::LiveSeatFact>, bool, i64)>,
-    /// The fleet's live part beside the orchestrator's board, reused while
-    /// young.
-    live: crate::desklive::Cache,
     rereads: BTreeSet<String>,
     looks: BTreeSet<String>,
     /// Sessions whose look has already been sent to the app for this incarnation.
@@ -690,7 +676,6 @@ impl Reader {
             focus_at: Instant::now(),
             fleet_at: None,
             live_facts: None,
-            live: crate::desklive::Cache::default(),
             rereads: BTreeSet::new(),
             looks: BTreeSet::new(),
             read_looks: BTreeSet::new(),
@@ -1125,14 +1110,6 @@ impl Reader {
         Job::Wait(until.min(now + REFRESH))
     }
 
-    /// Fold the board's live part from `read`, the fleet read just taken, at
-    /// most once a [`crate::desklive::CACHE_SECS`]: a view publishes what is
-    /// held, so the live part never takes a census of its own.
-    fn hold_live(&mut self, read: &crate::fleet_read::WorldRead, now: i64) {
-        self.live
-            .get(now, || crate::desklive::from_world(read, super::ORCH));
-    }
-
     /// Read the fleet again: home's look (and the selection's when home's is
     /// not drawn), whether the writer may still write, then `ae list`'s world folded into
     /// the sidebar.
@@ -1150,7 +1127,6 @@ impl Reader {
         let now = Timestamp::now();
         let journals = &mut self.journals;
         let read = crate::fleet_read::world_read(&self.root, &mut |dir| journals.snapshot(dir));
-        self.hold_live(&read, now.epoch());
         let crate::fleet_read::WorldRead {
             snapshot,
             world,
@@ -1514,18 +1490,6 @@ impl Reader {
                 pressure,
             });
         }
-        // The orchestrator's read carries its board; the live part rides
-        // beside it, for the same incarnation.
-        let board = match answers.first() {
-            Some(Answer::View(view)) if view.desk.is_some() => Some(view.id.clone()),
-            _ => None,
-        };
-        if let (Some(id), Some(live)) = (board, self.live.held()) {
-            answers.push(Answer::Live {
-                id,
-                live: Box::new(live.clone()),
-            });
-        }
         answers
     }
 
@@ -1606,7 +1570,7 @@ impl Reader {
         let console = self
             .consoles
             .entry(name.to_owned())
-            .or_insert_with(|| Console::open_standing(name.to_owned(), dir.clone()));
+            .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
         let journals = &mut self.journals;
         let LaneRead { lane, needs, read } =
             read_lane(console, reach, &self.settings_paths.global, &mut |dir| {
@@ -1619,7 +1583,6 @@ impl Reader {
         }
         let roster = console.roster().map(<[SeatRef]>::to_vec);
         let id = console.uuid().to_owned();
-        let desk = (name == super::ORCH).then(|| DeskView::read(&dir));
         self.read_at.insert(name.to_owned(), Instant::now());
         self.seq += 1;
         Some(Answer::View(ViewRead {
@@ -1629,7 +1592,6 @@ impl Reader {
             lane,
             needs,
             roster,
-            desk,
         }))
     }
 

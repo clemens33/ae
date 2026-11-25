@@ -97,7 +97,6 @@ fn lane() -> Answer {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     })
 }

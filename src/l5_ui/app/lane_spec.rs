@@ -303,7 +303,6 @@ fn app(lane: Lane) -> App {
         seq: 1,
         lane,
         needs: None,
-        desk: None,
         roster: None,
     }));
     app

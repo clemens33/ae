@@ -23,14 +23,12 @@ use super::settings::{
     self, AboutFacts, ConfigView, InstructionsView, RowTone, SettingsBodies, StatsTab,
 };
 use crate::brief::age;
-use crate::console::deskview::{self, DeskView};
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
 use crate::console::lane::{Kind, Lane};
 use crate::console::target::{self, Target};
 use crate::console::view;
 use crate::console::wrap::wrap;
-use crate::desk::Section;
 use crate::digest::{SessionEntry, Status};
 use crate::event_text::clip_tail;
 use crate::quota::view::Tone;
@@ -157,16 +155,6 @@ pub(crate) enum Hit {
     PanelPane,
     /// The panel header's mode label: side or full.
     PanelMode,
-    /// The panel header's board control.
-    PanelDesk,
-    /// The panel header's `b hide` / `b show` word, with the hiding it asks
-    /// for: `true` hides the board, `false` shows it. A press made on a frame
-    /// whose word the board has since answered asks for what it already is.
-    PanelDeskToggle(bool),
-    /// A board tab's drawn label, with the section it shows. The target names
-    /// the section, not a step, so a press made on a frame the board has since
-    /// left asks for what that frame showed.
-    DeskTab(Section),
     /// The main column header's zoom label: zoom the column or leave the zoom.
     Zoom,
 }
@@ -179,15 +167,6 @@ struct Border {
     at: u16,
     cells: Rect,
     grab: Rect,
-}
-
-/// Where the board drew and how far its wrapped rows can scroll.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct DeskViewport {
-    area: Rect,
-    adjacent: bool,
-    pub(super) page: usize,
-    pub(super) max: usize,
 }
 
 fn link_area(offset: usize, width: usize, (left, y, room): (u16, u16, u16)) -> Rect {
@@ -269,7 +248,6 @@ pub(crate) struct Layout {
     /// panel's own column records them as it draws, the main column's frame
     /// takes them over.
     pub(crate) panel: Option<Rect>,
-    pub(super) desk: Option<DeskViewport>,
     /// What the panel's `pane` word opens, as the frame that drew it read it:
     /// the incarnation the panel is bound to and the main seat that
     /// incarnation's roster named then. Set by the app after the draw, only
@@ -352,8 +330,8 @@ impl Layout {
     pub(super) fn link_at(&self, mouse: Mouse) -> bool {
         let at = Position::new(mouse.column, mouse.row);
         self.grab(mouse).is_none()
-            && (self.in_desk(mouse)
-                || (matches!(self.hit(mouse), Some(Hit::Turn(_))) && self.file(mouse).is_none()))
+            && matches!(self.hit(mouse), Some(Hit::Turn(_)))
+            && self.file(mouse).is_none()
             && (self.links.iter()).any(|run| Rect::new(run.x, run.y, run.width, 1).contains(at))
     }
 
@@ -441,21 +419,7 @@ impl Layout {
     }
 
     pub fn in_chat(&self, mouse: Mouse) -> bool {
-        self.chat.contains((mouse.column, mouse.row).into()) && !self.in_desk(mouse)
-    }
-
-    pub(super) fn in_desk(&self, mouse: Mouse) -> bool {
-        self.desk
-            .is_some_and(|desk| desk.area.contains(Position::new(mouse.column, mouse.row)))
-    }
-
-    pub(super) fn desk_replaces_panel(&self) -> bool {
-        self.desk.is_some_and(|desk| !desk.adjacent)
-    }
-
-    /// Whether the board column stood beside the panel in this frame.
-    pub(super) fn desk_beside(&self) -> bool {
-        self.desk.is_some_and(|desk| desk.adjacent)
+        self.chat.contains((mouse.column, mouse.row).into())
     }
 
     /// The chat lane above its last row: the panel footer owns that row, so
@@ -505,7 +469,7 @@ impl Layout {
     /// Record a border at `at` over `cells`, grabbed within a cell of it.
     fn border(&mut self, buf: &Buffer, edge: Edge, at: u16, cells: Rect) {
         let grab = match edge {
-            Edge::Sidebar | Edge::Panel | Edge::Desk => {
+            Edge::Sidebar | Edge::Panel => {
                 Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height)
             }
             Edge::List => Rect::new(cells.x, cells.y.saturating_sub(1), cells.width, 3),
@@ -725,9 +689,9 @@ pub(crate) struct Wait<'a> {
     /// The cache that draws agent turns through Markdown; with none the
     /// lane draws them plain.
     pub(super) md: Option<&'a std::cell::RefCell<super::lanemd::Cache>>,
-    /// The orchestrator's board as the panel's incarnation last read it: with
-    /// none, the panel header carries no `desk` cue.
-    pub(crate) desk: Option<&'a DeskView>,
+    /// The work of the whole fleet, drawn in the header of the orchestrator's
+    /// column in place of the open ask; with none the header names the ask.
+    pub(crate) work: Option<super::fleet::Work>,
 }
 
 /// Where the composer's line would land: the seat the router picked, or the
@@ -865,8 +829,8 @@ enum Stand {
     /// No panel drawn: none is open, or a side panel did not fit while the
     /// main column holds the keys and covers the frame.
     Closed,
-    /// Right of the main column, from its border column to `end`: the
-    /// frame's end, or the left edge of the board column that stands there.
+    /// Right of the main column, from its border column to `end`, the frame's
+    /// end.
     Side { border: u16, end: u16 },
     /// Over the main column: right of the sidebar's rule, to the frame's end,
     /// the whole frame where no sidebar is drawn. `note` says why a side
@@ -875,8 +839,8 @@ enum Stand {
 }
 
 /// How wide a side panel stands in `area` split as `split`, its border
-/// included, when it ends at the column `end`: the frame's end, or the left
-/// edge of the board column. It is the width it was dragged to, else half of
+/// included, when it ends at the column `end`, the frame's end. It is the
+/// width it was dragged to, else half of
 /// the chat columns, always leaving both columns [`PANEL_FLOOR`]. `None` when
 /// no side panel fits. The main column starts where the whole frame puts it,
 /// for the sidebar's width is the frame's to give. The one clamp: a dragged
@@ -905,7 +869,7 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if columns.hides_panel() {
         return Stand::Closed;
     }
-    let end = desk_slot(area, split, columns).map_or(area.width, |desk| desk.x);
+    let end = area.width;
     if let Some(width) = side_width(area, end, split) {
         return Stand::Side {
             border: end - width,
@@ -934,280 +898,6 @@ pub(crate) fn floor_met(area: Rect) -> bool {
     area.width >= MIN.0 && area.height >= MIN.1
 }
 
-/// The board's default and smallest dragged widths, left border included.
-pub(crate) const DESK_W: u16 = 36;
-const DESK_FLOOR: u16 = 24;
-
-/// How much room the board can use after both chat columns keep their floors.
-/// An undragged board needs its default width. A dragged board can fit down to
-/// its floor without replacing the chosen width in `split`.
-fn desk_width(area: Rect, split: Split, full: bool) -> Option<u16> {
-    let chat_floor = if full { PANEL_FLOOR } else { PANEL_FLOOR * 2 };
-    let room = area
-        .width
-        .saturating_sub(chat_start(area, split, full))
-        .saturating_sub(chat_floor);
-    let floor = if split.desk.is_some() {
-        DESK_FLOOR
-    } else {
-        DESK_W
-    };
-    (room >= floor).then(|| split.desk.unwrap_or(DESK_W).clamp(floor, room))
-}
-
-/// Where the orchestrator's board stands in `area` split as `split`: the
-/// rightmost columns, only while the frame meets the app's size floor, the
-/// panel and, in side mode, the main column can each still keep [`PANEL_FLOOR`]
-/// beside it. A frame below the size floor shows its note alone.
-pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
-    let (full, _) = columns.panel?;
-    if columns.hides_panel() || !floor_met(area) {
-        return None;
-    }
-    let width = desk_width(area, split, full)?;
-    Some(Rect::new(area.width - width, 0, width, area.height))
-}
-
-/// [`desk_area`] while `columns` say a board stands to be shown or cannot be
-/// read and the human did not hide it, else `None`: with no board, or a hidden
-/// one, the frame is the one without a board column, the panel included.
-pub(crate) fn desk_slot(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
-    desk_area(area, split, columns).filter(|_| columns.desk && !columns.desk_hidden)
-}
-
-/// Whether the board column stands beside the panel in `area`.
-pub(super) fn desk_beside(area: Rect, split: Split, columns: Columns) -> bool {
-    desk_slot(area, split, columns).is_some()
-}
-
-/// The focused board takes the panel's body when an adjacent column cannot fit.
-pub(super) fn desk_replaces_panel(area: Rect, split: Split, columns: Columns) -> bool {
-    columns.desk_focused
-        && desk_slot(area, split, columns).is_none()
-        && floor_met(area)
-        && panel_area(area, split, columns).is_some()
-}
-
-/// [`draw_board`] without a live part.
-#[cfg(test)]
-pub(super) fn draw_desk(
-    buf: &mut Buffer,
-    (area, adjacent): (Rect, bool),
-    view: Option<&DeskView>,
-    (look, zone): (Option<&Look>, Option<&str>),
-    layout: &mut Layout,
-    model: &Model,
-    requested: usize,
-) -> usize {
-    draw_board(
-        buf,
-        (area, adjacent),
-        (view, None),
-        (look, zone),
-        layout,
-        model,
-        requested,
-    )
-}
-
-/// Draw the board's current rows and record their links in the main frame.
-/// Only the adjacent column has a board border of its own. The fleet's live
-/// part follows the RUNNING tab's items and scrolls with them; it fills the
-/// column's RUNNING tab when no board can be shown.
-pub(super) fn draw_board(
-    buf: &mut Buffer,
-    (area, adjacent): (Rect, bool),
-    (view, live): (Option<&DeskView>, Option<&crate::desklive::Live>),
-    (look, zone): (Option<&Look>, Option<&str>),
-    layout: &mut Layout,
-    model: &Model,
-    requested: usize,
-) -> usize {
-    let paint = Paint::of(look);
-    for y in area.y..area.y.saturating_add(area.height) {
-        for x in area.x..area.x.saturating_add(area.width) {
-            if inside(buf, x, y) {
-                buf[(x, y)].reset();
-            }
-        }
-    }
-    buf.set_style(area, paint.ground(|p| p.ink));
-    if adjacent {
-        let border_cells = Rect::new(area.x, area.y, 1, area.height);
-        layout.border(buf, Edge::Desk, area.width, border_cells);
-        let rule = paint.rule(dragged(model, Edge::Desk));
-        rule_line(buf, area.x, area.y..area.bottom(), rule);
-    }
-    let left = area.x.saturating_add(2);
-    let room = area.width.saturating_sub(2);
-    // A board that is read stands as a head, a tab bar and the rows of the
-    // tab's section: the first two stand still and the rows scroll. A board
-    // that is absent or cannot be read is its notice rows alone.
-    // The live part stands below the RUNNING tab's rows only, and without a
-    // board it keeps the tabs standing so that tab stays reachable.
-    let below = live
-        .filter(|_| model.desk_tab() == Section::Running)
-        .map(|live| deskview::live_rows(live, room, zone));
-    let (head, bar, mut body) = match view {
-        Some(DeskView::Shown(desk)) => (
-            deskview::head(desk, room, zone),
-            Some(deskview::tab_bar(desk, room)),
-            deskview::body(desk, model.desk_tab(), room),
-        ),
-        Some(view) if live.is_some() => {
-            let (head, bar, body) = deskview::without_board(view, room);
-            (head, Some(bar), body)
-        }
-        _ => (Vec::new(), None, deskview::column(view, room, zone)),
-    };
-    if bar.is_some() {
-        body.extend(below.into_iter().flatten());
-    }
-    let height = usize::from(area.height);
-    let head_rows = head.len().min(height);
-    let bar_row = bar.is_some() && head.len() < height;
-    let fixed = head_rows + usize::from(bar_row);
-    let body_height = height - fixed;
-    let overflows = body.len() > body_height;
-    let page = body_height.saturating_sub(usize::from(overflows));
-    let max = body.len().saturating_sub(page);
-    let top = requested.min(max);
-    layout.desk = Some(DeskViewport {
-        area,
-        adjacent,
-        page,
-        max,
-    });
-    layout.uncover(area);
-    for (step, row) in head.iter().take(head_rows).enumerate() {
-        let y = area.y.saturating_add(cells(step));
-        desk_row(buf, layout, row, (left, y, room), paint);
-    }
-    if let Some(bar) = bar.filter(|_| bar_row) {
-        let y = area.y.saturating_add(cells(head_rows));
-        desk_tabs(
-            buf,
-            layout,
-            &bar,
-            (left, y, room),
-            (paint, model.desk_tab()),
-        );
-    }
-    let body_top = area.y.saturating_add(cells(fixed));
-    for (step, row) in body.iter().skip(top).take(page).enumerate() {
-        let y = body_top.saturating_add(cells(step));
-        desk_row(buf, layout, row, (left, y, room), paint);
-    }
-    if overflows && body_height > 0 {
-        let below = max - top;
-        let cue = match (top, below) {
-            (0, _) => format!("{below} more ↓"),
-            (_, 0) => format!("{top} more ↑"),
-            _ => format!("{top} ↑ · {below} more ↓"),
-        };
-        let dim = paint.fg(|p| p.dim);
-        put(buf, left, area.bottom().saturating_sub(1), &cue, room, dim);
-    }
-    top
-}
-
-/// One board row at `(left, y, room)`, dressed for its kind, with the runs of
-/// the links it carries.
-fn desk_row(
-    buf: &mut Buffer,
-    layout: &mut Layout,
-    row: &deskview::DeskRow,
-    (left, y, room): (u16, u16, u16),
-    paint: Paint,
-) {
-    let (dim, text, title) = (
-        paint.fg(|p| p.dim),
-        paint.fg(|p| p.text),
-        paint.fg(|p| p.title),
-    );
-    let style = match row.kind {
-        deskview::RowKind::Heading => title.add_modifier(Modifier::BOLD),
-        deskview::RowKind::Item => text,
-        deskview::RowKind::Link => title.add_modifier(Modifier::UNDERLINED),
-        deskview::RowKind::Header | deskview::RowKind::More | deskview::RowKind::Notice => dim,
-    };
-    put(buf, left, y, &row.text, room, style);
-    for link in &row.links {
-        let (Some(before), Some(shown)) = (
-            row.text.get(..link.range.start),
-            row.text.get(link.range.clone()),
-        ) else {
-            continue;
-        };
-        let run = link_area(
-            crate::event_text::terminal_cells(before),
-            crate::event_text::terminal_cells(shown),
-            (left, y, room),
-        );
-        if run.width > 0 {
-            layout.links.push(super::backend::Run {
-                x: run.x,
-                y: run.y,
-                width: run.width,
-                url: link.url.clone(),
-            });
-        }
-    }
-}
-
-/// The board's tab bar at `(left, y, room)`: each label clickable over the
-/// cells it draws, the chosen one in the selected ink, the gaps dim. A label
-/// the room cuts keeps the cells it shows.
-fn desk_tabs(
-    buf: &mut Buffer,
-    layout: &mut Layout,
-    bar: &deskview::TabBar,
-    (left, y, room): (u16, u16, u16),
-    (paint, chosen): (Paint, Section),
-) {
-    let right = left.saturating_add(room);
-    for (index, tab) in bar.tabs.iter().enumerate() {
-        let x = left.saturating_add(tab.offset);
-        if x >= right {
-            break;
-        }
-        let style = if tab.section == chosen {
-            paint.selected()
-        } else {
-            paint.fg(|p| p.text)
-        };
-        let end = put(buf, x, y, &tab.text, right - x, style);
-        layout.record(
-            buf,
-            Rect::new(x, y, end.saturating_sub(x), 1),
-            Hit::DeskTab(tab.section),
-        );
-        if index + 1 < bar.tabs.len() {
-            put(
-                buf,
-                end,
-                y,
-                bar.gap,
-                right.saturating_sub(end),
-                paint.fg(|p| p.dim),
-            );
-        }
-    }
-}
-
-/// The column a side panel ends at in `area` split as `split`: the frame's
-/// end, or the left edge of the board column that stands there. A drag that
-/// moves the panel's edge asks it before the next frame is drawn. `desk` is
-/// whether a board column stands.
-fn side_end(area: Rect, split: Split, desk: bool) -> u16 {
-    let side = Columns {
-        panel: Some((false, false)),
-        desk,
-        ..Columns::default()
-    };
-    desk_slot(area, split, side).map_or(area.width, |slot| slot.x)
-}
-
 /// The cells the open panel covers in `area`, `None` while it is closed.
 pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
     match stand(area, split, columns) {
@@ -1215,8 +905,7 @@ pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<R
         Stand::Side { border, end } => Some(Rect::new(border, 0, end - border, area.height)),
         Stand::Full { .. } => {
             let start = chat_start(area, split, columns.zoomed());
-            let end = desk_slot(area, split, columns).map_or(area.width, |desk| desk.x);
-            Some(Rect::new(start, 0, end - start, area.height))
+            Some(Rect::new(start, 0, area.width - start, area.height))
         }
     }
 }
@@ -1262,12 +951,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     };
     layout.chat = Rect::new(left, 0, width - left, height);
     layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
-    let columns_at = left + 2..width - 2;
-    if desk_replaces_panel(area, screen.model.split(), columns) {
-        chat_head(&ctx, buf, &columns_at, &mut layout);
-    } else {
-        chat_column(&ctx, buf, columns_at, &mut layout);
-    }
+    chat_column(&ctx, buf, left + 2..width - 2, &mut layout);
     layout
 }
 
@@ -1389,47 +1073,22 @@ fn list_border(rows: u16) -> u16 {
 }
 
 /// The size a drag asks for: where its edge stood at the press, moved as far
-/// as the pointer has since, clamped to `area` split as `split` is now. `desk`
-/// is whether a board column stands beside a side panel.
-pub(crate) fn dragged_to(
-    drag: Drag,
-    mouse: Mouse,
-    area: Rect,
-    split: Split,
-    count: usize,
-    desk: bool,
-) -> u16 {
+/// as the pointer has since, clamped to `area` split as `split` is now.
+pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, split: Split, count: usize) -> u16 {
     let to = drag_position(drag, mouse);
     match drag.edge {
         Edge::Sidebar => sidebar_clamp(to, area),
         Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
         Edge::Panel => side_width(
             area,
-            side_end(area, split, desk),
+            area.width,
             Split {
                 panel: Some(to),
                 ..split
             },
         )
         .unwrap_or(to),
-        Edge::Desk => clamp_desk_drag(area, split, false, to),
     }
-}
-
-pub(super) fn zoomed_desk_drag(drag: Drag, mouse: Mouse, area: Rect, split: Split) -> u16 {
-    clamp_desk_drag(area, split, true, drag_position(drag, mouse))
-}
-
-fn clamp_desk_drag(area: Rect, split: Split, full: bool, to: u16) -> u16 {
-    desk_width(
-        area,
-        Split {
-            desk: Some(to),
-            ..split
-        },
-        full,
-    )
-    .unwrap_or(to)
 }
 
 fn drag_position(drag: Drag, mouse: Mouse) -> u16 {
@@ -1437,8 +1096,8 @@ fn drag_position(drag: Drag, mouse: Mouse) -> u16 {
     let moved = match drag.edge {
         Edge::Sidebar => at + i32::from(mouse.column) - from,
         Edge::List => at + i32::from(mouse.row) - from,
-        // These borders are left of their columns: moving one left widens it.
-        Edge::Panel | Edge::Desk => at + from - i32::from(mouse.column),
+        // This border is left of its column: moving it left widens it.
+        Edge::Panel => at + from - i32::from(mouse.column),
     };
     u16::try_from(moved.max(0)).unwrap_or(u16::MAX)
 }
@@ -1468,10 +1127,10 @@ fn rule_line(buf: &mut Buffer, x: u16, rows: Range<u16>, style: Style) {
 }
 
 /// What one press of `>` (`grow`) or `<` makes of the right-hand column in
-/// `area` split as `split` and stood as `columns`: the board where it stands
-/// beside the panel, else the side panel. Its edge and the width a step of
-/// [`KEY_STEP`] cells asks, clamped as the drag of that edge clamps it; `None`
-/// with no such column, or when the clamp leaves its width as it is.
+/// `area` split as `split` and stood as `columns`: the side panel. Its edge and
+/// the width a step of [`KEY_STEP`] cells asks, clamped as the drag of that
+/// edge clamps it; `None` with no side panel, or when the clamp leaves its
+/// width as it is.
 pub(crate) fn stepped(
     area: Rect,
     split: Split,
@@ -1488,20 +1147,15 @@ pub(crate) fn stepped(
             now.saturating_sub(KEY_STEP)
         }
     };
-    let (edge, now, size) = if let Some(slot) = desk_slot(area, split, columns) {
-        let full = columns.panel.is_some_and(|(full, _)| full);
-        let size = clamp_desk_drag(area, split, full, step(slot.width));
-        (Edge::Desk, slot.width, size)
-    } else if let Stand::Side { border, end } = stand(area, split, columns) {
-        let asked = Split {
-            panel: Some(step(end - border)),
-            ..split
-        };
-        (Edge::Panel, end - border, side_width(area, end, asked)?)
-    } else {
+    let Stand::Side { border, end } = stand(area, split, columns) else {
         return None;
     };
-    (size != now).then_some((edge, size))
+    let asked = Split {
+        panel: Some(step(end - border)),
+        ..split
+    };
+    let size = side_width(area, end, asked)?;
+    (size != end - border).then_some((Edge::Panel, size))
 }
 
 // ---------------------------------------------------------------------------
@@ -2737,13 +2391,8 @@ fn hint_row(
     // The clear key is named only over text, and only where it fits whole.
     let text = matches!(&ctx.screen.composer, Composer::Home { view: Some(_), draft, .. } if !draft.is_empty());
     let long = rest_of(&format!("{keys} · ^C clears"));
-    // Browsing with a board set names the key that hides or shows it, where
-    // the longer hint fits whole.
-    let board = board_hint(ctx.screen.model, keys).map(|word| rest_of(&format!("{keys} · {word}")));
     let rest = if text && !keys.is_empty() && fits(&long) {
         long
-    } else if let Some(board) = board.filter(|board| fits(board)) {
-        board
     } else {
         rest_of(keys)
     };
@@ -2798,25 +2447,6 @@ fn mode_hint(composer: &Composer<'_>) -> &'static str {
 
 /// The browse hint: the keys that work while no draft is written.
 const BROWSE_HINT: &str = "? keys";
-
-/// The word that names the board's visibility key in the browse hint: `b hide`
-/// while the board stands, `b show` while the human hid it. Only on the hint
-/// row of the column that holds the keys, while the panel is open over a board
-/// the frame shows, and only where `b` is a browse key: the settings, the peek
-/// and the reader take their own keys.
-fn board_hint(model: &Model, keys: &str) -> Option<&'static str> {
-    let columns = model.columns();
-    let browsing = keys == BROWSE_HINT && !overlay_open(model);
-    let holds = columns
-        .panel
-        .is_some_and(|(_, focused)| focused == columns.drawing_panel)
-        && !columns.hides_panel();
-    (browsing && holds && columns.desk).then_some(if columns.desk_hidden {
-        "b show"
-    } else {
-        "b hide"
-    })
-}
 
 /// The lane's newest rows as the app's own state shows them: `size` is the
 /// column's width and how many rows are wanted.
@@ -3032,12 +2662,25 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     } else {
         from + cells(dir.chars().count().min(12))
     };
-    let width = |right: &&String| cells(right.chars().count());
-    let rights: Vec<&String> = branch.iter().chain(std::iter::once(&activity)).collect();
-    let room_for = |right: &&String| after + 2 + width(right) <= end;
-    let right = (rights.iter())
-        .find(|right| room_for(right) && end.saturating_sub(width(right) + 2) >= wanted)
-        .or_else(|| rights.iter().find(|right| room_for(right)));
+    let width = |right: &str| cells(right.chars().count());
+    let rights = branch.iter().chain(std::iter::once(&activity));
+    let fits: Vec<&String> = rights
+        .filter(|right| after + 2 + width(right) <= end)
+        .collect();
+    let right = (fits.iter().copied())
+        .find(|right| end.saturating_sub(width(right) + 2) >= wanted)
+        .or_else(|| fits.first().copied());
+    // The orchestrator's column names the work of the whole fleet in the longest
+    // of its steps that fits in the room the names and the right-hand labels
+    // leave: the branch gives way to a longer step, the activity word does not.
+    // A header too narrow for the shortest step shows none, and every other
+    // column names what waits on the human: the seat's ask and its age, cut to
+    // what the room leaves, which it needs a dozen cells to read.
+    let segment = ctx
+        .wait
+        .work
+        .and_then(|work| work_step(&work, &fits, (from, end)));
+    let right = segment.as_ref().map_or(right, |(_, right)| Some(*right));
     let stop = right.map_or(end, |right| {
         put(
             buf,
@@ -3050,20 +2693,40 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
         end - width(right) - 2
     });
     let room = stop.saturating_sub(from);
-    // What waits on the human comes before the directory: the seat's ask and
-    // its age, cut to what the room leaves. It needs a dozen cells to read.
-    let reason = reason_words(ctx, room);
-    let dir_from = reason.as_ref().map_or(from, |words| {
-        let ink = paint.mark(Mark::NeedsYou);
-        let used = put(buf, from, 0, words, room, ink);
+    let lead = match ctx.wait.work {
+        Some(_) => segment.map(|(text, _)| (text, paint.fg(|p| p.text))),
+        None => reason_words(ctx, room).map(|words| (words, paint.mark(Mark::NeedsYou))),
+    };
+    let dir_from = lead.as_ref().map_or(from, |(words, ink)| {
+        let used = put(buf, from, 0, words, room, *ink);
         used + 3
     });
     let room = stop.saturating_sub(dir_from);
-    if reason.is_some() && room < REASON_MIN {
+    if lead.is_some() && room < REASON_MIN {
         return;
     }
     let shown = clip_tail(dir, usize::from(room));
     put(buf, dir_from, 0, &shown, room, paint.fg(|p| p.dim));
+}
+
+/// The longest step of the fleet's work segment that fits the header columns
+/// `from..end` beside one of the right-hand labels, richest first, and that
+/// label. The activity word stays: a step that fits only beside a shorter
+/// label takes the room of the branch, never the activity's.
+fn work_step<'a>(
+    work: &super::fleet::Work,
+    rights: &[&'a String],
+    (from, end): (u16, u16),
+) -> Option<(String, &'a String)> {
+    work.steps().into_iter().find_map(|text| {
+        let need = cells(text.chars().count());
+        (rights.iter().copied())
+            .find(|right| {
+                let stop = end.saturating_sub(cells(right.chars().count()) + 2);
+                need <= stop.saturating_sub(from)
+            })
+            .map(|right| (text, right))
+    })
 }
 
 /// The main column header's right end: the zoom label, `X zoom` or `X unzoom`,
@@ -3136,57 +2799,6 @@ fn panel_head(
         layout.record(buf, Rect::new(at, 0, pane, 1), Hit::PanelPane);
         stop = at.saturating_sub(2);
     }
-    let replaces = desk_replaces_panel(buf.area, model.split(), columns);
-    // While the board column has no room, the header says what it would show;
-    // while the human hid the board, it says only a decision that waits, in the
-    // ink the needs-you mark has.
-    let dim = ctx.paint.fg(|p| p.dim);
-    let (cue, ink) = if columns.desk_hidden {
-        let waiting = ctx.paint.mark(Mark::NeedsYou);
-        (ctx.wait.desk.and_then(deskview::hidden_cue), waiting)
-    } else if !replaces && !desk_beside(buf.area, model.split(), columns) {
-        (ctx.wait.desk.and_then(deskview::cue), dim)
-    } else {
-        (None, dim)
-    };
-    if let Some(cue) = cue {
-        let need = cells(cue.chars().count());
-        if stop >= left + need {
-            put(buf, stop - need, 0, &cue, need, ink);
-            stop = stop.saturating_sub(need + 2);
-        }
-    }
-    if columns.desk {
-        let label = if columns.desk_hidden {
-            "b show"
-        } else {
-            "b hide"
-        };
-        let need = cells(label.len());
-        if stop >= left + need {
-            let at = stop - need;
-            put(buf, at, 0, label, need, ctx.paint.fg(|p| p.title));
-            let asks = Hit::PanelDeskToggle(!columns.desk_hidden);
-            layout.record(buf, Rect::new(at, 0, need, 1), asks);
-            stop = at.saturating_sub(2);
-        }
-    }
-    if columns.desk && !columns.desk_hidden {
-        let label = if replaces {
-            "B/Esc chat"
-        } else if columns.desk_focused {
-            "B chat"
-        } else {
-            "B board"
-        };
-        let need = cells(label.len());
-        if stop >= left + need {
-            let at = stop - need;
-            put(buf, at, 0, label, need, ctx.paint.fg(|p| p.title));
-            layout.record(buf, Rect::new(at, 0, need, 1), Hit::PanelDesk);
-            stop = at.saturating_sub(2);
-        }
-    }
     if let Stand::Full { note: Some(note) } = stand {
         let need = cells(note.chars().count());
         if stop >= left + need {
@@ -3197,8 +2809,8 @@ fn panel_head(
     stop.max(left)
 }
 
-/// The fewest cells the header's reason segment, or a directory beside it, is
-/// worth drawing in.
+/// The fewest cells the header's reason or work segment, or a directory beside
+/// it, is worth drawing in.
 const REASON_MIN: u16 = 12;
 
 /// The open ask the header names, as `⚠ <seat>: <words> · <age>` in `room`
@@ -3314,7 +2926,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 24] = [
+const BROWSE_KEYS: [(&str, &str); 22] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -3330,13 +2942,8 @@ const BROWSE_KEYS: [(&str, &str); 24] = [
     ("v", "peek at the seat's screen"),
     ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),
-    ("b", "hide / show the orchestrator board"),
-    ("< >", "narrow / widen the board or side panel, 4 cells"),
-    ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
-    (
-        "1-5 Tab",
-        "board focused: tab by place; Tab, Right next, Left back",
-    ),
+    ("< >", "narrow / widen the side panel, 4 cells"),
+    ("PgUp/PgDn", "scroll a page"),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
@@ -4787,16 +4394,6 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
 mod accounts_spec;
 
 #[cfg(test)]
-#[path = "desk_geometry_spec.rs"]
-mod desk_geometry_spec;
-#[cfg(test)]
-#[path = "desk_presence_tests.rs"]
-mod desk_presence_tests;
-#[cfg(test)]
-#[path = "desk_tabs_spec.rs"]
-mod desk_tabs_spec;
-
-#[cfg(test)]
 mod s5_draw;
 #[cfg(test)]
 mod s5_retention;
@@ -5696,6 +5293,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The activity word is drawn only while it fits after the middle: at 160
+    /// columns 86 middle cells leave its two blank cells and nine, 87 do not.
+    #[test]
+    fn the_header_drops_the_activity_when_it_would_not_fit() {
+        for (middle, fits) in [(86, true), (87, false)] {
+            let mut shot = Shot::new();
+            shot.entry.last_active_epoch = Some(PIN_NOW - 60);
+            shot.pair = vec!["lead".to_owned(), "c".repeat(middle - 7)];
+            let header = line(&shot.draw(160, 43, READ_ONLY), 0).concat();
+            assert_eq!(header.contains("active 1m"), fits, "{middle}: {header:?}");
+        }
+    }
+
+    /// A recorded directory keeps twelve cells before the branch takes them:
+    /// at 160 columns 57 middle cells leave the branch label (26 cells) room
+    /// beside the directory for fewer than twelve, so the branch gives way to
+    /// the activity word and the directory stays whole.
+    #[test]
+    fn the_header_drops_the_branch_before_it_squeezes_the_directory() {
+        let mut shot = Shot::new();
+        shot.entry.branch = Some("feat/auth-v2".to_owned());
+        shot.entry.last_active_epoch = Some(PIN_NOW - 60);
+        shot.overview.dir = Some("projects/xyz".to_owned());
+        shot.pair = vec!["lead".to_owned(), "c".repeat(50)];
+        let header = line(&shot.draw(160, 43, READ_ONLY), 0).concat();
+        assert!(
+            header.contains("projects/xyz")
+                && header.contains("active 1m")
+                && !header.contains("feat/auth-v2"),
+            "{header:?}"
+        );
     }
 
     // ---- lane pins (#74, #80-85, #90), drawn through `lane::rows` here because
@@ -7048,14 +6678,14 @@ mod tests {
         let at = match edge {
             Edge::Sidebar => vertical(buf),
             Edge::List => horizontal(buf),
-            // A shot draws neither the orchestrator panel nor the board.
-            Edge::Panel | Edge::Desk => None,
+            // A shot draws no orchestrator panel.
+            Edge::Panel => None,
         }
         .expect("the border is drawn");
         let drag = Drag { edge, from: at, at };
         shot.model.grab(drag);
         let mouse = match edge {
-            Edge::Sidebar | Edge::Panel | Edge::Desk => Mouse {
+            Edge::Sidebar | Edge::Panel => Mouse {
                 kind: MouseKind::Drag,
                 column: to,
                 row: 1,
@@ -7072,7 +6702,6 @@ mod tests {
             buf.area,
             shot.model.split(),
             shot.fleet.rows.len(),
-            false,
         );
         let _ = shot.model.drag_to(size);
         let _ = shot.model.let_go();
@@ -7532,6 +7161,30 @@ mod tests {
         );
         let words = super::reason_words(&ctx, 14).expect("12 cells and the mark");
         assert!(super::drawn_cols(&words) <= 14, "{words:?}");
+    }
+
+    /// A directory after the reason needs twelve cells: at 160 columns 39
+    /// middle cells leave exactly twelve beside the reason and the activity
+    /// word, 40 leave eleven and no part of the directory is drawn.
+    #[test]
+    fn the_header_draws_a_directory_after_the_reason_only_in_twelve_cells() {
+        for (middle, shown) in [(39, true), (40, false)] {
+            let mut shot = Shot::new();
+            shot.entry.last_active_epoch = Some(PIN_NOW - 60);
+            shot.overview.dir = Some("projects/xyz".to_owned());
+            shot.overview.open = vec![Open {
+                seat: "lead".to_owned(),
+                text: "approve the plan".to_owned(),
+                age_secs: Some(60),
+            }];
+            shot.pair = vec!["lead".to_owned(), "c".repeat(middle - 7)];
+            let header = line(&shot.draw(160, 43, READ_ONLY), 0).concat();
+            assert!(
+                header.contains("approve the plan") && header.contains("active 1m"),
+                "{middle}: the reason and the activity stay: {header:?}"
+            );
+            assert_eq!(header.contains("xyz"), shown, "{middle}: {header:?}");
+        }
     }
 
     /// Approved legend teaches all seven task marks in each glyph vocabulary.
@@ -8498,7 +8151,6 @@ mod tests {
             area,
             shot.model.split(),
             1,
-            false,
         );
         assert_eq!(requested, 32_775, "the actual drag allows this sidebar");
         let _ = shot.model.drag_to(requested);

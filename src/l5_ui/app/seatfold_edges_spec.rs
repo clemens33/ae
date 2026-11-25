@@ -88,7 +88,6 @@ fn fixture(seats: &[(&str, &str, &str)], width: u16) -> App {
         seq: 1,
         lane: Lane::default(),
         needs: None,
-        desk: None,
         roster: Some(
             seats
                 .iter()
@@ -261,7 +260,6 @@ fn a_roster_read_from_a_replaced_incarnation_groups_nothing() {
         seq: 2,
         lane: Lane::default(),
         needs: None,
-        desk: None,
         roster: Some(
             renamed
                 .iter()

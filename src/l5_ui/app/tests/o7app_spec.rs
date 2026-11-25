@@ -13,9 +13,6 @@
 use super::*;
 use std::sync::{Arc, Mutex, mpsc};
 
-#[path = "desk_app_spec.rs"]
-mod desk_app_spec;
-
 #[path = "chattarget_app_spec.rs"]
 mod chattarget_app_spec;
 
@@ -715,7 +712,6 @@ fn p3_panel_scroll_is_independent_of_the_main_column_and_survives_selection_chan
         seq: 105,
         lane,
         needs: None,
-        desk: None,
         roster: None,
     }));
     let initial = rig.frame(160, 45);
@@ -905,9 +901,6 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     list_top: None,
                     body_top: 0,
                     panel: None,
-                    desk: None,
-                    desk_hidden: false,
-                    desk_tab: crate::desk::Section::Decide,
                     zoom: false,
                     orchestrator: None,
                 },

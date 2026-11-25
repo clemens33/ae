@@ -691,7 +691,6 @@ impl App {
             Answer::Fleet(_)
                 | Answer::Look { .. }
                 | Answer::View(_)
-                | Answer::Live { .. }
                 | Answer::Orchestrator(_)
                 | Answer::ComposerRole { .. }
                 | Answer::Seat { .. }
@@ -718,7 +717,6 @@ impl App {
             }
             Answer::Owned { .. } => {}
             Answer::View(view) => self.viewed(view),
-            Answer::Live { id, live } => self.read_live(id, *live),
             Answer::Settings {
                 generation,
                 quota,

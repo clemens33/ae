@@ -7,9 +7,6 @@ use super::{
     Position, QUIT_WINDOW, Rc, Refusal, SeatRef, Size, Timestamp, View, apply, draw, fleet, loader,
     model, overview,
 };
-use crate::console::deskview::DeskView;
-use crate::desk::Section;
-use ratatui_core::layout::Rect;
 
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
@@ -19,10 +16,6 @@ pub(super) struct Panel {
     pub(super) full: bool,
     /// It takes the keys; the main column does otherwise.
     focused: bool,
-    /// The board owns the browsing keys while this is set.
-    desk_focused: bool,
-    /// The first wrapped board row to show.
-    desk_top: usize,
     /// The incarnation it acts on, or why it acts on none.
     bind: Bind,
     /// When it opened: a press made on a panel drawn before is not this one's.
@@ -122,14 +115,6 @@ pub(super) struct Orch {
     /// When the panel raised the hint row's flash: its own line, which
     /// hiding the panel drops.
     flash: Option<Instant>,
-    /// The board the reader last found for the panel's incarnation: the
-    /// `session_id` it was read as, and the record. Kept only while the panel
-    /// is open on that incarnation.
-    pub(super) desk: Option<(String, DeskView)>,
-    /// The fleet's live part the reader last computed beside that board, for
-    /// the same incarnation: shown under the RUNNING tab, never stored.
-    /// Shared, so a frame borrows it without copying the fleet.
-    pub(super) live: Option<(String, std::rc::Rc<crate::desklive::Live>)>,
 }
 
 impl Orch {
@@ -470,9 +455,6 @@ impl App {
                 .panel
                 .as_ref()
                 .map(|panel| (panel.full, panel.focused)),
-            desk: self.desk_present(),
-            desk_hidden: self.model.desk_hidden(),
-            desk_focused: self.desk_focused(),
             zoom: self.model.zoom(),
             ..model::Columns::default()
         }
@@ -507,8 +489,6 @@ impl App {
         self.orch.panel = Some(Panel {
             full,
             focused: true,
-            desk_focused: false,
-            desk_top: 0,
             bind,
             since: Instant::now(),
             column: Column {
@@ -566,190 +546,6 @@ impl App {
         {
             self.model.reshaped();
         }
-    }
-
-    /// The board the open panel's incarnation last read, `None` while the
-    /// panel is bound to none or nothing was read for that incarnation.
-    pub(super) fn desk_view(&self) -> Option<&DeskView> {
-        let pin = self.orch.panel.as_ref()?.pin()?;
-        (self.orch.desk.as_ref())
-            .filter(|(id, _)| id == pin)
-            .map(|(_, view)| view)
-    }
-
-    /// The live part computed for the open panel's incarnation, `None` while
-    /// none was.
-    pub(super) fn live_view(&self) -> Option<&std::rc::Rc<crate::desklive::Live>> {
-        let pin = self.orch.panel.as_ref()?.pin()?;
-        (self.orch.live.as_ref())
-            .filter(|(id, _)| id == pin)
-            .map(|(_, live)| live)
-    }
-
-    /// The board the panel's incarnation read is set or could not be read,
-    /// or its live part stands without one.
-    pub(super) fn desk_present(&self) -> bool {
-        self.desk_view()
-            .is_some_and(|view| !matches!(view, DeskView::Absent) || self.live_view().is_some())
-    }
-
-    pub(super) fn read_desk(&mut self, id: String, desk: DeskView) {
-        self.orch.desk = Some((id, desk));
-        if !self.desk_present()
-            && let Some(panel) = self.orch.panel.as_mut()
-        {
-            (panel.desk_focused, panel.desk_top) = (false, 0);
-        }
-    }
-
-    /// Keep the live part read for incarnation `id`; a column that begins
-    /// to stand by it moves the cells.
-    pub(super) fn read_live(&mut self, id: String, live: crate::desklive::Live) {
-        let before = self.desk_present();
-        self.orch.live = Some((id, std::rc::Rc::new(live)));
-        if before != self.desk_present() {
-            self.model.reshaped();
-        }
-    }
-
-    pub(super) fn desk_focused(&self) -> bool {
-        self.orch
-            .panel
-            .as_ref()
-            .is_some_and(|panel| panel.desk_focused)
-            && self.desk_present()
-            && !self.model.desk_hidden()
-    }
-
-    /// Whether the board column is wanted beside the panel: a board is set and
-    /// the human did not hide it.
-    pub(super) fn desk_stands(&self) -> bool {
-        self.desk_present() && !self.model.desk_hidden()
-    }
-
-    /// Hide the board, or show it. Hiding drops the board's hold on the keys
-    /// first; a change moves the cells under the old coordinates. Does nothing
-    /// while no panel is open over a board, or when the board already is so.
-    pub(super) fn hide_desk(&mut self, hidden: bool) -> bool {
-        if !self.desk_present() || self.model.desk_hidden() == hidden {
-            return false;
-        }
-        if hidden {
-            self.focus_desk(false);
-        }
-        self.model.set_desk_hidden(hidden);
-        true
-    }
-
-    pub(super) fn toggle_desk(&mut self) -> bool {
-        self.focus_desk(!self.desk_focused())
-    }
-
-    pub(super) fn focus_desk(&mut self, focused: bool) -> bool {
-        let area = self.layout.area();
-        if focused && (!self.desk_stands() || !draw::floor_met(area) || self.panel_area().is_none())
-        {
-            return false;
-        }
-        let split = self.model.split();
-        let before = draw::desk_replaces_panel(area, split, self.stand_columns());
-        let Some(panel) = self.orch.panel.as_mut() else {
-            return false;
-        };
-        if std::mem::replace(&mut panel.desk_focused, focused) == focused {
-            return false;
-        }
-        if focused {
-            self.focus_column(true);
-            if self.composing() || self.held.is_some() {
-                self.write(false);
-            }
-        }
-        if before != draw::desk_replaces_panel(area, split, self.stand_columns()) {
-            self.model.reshaped();
-        }
-        true
-    }
-
-    pub(super) fn scroll_desk(&mut self, up: bool, page: bool) -> bool {
-        let Some((panel, desk)) = self.orch.panel.as_mut().zip(self.layout.desk) else {
-            return false;
-        };
-        let step = if page { desk.page } else { model::WHEEL_ROWS };
-        let top = if up {
-            panel.desk_top.saturating_sub(step)
-        } else {
-            panel.desk_top.saturating_add(step).min(desk.max)
-        };
-        std::mem::replace(&mut panel.desk_top, top) != top
-    }
-
-    /// Show `section` on a board that is read, or on a column the live part
-    /// keeps standing. A real change starts the body at its top and ends a
-    /// selection the old cells drew; the section already shown, and an absent
-    /// or unreadable board without a live part, change nothing.
-    pub(super) fn select_desk_tab(&mut self, section: Section) -> bool {
-        let tabbed = matches!(self.desk_view(), Some(DeskView::Shown(_)))
-            || (self.desk_present() && self.live_view().is_some());
-        if !tabbed || self.model.desk_tab() == section {
-            return false;
-        }
-        self.model.set_desk_tab(section);
-        if let Some(panel) = self.orch.panel.as_mut() {
-            panel.desk_top = 0;
-        }
-        true
-    }
-
-    /// Step to the next tab, or the previous one, wrapping at either end.
-    pub(super) fn step_desk_tab(&mut self, forward: bool) -> bool {
-        let all = Section::ALL;
-        let at = all
-            .iter()
-            .position(|section| *section == self.model.desk_tab());
-        let to = at.map(|at| {
-            if forward {
-                (at + 1) % all.len()
-            } else {
-                (at + all.len() - 1) % all.len()
-            }
-        });
-        to.and_then(|to| all.get(to))
-            .is_some_and(|section| self.select_desk_tab(*section))
-    }
-
-    /// Draw the board beside the panel or over its body, keeping its visible
-    /// links and scroll bounds with the frame.
-    pub(super) fn frame_desk(&mut self, buf: &mut Buffer) {
-        let columns = self.stand_columns();
-        let split = self.model.split();
-        let (area, adjacent) = if let Some(slot) = draw::desk_slot(buf.area, split, columns) {
-            (slot, true)
-        } else if draw::desk_replaces_panel(buf.area, split, columns)
-            && let Some(panel) = self.layout.panel
-        {
-            let x = panel.x + u16::from(self.layout.shows(model::Edge::Panel));
-            (Rect::new(x, 2, panel.right() - x, panel.height - 2), false)
-        } else {
-            return;
-        };
-        self.layout.cover_targets(area);
-        let view = self.desk_view().cloned();
-        let live = self.live_view().cloned();
-        let (look, zone) = self.dressed();
-        let zone = zone.map(str::to_owned);
-        let Some(panel) = self.orch.panel.as_mut() else {
-            return;
-        };
-        panel.desk_top = draw::draw_board(
-            buf,
-            (area, adjacent),
-            (view.as_ref(), live.as_deref()),
-            (look.as_ref(), zone.as_deref()),
-            &mut self.layout,
-            &self.model,
-            panel.desk_top,
-        );
     }
 
     /// The cells the open panel covers in the last frame, `None` while it is
@@ -1086,8 +882,6 @@ impl App {
             }
             Some(draw::Hit::PanelMode) => return self.flip_panel(),
             Some(draw::Hit::PanelPane) => return self.pane_click(),
-            Some(draw::Hit::PanelDesk) => return self.toggle_desk(),
-            Some(draw::Hit::PanelDeskToggle(hide)) => return self.hide_desk(hide),
             Some(draw::Hit::Settings) => {
                 self.open_settings();
                 return true;
@@ -1095,9 +889,6 @@ impl App {
             _ => {}
         }
         if mouse.kind == MouseKind::Click {
-            if !self.layout.desk_replaces_panel() {
-                self.focus_desk(false);
-            }
             self.focus_column(true);
         }
         self.in_panel(|app| app.route(mouse, fresh))
@@ -1118,8 +909,6 @@ impl App {
         // orchestrator is no listed session, so its own column reads none.
         let (look, zone) = self.dressed();
         let zone = zone.map(str::to_owned);
-        let deskview = self.desk_view().cloned();
-        let desk_replaces = draw::desk_replaces_panel(buf.area, self.model.split(), columns);
         let cursor = self.in_panel(|app| {
             app.show();
             app.model.set_columns(columns);
@@ -1162,7 +951,7 @@ impl App {
                 target: bound.then(|| (&target, app.target_look(ORCH, look.as_ref()))),
                 confirming: false,
                 md: Some(&app.md),
-                desk: deskview.as_ref(),
+                work: Some(fleet::Work::of(&app.world)),
             };
             let drawn = draw::draw_panel(&screen, wait, buf);
             let replaced = std::mem::replace(&mut app.layout, drawn);
@@ -1174,7 +963,7 @@ impl App {
                 app.lost = Some(app.history.remove(0).0);
             }
             app.restored &= app.loading;
-            if !desk_replaces && app.deferred.is_empty() && !app.restored {
+            if app.deferred.is_empty() && !app.restored {
                 app.model
                     .clamp_scroll(app.layout.max_scroll, app.layout.page_rows);
             }
@@ -1202,6 +991,5 @@ impl App {
         }
         self.layout.links.extend(links);
         self.layout.panel_border(buf, self.model.split(), columns);
-        self.frame_desk(buf);
     }
 }

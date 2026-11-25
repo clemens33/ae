@@ -255,6 +255,78 @@ pub fn orchestrator(
     ))
 }
 
+/// The work of the whole fleet, as the orchestrator's panel header counts it:
+/// what the fleet listing says of every running session on every server
+/// `ae list` reads, the orchestrator included. The sidebar's own `Working`
+/// counts the watchdog verdicts of this app's tmux server alone, so the two
+/// can differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Work {
+    /// Seats whose pane is not dead and whose declared state is `working`.
+    pub working: usize,
+    /// Seats whose pane is not dead and whose declared state is `waiting-user`.
+    pub waiting: usize,
+    /// Sessions the listing proves running.
+    pub sessions: usize,
+    /// A session's liveness is unknown or a source failed to list: the seat
+    /// counts are lower bounds.
+    pub partial: bool,
+}
+
+impl Work {
+    /// The counts of `world`. A stopped session counts nothing, and no seat
+    /// of a session whose liveness is unknown does either.
+    #[must_use]
+    pub fn of(world: &World) -> Self {
+        let mut work = Self {
+            working: 0,
+            waiting: 0,
+            sessions: 0,
+            partial: world.losses > 0,
+        };
+        for entry in &world.sessions {
+            match entry.status {
+                Status::Running => work.sessions += 1,
+                Status::Stopped => continue,
+                Status::Unknown => {
+                    work.partial = true;
+                    continue;
+                }
+            }
+            for agent in entry
+                .agents
+                .iter()
+                .filter(|agent| agent.alive != Some(false))
+            {
+                match agent.state.as_deref() {
+                    Some("working") => work.working += 1,
+                    Some("waiting-user") => work.waiting += 1,
+                    _ => {}
+                }
+            }
+        }
+        work
+    }
+
+    /// The header segment at each width it may take, longest first:
+    /// `fleet 7 working · 2 wait you · 4 sessions`, the same without `fleet`,
+    /// `7 working · 2 wait you` and `7 working`. A `+` follows a seat count that
+    /// is a lower bound, and `1 session` is the singular.
+    #[must_use]
+    pub fn steps(&self) -> [String; 4] {
+        let bound = if self.partial { "+" } else { "" };
+        let noun = if self.sessions == 1 {
+            "session"
+        } else {
+            "sessions"
+        };
+        let working = format!("{}{bound} working", self.working);
+        let two = format!("{working} · {}{bound} wait you", self.waiting);
+        let three = format!("{two} · {} {noun}", self.sessions);
+        [format!("fleet {three}"), three, two, working]
+    }
+}
+
 /// One session's row.
 fn row(
     entry: &SessionEntry,

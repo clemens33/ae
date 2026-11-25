@@ -133,7 +133,8 @@ recorded config first.
   and the chat header still names a seat that needs you, folded or not. An ask from a
   seat the roster lacks stays after the seats, outside the group. A seat that waits on the human is told in the chat header (`⚠ <seat>:
   <reason> · <age>`: the viewed seat's ask, else the cursor seat's, else
-  the first), not under the seat: the open request text stays in the header,
+  the first; the orchestrator panel's header names the work of the fleet
+  instead, see [Orchestrator panel](#orchestrator-panel)), not under the seat: the open request text stays in the header,
   while the seat's own declaration reason sits in its detail row. A reason from
   a seat the roster lacks is drawn as a row of its own after the roster, so no
   ask is lost. A session on
@@ -169,13 +170,11 @@ the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
 least 40. The rule under the `Agents` heading moves the split between the session
 list and the body: the list keeps one session and its more row, the body three rows (or
 as few as it had undragged). The left border of the side-by-side
-[orchestrator panel](#orchestrator-panel) or [board](#orchestrator-board) sets
-its width. The two chat columns each keep at least 40 cells and the board keeps
-at least 24. The rules of the panel and the board carry a heavier grip on their
-middle rows, in the rule's own colour. `<` and `>` size the right-hand column
-without the mouse: each press narrows or widens the board, or the side panel when
-no board stands beside it, by 4 cells, within the limits of a drag; the keys are
-text while you write. A rule takes the title colour while you drag it, or
+[orchestrator panel](#orchestrator-panel) sets its width. The two chat columns
+each keep at least 40 cells. The rule of the panel carries a heavier grip on its
+middle rows, in the rule's own colour. `<` and `>` size the side panel without
+the mouse: each press narrows or widens it by 4 cells, within the limits of a
+drag; the keys are text while you write. A rule takes the title colour while you drag it, or
 reverses with `theme = off`. Letting go ends the drag. [Zoom](#zoom) hides the
 sidebar and its rules. A smaller pane limits the sizes temporarily. The dragged
 and stepped sizes are part of the saved view: a fresh `ae app` draws them again
@@ -241,20 +240,17 @@ Browsing:
 
 | Key | Does |
 |---|---|
-| `1`-`9` | select the Nth session of the list, counted by position (no number is drawn); with the board focused `1`-`5` pick its tab instead |
+| `1`-`9` | select the Nth session of the list, counted by position (no number is drawn) |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
-| `b`, click `b hide` / `b show` | hide the orchestrator board and give the chat its width, or show it again, in side and full-screen modes and on a narrow frame; the choice is saved with the view ([What survives a quit](#what-survives-a-quit)) |
-| `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame; it does nothing while the board is hidden. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
-| `1`-`5`, `Tab` / `Right`, `Left`, click a label | with the board focused: show DECIDE, COMING, RUNNING, WAITING or LINKS, or step to the next / previous tab, wrapping; the tab is saved with the view ([What survives a quit](#what-survives-a-quit)) |
 | `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
 | `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
-| `PgUp` / `PgDn` | scroll the focused chat or board a page |
+| `PgUp` / `PgDn` | scroll the focused chat a page |
 | `G` / `End` | scroll the chat to its newest turn |
 | Click the hint under a scrolled-up chat | the same: the accent line `↓ 3 newer turns · End` (`↓ 1 newer turn · End`, or `↓ more below · End` when only the rest of the newest turn waits) stands centered on the row under the lane and counts the turns that start below the window; a click on its words scrolls to the newest turn, also while writing, and keeps the draft |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
@@ -266,10 +262,10 @@ Browsing:
 | Click the `Stopped (N)` line | open or close the stopped sessions |
 | Click the `Spawned (N)` line | fold or show the selected session's spawned seats |
 | Click a seat row | highlight that seat |
-| Wheel over chat, the board or the Agents body | scroll three rows per notch, also while writing |
+| Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
-| Drag a border | resize the sidebar, session list, orchestrator panel or board, also while writing |
-| `<` / `>` | narrow / widen the right-hand column by 4 cells: the board, or the side panel when no board stands beside it, within the limits of a drag; also while the board or the panel holds the keys, text while writing; saved with the view ([What survives a quit](#what-survives-a-quit)) |
+| Drag a border | resize the sidebar, session list or orchestrator panel, also while writing |
+| `<` / `>` | narrow / widen the side panel by 4 cells, within the limits of a drag; text while writing; saved with the view ([What survives a quit](#what-survives-a-quit)) |
 | Click composer | write the selected session, when no other app writes it |
 | `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
@@ -480,9 +476,7 @@ way back. The main column and the orchestrator panel each have their own zoom:
 - `F` or `F full` zooms the open panel, `F side` ends it. It acts on the zoom
   the human asked for, so the narrow fallback (the panel filling the chat column
   when a side panel does not fit) is not a zoom: `F full` there zooms the panel,
-  and a wider frame leaves the zoom on. The board stands beside the zoomed
-  panel when it fits and `b` hides it. If space is tight, `B` opens the board
-  in the panel.
+  and a wider frame leaves the zoom on.
 - The two zooms are independent. `F side` ends the panel's zoom and leaves the
   main column's stored: while the side panel holds the keys the frame shows the
   split, and when the main column holds the keys again, by a click on it or by
@@ -493,7 +487,7 @@ way back. The main column and the orchestrator panel each have their own zoom:
   shows the zoomed main column again. A zoomed panel that is hidden takes its
   zoom with it.
 - `Esc` ends writing, clears a selection, closes the reader or the seat view,
-  or returns from the board to chat. It preserves the current zoom.
+  or hides the panel. It preserves the current zoom.
 - `j` / `k`, the arrows, `1`-`9` and `!` select sessions as ever, over the
   hidden list; the header names the session. A zoomed panel turns side first.
 - `s` and `m` act on the card the last frame drew for the selection. With the
@@ -546,6 +540,35 @@ hides it, `1`-`9`, `j` / `k` and the arrows still step the list beside a side
 panel (a full one turns side first), `v` does nothing, `oo` opens the orchestrator's pane (below), `r` opens
 the reader in the main column, and the rest acts on the panel's chat; `O` and
 `F` are plain text while writing.
+
+The panel's header. A panel bound to a running orchestrator names the session and
+its pair, then the work of the whole fleet, in place of the open ask the other
+headers name: `fleet 7 working · 2 wait you · 4 sessions`. The counts come from
+the fleet listing that `ae list` reads, so they cover every running session on
+every server it reads, the orchestrator included, and they refresh with the
+app's fleet refresh. `working` counts the seats whose recorded declaration is
+`working` and `wait you` the seats that declared `waiting-user`; both leave out
+a seat whose pane is known to be dead, and a seat whose pane the listing could
+not establish still counts. They are the seats' declarations, not what each
+harness shows now. `sessions` counts the running sessions (`1 session` for one).
+A stopped session counts nothing, and a zero stays visible as `0`. When a session's liveness is
+unknown or a source of the listing failed, the two seat counts are lower bounds
+and carry a `+` (`fleet 5+ working · 2+ wait you · 5 sessions`). The segment is
+not the sidebar's Working count, which counts the watchdog verdicts of this
+app's tmux server alone, so the two can differ. The segment shortens in whole
+steps, the longest that fits: `fleet 7 working · 2 wait you · 4 sessions`, then
+`7 working · 2 wait you · 4 sessions`, then `7 working · 2 wait you`, then
+`7 working`. It is never cut, and it disappears when the shortest step no longer
+fits, before the header drops the session and agent names. The activity word
+keeps its place and the segment takes the room it leaves, the branch giving way
+to a longer step first. With short seat names, single-digit counts and the
+44-cell sidebar of a terminal 140 columns wide or more, the side panel shows
+the first step from about 230 columns, the second from about 217 (the
+lower-bound form of the second from about 222), the third from about 191 and
+the fourth from about 165. At the 200 columns of the default layout the side
+panel therefore shows the third step beside the activity word, for example
+`7 working · 2 wait you  active -`. The zoomed panel shows the first step from
+about 95 columns. `F full` / `F side` and `pane` stay on the right.
 
 The panel's pane. A panel bound to a running orchestrator draws the word
 `pane` in its header, left of `F full` / `F side` and plain with any
@@ -606,15 +629,22 @@ switch it off.
 The orchestrator's board is one record of what needs the human, in its session
 directory (`desk-record`), always replaced whole and never edited in place.
 Only the orchestrator seat writes it, with its `desk` helper
-([Helpers](reference/helpers.md#board)); this app, the chat and the Telegram
-bridge only read it. It has five sections in this order: DECIDE, COMING, RUNNING, WAITING ON OTHERS and
+([Helpers](reference/helpers.md#board)); the chat and the Telegram bridge only
+read it. It has five sections in this order: DECIDE, COMING, RUNNING, WAITING ON OTHERS and
 LINKS, with items `D1` to `L99` of at most 160 characters and up to three links
-each, a web URL or an absolute path. The board shows in three places and never in the chat lane: `/board` in the chat
-([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
-message ([Telegram bridge](reference/telegram.md#the-board-message)). The chat's
-`/board`, the Telegram message and this app's RUNNING tab also show the live part
-of the fleet below the board: seat states, ages, reasons and open asks to you,
+each, a web URL or an absolute path. The board shows in two places and never in
+the chat lane: `/board` in the chat ([Chat](chat.md#what-it-shows)) and one
+pinned Telegram message ([Telegram bridge](reference/telegram.md#the-board-message)).
+The chat's `/board` and the Telegram message also show the live part of the
+fleet below the board: seat states, ages, reasons and open asks to you,
 computed by ae itself ([Chat](chat.md#what-it-shows)).
+
+This app draws no board column, board tab, board keys or `desk` cue: the
+panel keeps its whole width, and its header names the work of the fleet
+([Orchestrator panel](#orchestrator-panel)). The record, the `desk` helper and
+the watchdog's notices about it are unchanged. A view saved by a core that still
+drew the column may carry its width, its hidden state and its tab. The app reads
+such a view whole, keeps every other setting and writes it back without them.
 
 `desk check [--all]` reads the board and the fleet and lists what ae itself owes the
 owner: an open ask of the owner, a relay whose target has not answered, a seat
@@ -626,56 +656,6 @@ it in other words, so the orchestrator judges each one by hand. A stopped,
 missing or unreadable target, a lost fleet source and a seat whose launch the
 record cannot prove stay `unresolved coverage`, never answered
 ([Helpers](reference/helpers.md#board)).
-
-The board stands to the right of the open panel in side and full-screen modes.
-Its default width is 36 cells including its left border. It fits from 161
-columns with the default sidebar, or 76 columns in full screen. Drag its border
-to give it as few as 24 cells. The app keeps the width while the column is
-hidden and through an app restart.
-
-Press `b` to hide the board and give the chat the whole width, and `b` again
-to show it. The header names the key as `b hide` or `b show`, and the hint row
-does too where it fits. The choice holds on every width and in zoom, and it
-survives an app restart like the zoom does. While the board is hidden, the
-header says `desk N` when N items wait under DECIDE, `desk unreadable` when the
-record cannot be read, and nothing when no decision waits. `B` does nothing
-until `b` shows the board.
-
-When the column cannot fit, the header says `desk N` for the N decisions or
-`desk unreadable`. Press `B` to show the board in the panel's body. `B` or
-`Esc` returns to the chat at its previous scroll position with its draft kept.
-When the board is adjacent, `B` or a click on the board gives it the keys.
-Use `PgUp` and `PgDn` to scroll the focused board by a page, or wheel over the
-board to scroll three rows per notch. The last row counts hidden rows and
-points toward them.
-
-The column is the line `BOARD  updated HH:MM:SS <zone>`, a bar of five tabs and
-the items of the chosen tab. The tabs are the sections, DECIDE, COMING, RUNNING,
-WAITING and LINKS, each with its item count. An empty section shows `0` and the
-row `no items`. DECIDE is chosen until you pick another tab. While the board has
-the keys, `1` to `5` pick a tab by its place, `Tab` or `Right` step to the next
-tab and `Left` to the previous one, wrapping at both ends. A click on a label
-picks it too, and gives the board the keys unless you write a draft. The line and
-the bar stay in place, only the items scroll, and a new tab starts at its top.
-The labels shorten instead of wrapping: `DECIDE 3` on a wide board, `DEC 3` at
-the default width and `D3` on the narrowest, with the letter of the item ids.
-The chosen tab survives an app restart like the zoom does. The hidden-board
-`desk N` counts DECIDE, whichever tab is chosen.
-
-The RUNNING tab shows the live part below its items: a blank row, the line
-`LIVE  as of HH:MM:SS <zone>`, then a row per session, per seat with its state,
-age and reason, and per open ask to you. The app takes it from its own fleet
-read at most once a minute, so the ages are as of that line. The live rows
-scroll with the items, and no tab counts them. The other tabs show no live
-rows, and the board record is never changed.
-
-The board wraps sanitized items and links to its width. Each visible fragment
-of a wrapped link opens the same URL or `file://` destination. The app reads the
-board with the panel and shows the reason when a record is unreadable. The board
-is read-only. With no record set, the column still stands once the app has read
-the fleet: the `BOARD` line, the five tabs counting `0`, the row `no board set`
-and, under RUNNING, the live part. Until that read, the panel keeps its entire
-width, every click target and its usual header.
 
 ## Session menu
 
@@ -1570,7 +1550,7 @@ The file belongs to the ae home and not to one terminal. One app runs per home
 **What it holds.** The selected session and its seat highlight, the panel open
 or closed and its mode (side with the panel holding the keys, side with the main
 chat holding them, or full, also when the orchestrator is the only session), the
-board hidden with `b` and its tab, the dragged sizes and the main column's zoom.
+dragged sizes and the main column's zoom.
 Scroll positions are hints that ride along. Settings, a viewed seat, drafts,
 marked turns and the stopped group never persist. The per-invocation flags
 (`--tmux`, `--attach`, `--no-attach`, `--no-autostart`) are never saved.
@@ -1596,7 +1576,7 @@ upgrade. The selected session's uuid binds the selection to that incarnation.
 
 **What it restores.**
 
-- The sizes, the zoom, the board's hidden state and its tab apply at once, even
+- The sizes and the zoom apply at once, even
   when the saved session is gone. Only the selection then falls back to the
   fleet view.
 - The selection applies when you name no home: plain `ae`, or `ae app` with no

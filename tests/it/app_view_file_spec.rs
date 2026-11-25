@@ -33,9 +33,6 @@ fn held() -> Handover {
             list_top: None,
             body_top: 0,
             panel: None,
-            desk: Some(44),
-            desk_hidden: true,
-            desk_tab: ae::desk::Section::Running,
             zoom: true,
             orchestrator: None,
         },
@@ -72,7 +69,7 @@ fn a_written_view_reads_back_whole_and_is_private() {
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     let mut again = held();
-    again.view.desk_tab = ae::desk::Section::Links;
+    again.view.sidebar = Some(33);
     saved::write_file(&file, &handover::render_file(&again)).expect("a replacement");
     assert_eq!(read_bounded(&file), Some(again));
     let _ = std::fs::remove_dir_all(&dir);

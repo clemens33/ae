@@ -82,18 +82,8 @@ impl App {
     /// the old frame's cells being the only ones the press can name.
     pub(super) fn zoom_gone(&self, origin: Instant) -> bool {
         self.zoom_cut.is_some_and(|cut| origin <= cut)
-            || (!self.orch.active && {
-                let columns = self.stand_columns();
-                columns.surface() != self.model.columns().surface()
-                    || self.layout.desk_replaces_panel()
-                        != draw::desk_replaces_panel(
-                            self.layout.area(),
-                            self.model.split(),
-                            columns,
-                        )
-                    || self.layout.desk_beside()
-                        != draw::desk_beside(self.layout.area(), self.model.split(), columns)
-            })
+            || (!self.orch.active
+                && self.stand_columns().surface() != self.model.columns().surface())
     }
 
     /// Whether `mouse`, a press made at `origin` on the main column, lands
@@ -185,9 +175,6 @@ impl App {
         {
             return acted;
         }
-        if !self.orch.active && self.layout.in_desk(mouse) {
-            return self.desk_mouse(mouse);
-        }
         if !self.orch.active && self.on_panel(mouse) {
             return self.panel_route(mouse, fresh);
         }
@@ -196,10 +183,8 @@ impl App {
         // keys.
         let area = self.layout.area();
         let drawn = draw::floor_met(area) && area.contains(Position::new(mouse.column, mouse.row));
-        let mut changed = false;
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
-            changed = self.focus_desk(false);
             self.focus_column(false);
             // A full panel kept the keys: a press on a main column cell it
             // covers, aimed at a frame drawn before it turned full, acts on
@@ -213,7 +198,7 @@ impl App {
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);
         }
-        let ended = self.model.let_go() || changed;
+        let ended = self.model.let_go();
         match mouse.kind {
             MouseKind::Click => self.clicked(mouse, fresh) || ended,
             MouseKind::WheelUp | MouseKind::WheelDown => {
@@ -235,32 +220,6 @@ impl App {
             MouseKind::Release => self.finish(mouse) || ended,
             MouseKind::Drag | MouseKind::Menu => ended,
         }
-    }
-
-    fn desk_mouse(&mut self, mouse: Mouse) -> bool {
-        let ended = self.model.let_go();
-        let acted = match mouse.kind {
-            MouseKind::WheelUp | MouseKind::WheelDown => {
-                self.scroll_desk(mouse.kind == MouseKind::WheelUp, false)
-            }
-            MouseKind::Click => {
-                let held = self.held.take().is_some();
-                // A label of the tab bar is an absolute target: it asks for the
-                // section it showed, whichever the board shows now.
-                let tab = match self.layout.hit(mouse) {
-                    Some(draw::Hit::DeskTab(section)) => self.select_desk_tab(section),
-                    _ => false,
-                };
-                let focused = !self.composing() && self.focus_desk(true);
-                if self.layout.link_at(mouse) {
-                    self.web_press(mouse);
-                }
-                focused || held || tab
-            }
-            MouseKind::Release => self.finish(mouse),
-            MouseKind::Drag | MouseKind::Menu => false,
-        };
-        acted || ended
     }
 
     fn web_press(&mut self, mouse: Mouse) {
@@ -301,7 +260,7 @@ impl App {
         let held = self.held.take().is_some();
         if let Some((edge, at)) = self.layout.grab(mouse) {
             let from = match edge {
-                model::Edge::Sidebar | model::Edge::Panel | model::Edge::Desk => mouse.column,
+                model::Edge::Sidebar | model::Edge::Panel => mouse.column,
                 model::Edge::List => mouse.row,
             };
             self.model.grab(model::Drag { edge, from, at });
@@ -358,9 +317,6 @@ impl App {
             | draw::Hit::StatsTab(_)
             | draw::Hit::SettingsClose
             | draw::Hit::PeekClose
-            | draw::Hit::PanelDesk
-            | draw::Hit::PanelDeskToggle(_)
-            | draw::Hit::DeskTab(_)
             | draw::Hit::PanelPane => {
                 return held;
             }
@@ -399,13 +355,8 @@ impl App {
         }
         let area = self.layout.area();
         let split = self.model.split();
-        if drag.edge == model::Edge::Desk && self.model.columns().zoomed() {
-            return self
-                .model
-                .drag_to(draw::zoomed_desk_drag(drag, mouse, area, split));
-        }
         let count = draw::list_len(&self.fleet, self.stopped());
-        let size = draw::dragged_to(drag, mouse, area, split, count, self.desk_stands());
+        let size = draw::dragged_to(drag, mouse, area, split, count);
         self.model.drag_to(size)
     }
 
@@ -419,12 +370,12 @@ impl App {
             .is_some_and(|(edge, size)| self.model.resize(edge, size))
     }
 
-    /// The panel and board borders take presses before the panel does. Their
+    /// The panel border takes presses before the panel does. Its
     /// motion and release stay here wherever the pointer goes, without moving
     /// the keys. A drag of the sidebar or list is the panel's once the pointer
     /// lands on it. `None` for every other event.
     pub(super) fn held_edge(&mut self, mouse: Mouse) -> Option<bool> {
-        let right_edge = |edge| matches!(edge, model::Edge::Panel | model::Edge::Desk);
+        let right_edge = |edge| edge == model::Edge::Panel;
         let dragging = self.model.drag().is_some_and(|drag| right_edge(drag.edge));
         match mouse.kind {
             MouseKind::Click => {

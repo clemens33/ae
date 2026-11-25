@@ -33,9 +33,6 @@ fn saved() -> View {
         list_top: Some(1),
         body_top: 4,
         panel: None,
-        desk: None,
-        desk_hidden: false,
-        desk_tab: crate::desk::Section::Decide,
         zoom: false,
         orchestrator: None,
     }

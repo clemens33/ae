@@ -6,7 +6,6 @@ use super::fleet::Fleet;
 use super::handover::{self, View};
 use crate::config::is_agent_name;
 use crate::console::input;
-use crate::desk::Section;
 use crate::session_launch::name::is_session_name;
 
 /// The chat rows one wheel notch scrolls.
@@ -136,8 +135,6 @@ pub(crate) enum Edge {
     List,
     /// The side panel's border, its left column.
     Panel,
-    /// The board's border, its left column.
-    Desk,
 }
 
 /// The sizes the borders were dragged to, kept for the app's run and clamped
@@ -150,8 +147,6 @@ pub(crate) struct Split {
     pub(crate) list: Option<u16>,
     /// The side panel's width, its border included.
     pub(crate) panel: Option<u16>,
-    /// The board's width, its border included.
-    pub(crate) desk: Option<u16>,
 }
 
 /// A drag in progress: the edge, the pointer's cell along the edge's axis at
@@ -272,14 +267,6 @@ pub struct Model {
     /// frame, the sidebar not drawn. A view preference like the split, so a
     /// restart carries it.
     zoom: bool,
-    /// The human hid the orchestrator board: the column is not drawn and `B`
-    /// does not open it, whatever the width. A view preference, so a restart
-    /// carries it.
-    desk_hidden: bool,
-    /// The board tab the human chose, a section; DECIDE until one is. Whatever
-    /// board the panel reads shows this section. A view preference, so a
-    /// restart carries it.
-    desk_tab: Section,
 }
 
 /// The view state one chat column keeps for itself: the session it shows,
@@ -307,10 +294,6 @@ impl Chat {
 /// How the orchestrator panel stands in the frame, written by the App before
 /// each draw: the button's ink, and the open panel's mode and focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its hiding and focus and the main zoom"
-)]
 pub(crate) struct Columns {
     /// The button wears the needs-you mark.
     pub(crate) needy: bool,
@@ -319,12 +302,6 @@ pub(crate) struct Columns {
     pub(crate) panel: Option<(bool, bool)>,
     /// The frame drawn now is the panel's own column.
     pub(crate) drawing_panel: bool,
-    /// The open panel has a board to show, or could not read its record.
-    pub(crate) desk: bool,
-    /// The human hid that board: no column, no focus.
-    pub(crate) desk_hidden: bool,
-    /// The board holds the keys and can take the panel's body when narrow.
-    pub(crate) desk_focused: bool,
     /// The main column's own zoom ([`Model::zoom`]).
     pub(crate) zoom: bool,
 }
@@ -626,33 +603,6 @@ impl Model {
         }
     }
 
-    /// Whether the human hid the orchestrator board.
-    pub(crate) fn desk_hidden(&self) -> bool {
-        self.desk_hidden
-    }
-
-    /// Hide or show the orchestrator board. A change moves the cells under the
-    /// old coordinates, so it ends a selection the old cells drew.
-    pub(crate) fn set_desk_hidden(&mut self, hidden: bool) {
-        if std::mem::replace(&mut self.desk_hidden, hidden) != hidden {
-            self.moved();
-        }
-    }
-
-    /// The section the board shows.
-    pub(crate) fn desk_tab(&self) -> Section {
-        self.desk_tab
-    }
-
-    /// Show `section` on the board. A change moves the cells under the old
-    /// coordinates, so it ends a selection the old cells drew; the same
-    /// section moves nothing.
-    pub(crate) fn set_desk_tab(&mut self, section: Section) {
-        if std::mem::replace(&mut self.desk_tab, section) != section {
-            self.moved();
-        }
-    }
-
     /// The selected session.
     #[must_use]
     pub fn selected(&self) -> Option<&str> {
@@ -784,8 +734,6 @@ impl Model {
                 peek: self.peek,
                 reader: self.reader,
                 zoom: self.zoom,
-                desk_hidden: self.desk_hidden,
-                desk_tab: self.desk_tab,
                 epoch: self.epoch.wrapping_add(1),
                 ..Self::new(fleet)
             };
@@ -830,11 +778,8 @@ impl Model {
             sidebar: view.sidebar,
             list: view.list,
             panel: view.panel,
-            desk: view.desk,
         };
         self.zoom = view.zoom;
-        self.desk_hidden = view.desk_hidden;
-        self.desk_tab = view.desk_tab;
         self.moved();
     }
 
@@ -850,9 +795,6 @@ impl Model {
             list_top: self.list_top,
             body_top: self.body_top,
             panel: self.split.panel,
-            desk: self.split.desk,
-            desk_hidden: self.desk_hidden,
-            desk_tab: self.desk_tab,
             zoom: self.zoom,
             orchestrator: None,
         }
@@ -876,11 +818,8 @@ impl Model {
                 sidebar: view.sidebar,
                 list: view.list,
                 panel: view.panel,
-                desk: view.desk,
             },
             zoom: view.zoom,
-            desk_hidden: view.desk_hidden,
-            desk_tab: view.desk_tab,
             epoch: self.epoch.wrapping_add(1),
             ..Self::default()
         };
@@ -896,8 +835,6 @@ impl Model {
             peek: self.peek,
             reader: self.reader,
             zoom: self.zoom,
-            desk_hidden: self.desk_hidden,
-            desk_tab: self.desk_tab,
             epoch: self.epoch.wrapping_add(1),
             ..Self::new(fleet)
         };
@@ -944,7 +881,6 @@ impl Model {
             Edge::Sidebar => &mut self.split.sidebar,
             Edge::List => &mut self.split.list,
             Edge::Panel => &mut self.split.panel,
-            Edge::Desk => &mut self.split.desk,
         };
         kept.replace(size) != Some(size)
     }
@@ -1833,83 +1769,6 @@ mod tests {
         moved(&model, &mut last, "a selection that left the fleet");
     }
 
-    /// Hiding the board is a view preference: it counts once as a change of
-    /// what shows, a no-op counts nothing, and a restart or a reconcile that
-    /// drops the selection keeps it.
-    #[test]
-    fn hiding_the_board_is_a_preference_the_model_counts_once_and_keeps() {
-        let both = fleet(&["api", "web"]);
-        let mut model = Model::new(&both);
-        let before = model.epoch();
-        model.set_desk_hidden(true);
-        assert!(model.desk_hidden());
-        assert_eq!(model.epoch(), before + 1);
-        model.set_desk_hidden(true);
-        assert_eq!(
-            model.epoch(),
-            before + 1,
-            "hiding a hidden board moves nothing"
-        );
-        model.restart(&both);
-        assert!(model.desk_hidden(), "a restart keeps it");
-        model.reconcile(&fleet(&["web"]));
-        assert!(model.desk_hidden(), "a selection that left keeps it");
-        let at = model.epoch();
-        model.set_desk_hidden(false);
-        assert!(!model.desk_hidden());
-        assert_eq!(model.epoch(), at + 1);
-        model.set_desk_hidden(false);
-        assert_eq!(model.epoch(), at + 1, "showing a shown board moves nothing");
-    }
-
-    /// Choosing a board tab is a view preference like hiding: one change of
-    /// what shows when it changes, none when it does not, and a restart or a
-    /// reconcile that drops the selection keeps it.
-    #[test]
-    fn choosing_a_board_tab_is_a_preference_the_model_counts_once_and_keeps() {
-        use crate::desk::Section;
-        let both = fleet(&["api", "web"]);
-        let mut model = Model::new(&both);
-        assert_eq!(
-            model.desk_tab(),
-            Section::Decide,
-            "DECIDE until one is chosen"
-        );
-        let before = model.epoch();
-        model.set_desk_tab(Section::Running);
-        assert_eq!(model.desk_tab(), Section::Running);
-        assert_eq!(model.epoch(), before + 1);
-        model.set_desk_tab(Section::Running);
-        assert_eq!(model.epoch(), before + 1, "the shown tab moves nothing");
-        model.restart(&both);
-        assert_eq!(model.desk_tab(), Section::Running, "a restart keeps it");
-        model.reconcile(&fleet(&["web"]));
-        assert_eq!(
-            model.desk_tab(),
-            Section::Running,
-            "a selection that left keeps it"
-        );
-        let at = model.epoch();
-        model.set_desk_tab(Section::Decide);
-        assert_eq!((model.desk_tab(), model.epoch()), (Section::Decide, at + 1));
-    }
-
-    /// The tab rides the view a restart hands over, and the adopting model
-    /// takes it.
-    #[test]
-    fn the_board_tab_rides_the_handed_view() {
-        use crate::desk::Section;
-        let both = fleet(&["api", "web"]);
-        let id = "6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11";
-        let mut model = Model::new(&both);
-        model.set_desk_tab(Section::Links);
-        let view = model.view(id).expect("a selected session");
-        assert_eq!(view.desk_tab, Section::Links);
-        let mut next = Model::new(&both);
-        next.adopt(&both, &view);
-        assert_eq!(next.desk_tab(), Section::Links);
-    }
-
     /// An adopted view changes what the panels show: a selection made at the
     /// count before it is stale.
     #[test]
@@ -1930,9 +1789,6 @@ mod tests {
             list_top: None,
             body_top: 0,
             panel: None,
-            desk: None,
-            desk_hidden: false,
-            desk_tab: crate::desk::Section::Decide,
             zoom: false,
             orchestrator: None,
         };

@@ -364,9 +364,6 @@ mod tests {
             list_top: None,
             body_top: 4,
             panel: None,
-            desk: None,
-            desk_hidden: false,
-            desk_tab: crate::desk::Section::Decide,
             zoom: false,
             orchestrator: None,
         };

@@ -31,9 +31,6 @@ fn view() -> View {
         list_top: Some(1),
         body_top: 4,
         panel: None,
-        desk: None,
-        desk_hidden: false,
-        desk_tab: ae::desk::Section::Decide,
         zoom: false,
         orchestrator: None,
     }
@@ -976,7 +973,7 @@ fn durable_view_refuses_hostile_nodes_and_bytes_then_starts() {
 }
 
 #[test]
-fn durable_view_keeps_a_hidden_board_tab_and_full_panel_without_an_ordinary_session() {
+fn durable_view_keeps_a_full_panel_its_scroll_and_a_closed_panel_without_an_ordinary_session() {
     let rig = Rig::new("diskorch");
     rig.durable_role(WEB_ID);
     for session in [&rig.name, "web"] {
@@ -987,16 +984,22 @@ fn durable_view_keeps_a_hidden_board_tab_and_full_panel_without_an_ordinary_sess
     rig.durable_start(&first, &["app", "orchestrator"]);
     rig.wait(
         &first,
-        "GUARD proven homed role draws its full panel and default board tab",
-        |s| durable_header(s, "F side") && s.contains("Durable decision"),
+        "GUARD proven homed role draws its full panel and no board",
+        |s| {
+            durable_header(s, "F side")
+                && s.contains("DURABLE-TURN-079")
+                && !s.contains("Durable decision")
+                && !durable_header(s, "b hide")
+        },
     );
-    rig.durable_keys(&first, &["B", "3"]);
-    rig.wait(&first, "GUARD RUNNING tab selected", |s| {
-        s.contains("Durable running item")
+    // A scroll alone never writes the view: a change before it does.
+    rig.durable_keys(&first, &["F"]);
+    rig.wait(&first, "GUARD the panel turned side", |s| {
+        durable_header(s, "F full")
     });
-    rig.durable_keys(&first, &["b"]);
-    rig.wait(&first, "GUARD board hidden and latest turn drawn", |s| {
-        durable_header(s, "b show") && s.contains("DURABLE-TURN-079")
+    rig.durable_keys(&first, &["F"]);
+    rig.wait(&first, "GUARD back to the full panel", |s| {
+        durable_header(s, "F side") && s.contains("DURABLE-TURN-079")
     });
     rig.durable_keys(&first, &["PageUp"]);
     rig.wait(
@@ -1012,19 +1015,12 @@ fn durable_view_keeps_a_hidden_board_tab_and_full_panel_without_an_ordinary_sess
     rig.durable_start(&fresh, &["app"]);
     rig.wait(
         &fresh,
-        "fresh app reopens the proved full panel and keeps its board hidden",
+        "fresh app reopens the proved full panel and its scroll",
         |s| {
             durable_header(s, "F side")
-                && durable_header(s, "b show")
-                && !s.contains("Durable running item")
                 && s.contains("newer turns")
+                && !s.contains("Durable decision")
         },
-    );
-    rig.durable_keys(&fresh, &["b"]);
-    rig.wait(
-        &fresh,
-        "showing the board reveals the saved RUNNING tab",
-        |s| s.contains("Durable running item") && !s.contains("Durable decision"),
     );
     rig.durable_quit(&fresh, &["O"]);
 
@@ -1055,10 +1051,9 @@ fn durable_view_keeps_a_hidden_board_tab_and_full_panel_without_an_ordinary_sess
     rig.durable_start(&changed, &["app"]);
     rig.wait(
         &changed,
-        "a proved replacement keeps the full hidden-board view and drops old scroll",
+        "a proved replacement keeps the full view and drops old scroll",
         |s| {
             durable_header(s, "F side")
-                && durable_header(s, "b show")
                 && s.contains("DURABLE-TURN-079")
                 && !s.contains("newer turns")
         },

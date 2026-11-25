@@ -32,7 +32,6 @@ fn panel_lane() -> Answer {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     })
 }

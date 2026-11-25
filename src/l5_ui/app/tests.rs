@@ -34,13 +34,6 @@ use crate::render::Audience;
 use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
-mod boarddrag_spec;
-mod boardfull_spec;
-mod boardgrip_spec;
-mod boardhide_spec;
-mod boardhide_ui_spec;
-mod boardtabs_pins_spec;
-mod boardtabs_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;
@@ -59,7 +52,9 @@ mod o8_transition_spec;
 mod o8_units;
 mod o8_uuid_spec;
 mod o8look_units;
+mod orchhead_spec;
 mod orchpane_spec;
+mod panelgrip_spec;
 mod s2_exec_spec;
 
 pub(in crate::l5_ui::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
@@ -363,7 +358,6 @@ fn view(name: &str, id: &str, seq: u64, body: &str) -> Answer {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     })
 }
@@ -2775,7 +2769,6 @@ fn scrolled(turns: i64) -> App {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     }));
     app
@@ -6007,9 +6000,6 @@ fn handed(pages: usize, rows: usize) -> Answer {
         list_top: None,
         body_top: 0,
         panel: None,
-        desk: None,
-        desk_hidden: false,
-        desk_tab: crate::desk::Section::Decide,
         zoom: false,
         orchestrator: None,
     };
@@ -6074,7 +6064,6 @@ fn a_restored_scroll_survives_the_frame_before_its_lane_is_read() {
             coverage: Vec::new(),
         },
         needs: None,
-        desk: None,
         roster: None,
     }));
     let _ = framed(&mut app);

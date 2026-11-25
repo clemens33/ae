@@ -20,6 +20,7 @@ mod app_mouse_spec;
 mod app_open_hook_spec;
 mod app_open_live_spec;
 mod app_open_pure_spec;
+mod app_orchhead_spec;
 mod app_peek_spec;
 mod app_resize_spec;
 mod app_restart_busy;

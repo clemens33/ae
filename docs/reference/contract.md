@@ -45,8 +45,8 @@ src/                — Rust sources. main.rs is thin (argv in, exit code out). 
                       under `desk-record.lock`, one `desk` event per change), is `deskstore`; l3_services/deskcmd.rs
                       is the `desk` session helper over it (`desk show`, `desk set`, `desk check`);
                       l3_services/deskcheck.rs is `desk check`'s read-only report.
-                      console/deskview.rs turns it into rows for the app column and
-                      `/board`; telegram/desk.rs keeps one pinned Telegram message in step with
+                      console/deskview.rs turns it into rows for `/board`;
+                      telegram/desk.rs keeps one pinned Telegram message in step with
                       it, its checkpoint and Telegram-answer readers fuzzed as `desk_pin`.
                       l3_services/desklive.rs is the board's live part: one fleet read
                       turned into seat states, ages, reasons and open asks to the human,

@@ -314,26 +314,77 @@ fn a_listed_namesake_read_leaves_the_open_panel_on_its_pinned_lane() {
     );
 }
 
-use super::boarddrag_spec::{board_rules, drag_rule, shown_board};
+/// An app beside two sessions with the orchestrator panel open next to the
+/// main column.
+fn shown_panel() -> App {
+    let mut app = app(None);
+    two(&mut app);
+    app.orch.proof = loader::Proof::Proven(OID.to_owned());
+    app.dirs.insert(ORCH.to_owned(), PathBuf::from(ORCH));
+    app.ids.insert(ORCH.to_owned(), OID.to_owned());
+    app.open_panel(false);
+    app
+}
 
-#[test]
-fn the_board_border_follows_the_pointer() {
-    let mut app = shown_board();
-    assert_eq!(board_rules(&mut app, 200), [44, 105, 164]);
-    drag_rule(&mut app, 164, 159);
-    assert_eq!(board_rules(&mut app, 200).last(), Some(&159));
+/// The columns of the last row of a `width` wide frame that draw a rule.
+fn panel_rules(app: &mut App, width: u16) -> Vec<u16> {
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, 45));
+    app.frame(&mut buf);
+    app.frame_shown(Instant::now());
+    (0..width)
+        .filter(|&x| buf[(x, 44)].symbol() == "│")
+        .collect()
+}
+
+/// Press the rule at `from`, drag to `to` and let go.
+fn drag_rule(app: &mut App, from: u16, to: u16) {
+    for (kind, column) in [
+        (MouseKind::Click, from),
+        (MouseKind::Drag, to),
+        (MouseKind::Release, to),
+    ] {
+        app.mouse_made(
+            Mouse {
+                kind,
+                column,
+                row: 5,
+            },
+            Instant::now(),
+        );
+    }
 }
 
 #[test]
-fn the_panel_border_moves_with_a_board_and_when_the_board_does_not_fit() {
-    let mut app = shown_board();
-    assert_eq!(board_rules(&mut app, 200), [44, 105, 164]);
-    drag_rule(&mut app, 105, 110);
-    assert_eq!(board_rules(&mut app, 200), [44, 110, 164]);
-    assert_eq!(board_rules(&mut app, 150), [44, 96]);
-    drag_rule(&mut app, 96, 91);
-    assert_eq!(board_rules(&mut app, 150), [44, 91]);
-    assert_eq!(board_rules(&mut app, 100), [34], "narrow panel fallback");
+fn the_panel_border_follows_the_pointer() {
+    let mut app = shown_panel();
+    let rules = panel_rules(&mut app, 200);
+    let [sidebar, border] = rules[..] else {
+        panic!("a sidebar rule and the panel's border, no more: {rules:?}");
+    };
+    // Moving the border left widens the panel by as much.
+    drag_rule(&mut app, border, border - 5);
+    assert_eq!(panel_rules(&mut app, 200), [sidebar, border - 5]);
+    drag_rule(&mut app, border - 5, border + 3);
+    assert_eq!(panel_rules(&mut app, 200), [sidebar, border + 3]);
+}
+
+#[test]
+fn the_panel_border_is_drawn_only_while_both_chat_columns_keep_their_floor() {
+    let mut app = shown_panel();
+    let side = panel_rules(&mut app, 200);
+    assert_eq!(
+        side.len(),
+        2,
+        "the sidebar rule and the panel's border: {side:?}"
+    );
+    assert_eq!(
+        panel_rules(&mut app, 100).len(),
+        1,
+        "a narrow frame keeps the sidebar rule alone"
+    );
     app.flip_panel();
-    assert_eq!(board_rules(&mut app, 200), [164], "full panel");
+    assert!(
+        !panel_rules(&mut app, 200).contains(&side[1]),
+        "a full panel has no side border"
+    );
 }

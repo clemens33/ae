@@ -27,16 +27,16 @@
 //! `v1` alone reads the `overview` token. The panel's own full-frame zoom rides
 //! as the `full` mode, in `v2` or `v3`.
 //!
-//! The board's view preferences add `|desk=<parts>` after any of these
-//! canonical lines. The parts that apply, comma-joined in this order, are the
-//! dragged width `<width>`, `hidden` for a hidden board and `tab=<name>` for a
-//! chosen tab (`|desk=44,hidden,tab=links`). The name is `coming`, `running`,
-//! `waiting` or `links`: DECIDE is the default and is never written. With none
-//! of the three, all three encodings keep their old bytes.
+//! A core that still drew the orchestrator board wrote its view preferences as
+//! `|desk=<parts>` after any of these canonical lines: the dragged width
+//! `<width>`, `hidden` and `tab=<name>` (`coming`, `running`, `waiting` or
+//! `links`), comma-joined in this order, at least one. The board is gone, so
+//! [`parse`] still reads that suffix by its strict grammar and drops the
+//! values, and [`Handover::render`] never writes it: the line keeps every
+//! other setting.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
-use crate::desk::Section;
 use crate::session_launch::name::is_session_name;
 
 /// The session option the handover rides.
@@ -91,12 +91,6 @@ pub struct View {
     /// The side panel's width as dragged, its border column included; the
     /// layout clamps it, never this preference.
     pub panel: Option<u16>,
-    /// The board's dragged width, including its left border.
-    pub desk: Option<u16>,
-    /// The human hid the board, whatever the width.
-    pub desk_hidden: bool,
-    /// The section the board shows: DECIDE until the human chose another.
-    pub desk_tab: Section,
     /// The main column was zoomed: it holds the whole frame while it holds
     /// the keys, the sidebar not drawn. Independent of the panel's own zoom.
     pub zoom: bool,
@@ -217,27 +211,12 @@ impl Handover {
             view.body_top.min(PAGES_MAX).to_string(),
         ];
         let line = fields.join("|");
-        let line = match (&view.orchestrator, view.panel) {
+        match (&view.orchestrator, view.panel) {
             // The main column's zoom is the tag; its panel field is always there.
             (None, width) if view.zoom => format!("{line}|{}", small(width)),
             (Some(orch), width) => format!("{line}|{}|{}", small(width), orch.render()),
             (None, Some(width)) => format!("{line}|{width}"),
             (None, None) => line,
-        };
-        let mut desk = Vec::new();
-        if let Some(width) = view.desk {
-            desk.push(width.to_string());
-        }
-        if view.desk_hidden {
-            desk.push("hidden".to_owned());
-        }
-        if let Some(name) = tab_name(view.desk_tab) {
-            desk.push(format!("tab={name}"));
-        }
-        if desk.is_empty() {
-            line
-        } else {
-            format!("{line}|desk={}", desk.join(","))
         }
     }
 
@@ -272,10 +251,11 @@ pub fn render_file(held: &Handover) -> String {
 /// The handover the durable file's `bytes` spell, or `None` unless they are
 /// exactly what [`render_file`] writes: at most [`FILE_CAP`] bytes, valid
 /// UTF-8, one canonical line (the live parser's two legacy spellings are not
-/// canonical), one line feed and nothing after it. The file is
-/// hostile input like the option and the argument. Its pane, version and age
-/// are never judged: the file is for no pane and outlives every upgrade, and
-/// the uuid binds what it carries.
+/// canonical) with at most the retired `|desk=` suffix a core with the board
+/// wrote, one line feed and nothing after it. The file is hostile input like
+/// the option and the argument. Its pane, version and age are never judged:
+/// the file is for no pane and outlives every upgrade, and the uuid binds what
+/// it carries.
 #[must_use]
 pub fn parse_file(bytes: &[u8]) -> Option<Handover> {
     if bytes.len() > FILE_CAP {
@@ -283,9 +263,12 @@ pub fn parse_file(bytes: &[u8]) -> Option<Handover> {
     }
     let line = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
     // The live option still reads the older core's `overview` token and an
-    // empty trailing panel width. No older core ever wrote this file, so it
-    // has exactly one spelling: what does not render back is refused.
-    parse(line).filter(|held| held.render() == line)
+    // empty trailing panel width. No older core ever wrote this file with
+    // them, so it has one spelling: what does not render back is refused. The
+    // retired board suffix is checked by `parse` and is the one thing a file
+    // may carry that its rewrite drops.
+    let canonical = line.rsplit_once("|desk=").map_or(line, |(base, _)| base);
+    parse(line).filter(|held| held.render() == canonical)
 }
 
 /// Whether a handover written at `at` may still be used at `now`: not from the
@@ -353,36 +336,28 @@ fn size(text: &str, max: usize) -> Option<usize> {
     usize::try_from(number(text, max as u64)?).ok()
 }
 
-/// The spelling of the board tab in the wire; `None` for DECIDE, which is the
-/// default and has no spelling.
-fn tab_name(section: Section) -> Option<&'static str> {
-    match section {
-        Section::Decide => None,
-        Section::Coming => Some("coming"),
-        Section::Running => Some("running"),
-        Section::Waiting => Some("waiting"),
-        Section::Links => Some("links"),
-    }
-}
+/// The board tab names a retired suffix may carry. DECIDE was the default and
+/// was never written.
+const LEGACY_TABS: [&str; 4] = ["coming", "running", "waiting", "links"];
 
-/// What the text after `|desk=` spells: the dragged width, whether the board
-/// is hidden and the chosen tab, as the parts `<width>`, `hidden` and
-/// `tab=<name>` in that order, comma-joined, at least one and nothing else.
-fn desk_suffix(text: &str) -> Option<(Option<u16>, bool, Section)> {
+/// Whether the text after `|desk=` is a spelling a core with the board could
+/// have written: the dragged width, `hidden` and `tab=<name>` in that order,
+/// comma-joined, at least one and nothing else. The values are not kept.
+fn legacy_desk_suffix(text: &str) -> bool {
     let mut parts = text.split(',').peekable();
-    let width = match parts.next_if(|part| part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+    if let Some(width) =
+        parts.next_if(|part| part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+        && number(width, u64::from(u16::MAX)).is_none()
     {
-        Some(part) => Some(u16::try_from(number(part, u64::from(u16::MAX))?).ok()?),
-        None => None,
-    };
-    let hidden = parts.next_if_eq(&"hidden").is_some();
-    let tab = match parts.next_if(|part| part.starts_with("tab=")) {
-        Some(part) => Section::ALL
-            .into_iter()
-            .find(|section| tab_name(*section) == part.strip_prefix("tab="))?,
-        None => Section::Decide,
-    };
-    parts.next().is_none().then_some((width, hidden, tab))
+        return false;
+    }
+    parts.next_if_eq(&"hidden");
+    if let Some(tab) = parts.next_if(|part| part.starts_with("tab="))
+        && !LEGACY_TABS.contains(&&tab["tab=".len()..])
+    {
+        return false;
+    }
+    parts.next().is_none()
 }
 
 /// The handover `text` spells, or `None` unless it is exactly canonical.
@@ -391,10 +366,15 @@ pub fn parse(text: &str) -> Option<Handover> {
     if text.len() > CAP {
         return None;
     }
+    // A retired board suffix is checked and dropped: it was one canonical
+    // spelling and a bad one stays refused.
     let (text, desk) = match text.rsplit_once("|desk=") {
-        Some((text, width)) => (text, Some(width)),
+        Some((text, suffix)) => (text, Some(suffix)),
         None => (text, None),
     };
+    if desk.is_some_and(|suffix| !legacy_desk_suffix(suffix)) {
+        return None;
+    }
     let parts: Vec<&str> = text.split('|').collect();
     let (parts, panel, orchestrator, zoom) = match (parts.first().copied()?, parts.as_slice()) {
         ("v1", fields) if fields.len() == 14 => (fields, "", None, false),
@@ -453,10 +433,6 @@ pub fn parse(text: &str) -> Option<Handover> {
     };
     let list_top = optional(list_top, ROWS_MAX as u64)?;
     let list_top = list_top.map(usize::try_from).transpose().ok()?;
-    let (desk, desk_hidden, desk_tab) = match desk {
-        Some(text) => desk_suffix(text)?,
-        None => (None, false, Section::Decide),
-    };
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
         id: is_canonical_uuid(id).then(|| (*id).to_owned())?,
@@ -468,9 +444,6 @@ pub fn parse(text: &str) -> Option<Handover> {
         list_top,
         body_top: size(body_top, PAGES_MAX)?,
         panel: small(panel)?,
-        desk,
-        desk_hidden,
-        desk_tab,
         zoom,
         orchestrator,
     };
@@ -584,10 +557,6 @@ mod tests {
     /// file's cap, so the cap is never what refuses a valid file.
     #[test]
     fn the_longest_canonical_line_stays_well_inside_the_file_cap() {
-        let tab = Section::ALL
-            .into_iter()
-            .max_by_key(|section| tab_name(*section).map_or(0, str::len))
-            .expect("a tab");
         let view = View {
             session: "a".repeat(128),
             id: ORCH_ID.to_owned(),
@@ -599,9 +568,6 @@ mod tests {
             list_top: Some(ROWS_MAX),
             body_top: PAGES_MAX,
             panel: Some(u16::MAX),
-            desk: Some(u16::MAX),
-            desk_hidden: true,
-            desk_tab: tab,
             zoom: true,
             orchestrator: Some(OrchestratorView {
                 id: ORCH_ID.to_owned(),
@@ -696,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn a_board_width_extends_each_canonical_view_without_changing_older_wires() {
+    fn a_retired_board_suffix_reads_on_each_canonical_view_and_is_never_written() {
         let open_panel = format!("side,{ORCH_ID},0,0");
         let side = WIRE.replacen("v1|", "v2|", 1);
         let zoom = WIRE.replacen("v1|", "v3|", 1);
@@ -707,14 +673,22 @@ mod tests {
             format!("{zoom}|"),
             format!("{zoom}|56|{open_panel}"),
         ] {
-            let old_view = parse(&old).expect("an old view");
-            assert_eq!(old_view.view.desk, None);
-            assert_eq!(old_view.render(), old);
-
-            let extended = format!("{old}|desk=44");
-            let new_view = parse(&extended).expect("a view with a board width");
-            assert_eq!(new_view.view.desk, Some(44));
-            assert_eq!(new_view.render(), extended);
+            let plain = parse(&old).expect("a view without the suffix");
+            assert_eq!(plain.render(), old);
+            for suffix in [
+                "44",
+                "hidden",
+                "44,hidden",
+                "tab=links",
+                "tab=running",
+                "hidden,tab=coming",
+                "44,hidden,tab=waiting",
+            ] {
+                let text = format!("{old}|desk={suffix}");
+                let read = parse(&text).unwrap_or_else(|| panic!("refused {text:?}"));
+                assert_eq!(read.view, plain.view, "{text}");
+                assert_eq!(read.render(), old, "the suffix is not written back: {text}");
+            }
         }
         let overview = WIRE.replace("|agents|", "|overview|");
         for bad in [
@@ -727,31 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_board_extends_each_canonical_view_with_or_without_a_width() {
-        let open_panel = format!("side,{ORCH_ID},0,0");
-        let side = WIRE.replacen("v1|", "v2|", 1);
-        let zoom = WIRE.replacen("v1|", "v3|", 1);
-        for old in [
-            WIRE.to_owned(),
-            format!("{WIRE}|56"),
-            format!("{side}||{open_panel}"),
-            format!("{zoom}|"),
-            format!("{zoom}|56|{open_panel}"),
-        ] {
-            for (suffix, desk) in [("hidden", None), ("44,hidden", Some(44))] {
-                let text = format!("{old}|desk={suffix}");
-                let read = parse(&text).expect("a view with a hidden board");
-                assert_eq!((read.view.desk, read.view.desk_hidden), (desk, true));
-                assert_eq!(read.render(), text);
-            }
-            let shown = parse(&format!("{old}|desk=44")).expect("a view with a board width");
-            assert!(!shown.view.desk_hidden);
-            assert!(!parse(&old).expect("an old view").view.desk_hidden);
-        }
-    }
-
-    #[test]
-    fn a_hidden_board_has_one_spelling_and_the_overview_token_never_carries_it() {
+    fn a_retired_board_suffix_has_one_spelling_and_the_overview_token_never_carries_it() {
         let overview = WIRE.replace("|agents|", "|overview|");
         for bad in [
             format!("{WIRE}|desk="),
@@ -763,6 +713,9 @@ mod tests {
             format!("{WIRE}|desk=44, hidden"),
             format!("{WIRE}|desk=Hidden"),
             format!("{WIRE}|desk=hidden|desk=44"),
+            format!("{WIRE}|desk=44,65536"),
+            format!("{WIRE}|desk=tab=decide"),
+            format!("{WIRE}|desk=tab="),
             format!("{WIRE}||desk=hidden"),
             format!("{overview}|desk=hidden"),
             format!("{overview}|desk=44,hidden"),
