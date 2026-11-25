@@ -2368,3 +2368,6 @@ fn a_hostile_or_oversized_settings_file_yields_no_plan_and_no_sentinel() {
     // word, not the cap's.
     assert!(text.contains("read-error"), "{text}");
 }
+
+#[path = "quota/quarantine2_tty_spec.rs"]
+mod quarantine2_tty_spec;
