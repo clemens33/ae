@@ -3180,8 +3180,10 @@ fn choose_guarded(
     for candidate in candidates {
         let guarded = || pair.and_then(|pair| judge(pair, &candidate.profile));
         let floored = candidate.floor.as_ref();
-        // A vendor block is named first, before the floor: a destination both
-        // below the floor and blocked keeps its block witness in the hold.
+        // A vendor block is named first, before the floor and every quota
+        // reading: no window says the vendor serves that account again, only a
+        // human's clear does, and a destination both below the floor and
+        // blocked keeps its block witness in the hold.
         let passed = candidate
             .blocked
             .as_ref()
@@ -3245,11 +3247,6 @@ fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip
     }
     if !candidate.configured {
         return Some(Skip::Unconfigured);
-    }
-    // A vendor block outranks every quota reading: no window says the vendor
-    // serves that account again, only a human's clear does.
-    if candidate.blocked.is_some() {
-        return Some(Skip::Blocked);
     }
     if candidate.peer_latched {
         return Some(Skip::PeerLatched);

@@ -1645,20 +1645,19 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
 
 /// `text` as one control-free line of at most [`SUMMARY_CHARS`], or through a named
 /// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole. A
-/// line that names a candidate passed over for its vendor block keeps
-/// everything through that first block witness (its scope, time and stored
-/// reason) up to `REASON_MAX`: the hold is where the human reads why. The
+/// no-candidate hold that a vendor block took part in ([`no_candidate`]) keeps
+/// up to `REASON_MAX`, which always holds its leading block witness (scope,
+/// time and the stored reason, at most `vendorblock::REASON_MAX`): the hold is
+/// where the human reads why. It is known by its head, which only that
+/// formatter writes at the start of the line, never by text inside it. The
 /// third rule is not here: a refused return's record is bounded whole by
 /// [`refused_return`] and written by [`close_refused_return`] alone.
 fn bounded(text: &str) -> String {
     let clean = crate::seatpack::neutralise(text);
-    let witness = format!(" ({BLOCK_WORD})");
-    if let Some(at) = clean.find(&witness) {
-        let through = clean[..at + witness.len()].chars().count();
-        let keep = through.clamp(SUMMARY_CHARS, crate::state::REASON_MAX);
+    if clean.starts_with(&blocked_hold_head()) {
         return crate::state::summary_of(&clean)
             .chars()
-            .take(keep)
+            .take(crate::state::REASON_MAX)
             .collect();
     }
     let keep = match (clean.find("ae reseat "), clean.find(STOP_UNKNOWN)) {
@@ -2465,9 +2464,20 @@ fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
     }
 }
 
-/// The refusal that names each candidate passed over, and why.
+/// The refusal that names each candidate passed over, and why. When a vendor
+/// block passed one over, the first such witness leads the line
+/// ([`blocked_hold_head`]), so no number of earlier candidates can push it out
+/// of the hold [`bounded`] keeps.
 fn no_candidate(skipped: &[(String, Skip)]) -> String {
-    CauseClass::NoCandidate.lead(&format!("refused: {}", unusable(skipped)))
+    match skipped.iter().find(|(_, skip)| *skip == Skip::Blocked) {
+        Some((witness, _)) => format!("{}{witness}; {}", blocked_hold_head(), unusable(skipped)),
+        None => CauseClass::NoCandidate.lead(&format!("refused: {}", unusable(skipped))),
+    }
+}
+
+/// The head of a no-candidate hold a vendor block took part in.
+fn blocked_hold_head() -> String {
+    CauseClass::NoCandidate.lead(&format!("refused: {BLOCK_WORD} on "))
 }
 
 /// The refusal of a choice with no pick, and its class: `pair-provider` when
@@ -3858,22 +3868,42 @@ mod seatinc_spec;
 mod tests {
     use super::*;
 
-    /// A hold whose only destination is blocked keeps the whole stored reason
-    /// (the record's 200-char cap) in its durable journal summary, though an
-    /// ordinary summary stops at [`SUMMARY_CHARS`].
+    /// A hold a vendor block took part in leads with the first block witness
+    /// and keeps the whole stored reason (the record's 200-char cap) in its
+    /// durable journal summary, however many candidates came before it. A
+    /// no-candidate line with no block, and a line that merely quotes the
+    /// marker, stop at [`SUMMARY_CHARS`].
     #[test]
     fn a_blocked_hold_keeps_the_whole_stored_reason() {
-        let reason = format!("{}END", "x".repeat(197));
-        let skipped = vec![(
+        let reason = format!("{}END (vendor block) tail", "x".repeat(180));
+        let mut skipped: Vec<(String, Skip)> = (0..40)
+            .map(|index| (format!("unset{index}"), Skip::Unconfigured))
+            .collect();
+        skipped.push((
             format!("mus [client-muse since 2026-09-08T09:10:00Z: {reason}]"),
             Skip::Blocked,
-        )];
+        ));
         let kept = bounded(&no_candidate(&skipped));
         assert!(
-            kept.contains(&format!("{reason}] (vendor block)")),
-            "{kept}"
+            kept.starts_with(&format!(
+                "{}mus [client-muse since 2026-09-08T09:10:00Z: {reason}]; ",
+                blocked_hold_head()
+            )),
+            "the first block witness leads, whole, after 40 earlier candidates: {kept}"
         );
         assert!(kept.chars().count() <= crate::state::REASON_MAX);
+        let unblocked = bounded(&no_candidate(&skipped[..40]));
+        assert_eq!(unblocked.chars().count(), SUMMARY_CHARS, "{unblocked}");
+        let quoted = bounded(&format!(
+            "{} (vendor block) {}",
+            "z".repeat(100),
+            "y".repeat(300)
+        ));
+        assert_eq!(
+            quoted.chars().count(),
+            SUMMARY_CHARS,
+            "marker text inside is no hold"
+        );
         let ordinary = bounded(&"y".repeat(400));
         assert_eq!(ordinary.chars().count(), SUMMARY_CHARS);
     }
