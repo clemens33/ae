@@ -767,9 +767,9 @@ pub fn clear(state_root: &std::path::Path, target: Target<'_>) -> Cleared {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAP, Cleared, Kind, REASON_MAX, Record, SEAT_MAX, Scope, Standing, TOOL_MAX, Target, block,
-        clean, clear, file_name, parse, provider_of, record_first, render, scope_refusal_in,
-        standing,
+        CAP, Cleared, Kind, REASON_MAX, Record, SEAT_MAX, Scope, Standing, TOOL_MAX, Target,
+        approved_scopes, block, clean, clear, file_name, parse, provider_of, record_first, render,
+        scope_refusal, scope_refusal_in, standing,
     };
 
     fn sample() -> Record {
@@ -1233,6 +1233,40 @@ mod tests {
         bare = opencode --model deepseek\n\
         nomodel = opencode\n\
         emberm = muse --model muse-ember-1.0\n";
+
+    /// A `profile@client` spawn launches the pair the global file alone
+    /// resolves, so its block is judged on that file: a project overlay that
+    /// moves the profile onto another provider must not move the judged record.
+    #[test]
+    fn a_pair_is_judged_on_the_global_file_whatever_the_overlay_says() {
+        let root = scratch("pairglobal");
+        let global = root.join("config");
+        let local = root.join("overlay");
+        std::fs::write(
+            &global,
+            "[clients]\nopencode = opencode\nocwork = opencode\n\n\
+             [profiles]\ncop = opencode --model github-copilot/gpt-6.1-sol\n",
+        )
+        .expect("global");
+        std::fs::write(&local, "[profiles]\ncop = opencode --model opencode-go/glm-5\n")
+            .expect("overlay");
+        let on_ocwork = |provider: &str| Record {
+            client: "ocwork".to_owned(),
+            provider: Some(provider.to_owned()),
+            ..copilot()
+        };
+        assert_eq!(record_first(&root, &on_ocwork("github-copilot")).ok(), Some(true));
+        assert_eq!(record_first(&root, &on_ocwork("opencode-go")).ok(), Some(true));
+        let at = copilot().since;
+        let why = scope_refusal(&root, &global, Some(&local), "cop", Some("ocwork"), at)
+            .expect("the global pair is in the Copilot scope");
+        assert!(
+            why.contains("ae quota clear provider-github-copilot"),
+            "{why}"
+        );
+        assert!(!why.contains("opencode-go"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_scope_refusal_keys_an_opencode_block_by_the_model_provider() {
