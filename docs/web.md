@@ -174,7 +174,8 @@ verbatim.
   48 characters. **Edit slug** turns the slug into a field of its own, and it stays one. The line is
   `#<slug> new <title>`, shown before it is sent. A slug that does not fit `[a-z0-9][a-z0-9-]*` or
   that is a topic already cannot be sent. After a receipt the page shows `asked for #<slug>` until
-  that topic appears in the column, or for 10 minutes at most.
+  the orchestrator has filed that topic (a row with a title, a state or a review; the bare row
+  that the open ask itself makes does not count), or for 10 minutes at most.
 - **Undo, 5 s.** A press sends nothing. The line counts down for 5 s with an **Undo**, and only
   then does the page ask for a draft id and post. An Undo, a hidden page, a changed orchestrator
   route, a changed decision and a new topic whose slug has become a topic cancel the line before

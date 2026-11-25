@@ -440,8 +440,12 @@ async function carry(body, show) {
 
 const UNDO_MS = 5000;
 const TICK_MS = 250;
-// How long a topic asked for is shown as asked: a row that shows up ends it sooner.
+// How long a topic asked for is shown as asked: a filed topic that shows up ends it sooner.
 const ASKED_MS = 10 * 60 * 1000;
+// A row is a filed topic when the orchestrator recorded it: a title, a state or a review. The
+// server also shows a bare row for each tag of an open ask, with none of the three, and the
+// request for a new topic is such an ask, so that row is no proof the topic exists.
+const filed = (row) => row.title !== null || row.state !== null || row.reviewed !== "";
 const SLUG_FOLD = { "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss" };
 const ONE_LINE = "One line only: no line break or control character.";
 const COMPOSE = { slug_max: 48, title_max: 80, answer_max: 120 };
@@ -638,7 +642,7 @@ function makeLines(live, redraw) {
         api.cancel(key, "the orchestrator changed, reload.");
         return;
       }
-      if (r.slug && live.known.has(r.slug)) {
+      if (r.slug && live.occupied.has(r.slug)) {
         api.cancel(key, "#" + r.slug + " is a topic already.");
         return;
       }
@@ -745,7 +749,7 @@ function makeLines(live, redraw) {
       for (const [key, r] of [...live.recs]) {
         if (r.phase === "count" && (!live.route || live.route.id !== r.route.id)) {
           api.cancel(key, "the orchestrator changed, reload.");
-        } else if (r.phase === "count" && r.slug && live.known.has(r.slug)) {
+        } else if (r.phase === "count" && r.slug && live.occupied.has(r.slug)) {
           api.cancel(key, "#" + r.slug + " is a topic already.");
         }
         const row = r.item ? current(r.item) : null;
@@ -770,7 +774,7 @@ function useLines(state) {
   const [, setVersion] = useState(0);
   const box = useRef(null);
   if (box.current === null) {
-    const live = { recs: new Map(), said: new Map(), asked: [], askedTimer: 0, known: new Set(), tick: 0, route: null, decide: [] };
+    const live = { recs: new Map(), said: new Map(), asked: [], askedTimer: 0, known: new Set(), occupied: new Set(), tick: 0, route: null, decide: [] };
     live.api = makeLines(live, () => setVersion((n) => n + 1));
     box.current = live;
   }
@@ -778,7 +782,11 @@ function useLines(state) {
   const desk = state && state.desk ? state.desk : null;
   live.route = state ? state.route : null;
   live.decide = desk && desk.decide ? desk.decide : [];
-  live.known = new Set(desk ? desk.groups.flatMap((group) => group.rows.map((row) => row.slug)) : []);
+  const rows = desk ? desk.groups.flatMap((group) => group.rows) : [];
+  // occupied: any row, bare or filed, which the form and the countdown fences refuse a new topic for;
+  // known: the filed ones, which are the only proof for the asked chip.
+  live.occupied = new Set(rows.map((row) => row.slug));
+  live.known = new Set(rows.filter(filed).map((row) => row.slug));
   useEffect(() => {
     live.api.reconcile();
   }, [state]);
