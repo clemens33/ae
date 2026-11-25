@@ -2,7 +2,9 @@
 //! 1): a block stamped in a later second than the request, while the move
 //! waits for the lifecycle lock, holds the move with the original untouched.
 //! A removed recheck, or one judged at the request's own instant (to which
-//! the record is future-dated, so no block), would stop the seat.
+//! the record is future-dated, so no block), would stop the seat. A block
+//! that already stands is named at admission, before the move waits for the
+//! lock at all: without that check a held lock answers with its own timeout.
 
 #![allow(
     clippy::expect_used,
@@ -40,17 +42,76 @@ fn install_scoped_profile(rig: &Rig) {
     .expect("the blocked profile");
 }
 
+/// The Copilot provider's block record, stamped `since`.
+fn plant(rig: &Rig, since: u64, seat: &str, reason: &str) {
+    let dir = rig.scratch.join("vendorblock");
+    fs::create_dir_all(&dir).expect("block directory");
+    fs::write(
+        dir.join("provider-github-copilot.rec"),
+        format!(
+            "version=1\ntool=opencode\nclient=ocfixture\nprovider=github-copilot\n\
+             since={since}\nkind=account\nseat={seat}\nreason={reason}\n"
+        ),
+    )
+    .expect("a block record");
+}
+
+fn epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+}
+
+fn lifecycle_lock(rig: &Rig) -> std::path::PathBuf {
+    rig.scratch
+        .join("sessions")
+        .join(format!(".lifecycle.{}.lock", rig.session))
+}
+
+#[test]
+fn a_standing_block_is_named_at_admission_while_the_lock_is_held() {
+    const STANDING: &str = "Fixture vendor account suspended earlier";
+    let rig = Rig::new("q2adm");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    install_scoped_profile(&rig);
+    plant(&rig, epoch() - 60, "earlier", STANDING);
+    let original = rig.tool_pid(&pane, "claude").expect("original tool");
+    let held =
+        ae::store::lock(&lifecycle_lock(&rig), Duration::ZERO).expect("fixture lifecycle lock");
+
+    let (code, _, err) = rig.run_top(
+        &rig.main_pane,
+        &[
+            "reseat",
+            &rig.session,
+            "scout",
+            "--using",
+            "blocked-profile",
+        ],
+    );
+    drop(held);
+
+    assert_ne!(code, Some(0), "{err}");
+    for part in ["provider-github-copilot", STANDING] {
+        assert!(err.contains(part), "missing {part:?} in {err}");
+    }
+    assert!(
+        !err.contains("another lifecycle operation holds"),
+        "a standing block is named before the lock wait: {err}"
+    );
+    assert_eq!(rig.tool_pid(&pane, "claude"), Some(original), "{err}");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude");
+}
+
 #[test]
 fn a_block_stamped_while_the_move_waits_for_the_lock_holds_it() {
     let rig = Rig::new("q2late");
     let pane = rig.seat("spawned.0", "scout", "claude");
     install_scoped_profile(&rig);
     let original = rig.tool_pid(&pane, "claude").expect("original tool");
-    let lock = rig
-        .scratch
-        .join("sessions")
-        .join(format!(".lifecycle.{}.lock", rig.session));
-    let held = ae::store::lock(&lock, Duration::ZERO).expect("fixture lifecycle lock");
+    let held =
+        ae::store::lock(&lifecycle_lock(&rig), Duration::ZERO).expect("fixture lifecycle lock");
 
     let mut child = super::super::cli::ae()
         .env("TMUX", format!("{},0,0", rig.sock.display()))
@@ -90,20 +151,7 @@ fn a_block_stamped_while_the_move_waits_for_the_lock_holds_it() {
         err.push('\n');
     }
     std::thread::sleep(Duration::from_millis(1_200));
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_secs();
-    let dir = rig.scratch.join("vendorblock");
-    fs::create_dir_all(&dir).expect("block directory");
-    fs::write(
-        dir.join("provider-github-copilot.rec"),
-        format!(
-            "version=1\ntool=opencode\nclient=ocfixture\nprovider=github-copilot\n\
-             since={since}\nkind=account\nseat=late\nreason={REASON}\n"
-        ),
-    )
-    .expect("a record newer than the request");
+    plant(&rig, epoch(), "late", REASON);
     drop(held);
 
     let status = child.wait().expect("the move ends");
