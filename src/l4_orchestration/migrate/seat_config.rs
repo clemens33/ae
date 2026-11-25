@@ -174,7 +174,7 @@ const LEDGER: &[Released] = &[
         stanza: Some("6b3cf5c2babb8776722f8417b0f707975d2798277a7ca64bd60b1c6d8a1202f0"),
     },
     Released {
-        tag: "v2026.11.TAG",
+        tag: "v2026.11.121",
         file: "89fb726123f98aa72c7a62fb29df7aec73ef182864807056aa7e49da93f1b331",
         stanza: Some("95b4bf75b139fc0f47e1411fc7d481b2ba1375ed95e9b067f1e23d7aecce5762"),
     },
