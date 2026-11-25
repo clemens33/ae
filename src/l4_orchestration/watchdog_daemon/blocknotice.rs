@@ -63,9 +63,8 @@ impl Cycle<'_> {
                 .iter()
                 .filter(|entry| super::in_lead_pair(&entry.slot, self.lead_pair))
             {
-                let live = can_hear(verdicts, &entry.slot);
                 let reference = format!("{identity}#{}", entry.slot);
-                if live && !noticed(events, &reference) {
+                if due(verdicts, events, &entry.slot, &reference) {
                     self.claim_and_tell((entry, observed), root, &identity, &reference);
                 }
             }
@@ -221,6 +220,14 @@ fn can_hear(verdicts: &[(String, SeatVerdict)], slot: &str) -> bool {
     })
 }
 
+/// A notice `reference` is due to the seat in `slot` on this cycle's
+/// snapshot: the seat can hear it ([`can_hear`]) and the snapshot holds no
+/// receipt for it ([`noticed`]). The send rechecks the receipt under the
+/// notice lock, for a concurrent watchdog.
+fn due(verdicts: &[(String, SeatVerdict)], events: &[Event], slot: &str, reference: &str) -> bool {
+    can_hear(verdicts, slot) && !noticed(events, reference)
+}
+
 /// The standing records this session's own seats drew, from the watchdog's
 /// [`crate::vendorblock::WRITTEN_ACTION`] events: the own lead hears of these
 /// whether or not a configured profile reaches the scope, and whether or not
@@ -289,7 +296,7 @@ pub(super) fn reach(
 
 #[cfg(test)]
 mod tests {
-    use super::{can_hear, notice_source, noticed, reach, union, written};
+    use super::{can_hear, due, notice_source, noticed, reach, union, written};
     use crate::events::Event;
     use crate::meta::{
         RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
@@ -353,6 +360,35 @@ mod tests {
             !can_hear(&[("worker.1".to_owned(), seat(Idle))], "main"),
             "a seat this cycle never judged waits"
         );
+    }
+
+    /// A notice is due only to a lead that can hear it and has no receipt
+    /// for it: a live lead with its receipt, and a dead or prompting lead
+    /// without one, are both passed over.
+    #[test]
+    fn a_notice_is_due_only_to_a_live_lead_without_its_receipt() {
+        use super::Verdict::{Dead, HumanPrompt, Idle};
+        let receipts = [Event::parse_line(&format!(
+            r#"{{"ts":"2026-09-08T09:10:00Z","actor":"watchdog","action":"{}","ref":"client-muse@1#main"}}"#,
+            crate::vendorblock::NOTICE_ACTION
+        ))
+        .expect("receipt")];
+        for (lead, reference, is_due) in [
+            (Idle, "client-muse@1#main", false),
+            (Idle, "client-muse@2#main", true),
+            (Dead, "client-muse@2#main", false),
+            (HumanPrompt, "client-muse@2#main", false),
+        ] {
+            let verdicts = [
+                ("worker.1".to_owned(), seat(Idle)),
+                ("main".to_owned(), seat(lead)),
+            ];
+            assert_eq!(
+                due(&verdicts, &receipts, "main", reference),
+                is_due,
+                "{lead:?} {reference}"
+            );
+        }
     }
 
     fn stems(scopes: &[crate::vendorblock::Scope]) -> Vec<String> {
