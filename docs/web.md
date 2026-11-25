@@ -234,10 +234,10 @@ verbatim.
 - **Check again.** A lost receipt keeps the body and the draft id. **Check again** posts the same
   body once more and the claim answers with the outcome that landed.
 
-These lines do nothing until the orchestrator's charter teaches them. The charter addition
-(`.local/aeweb-s3/charter-addendum.md`) waits for the owner's decision D20, so a release of this
-slice is inert until then: the page sends the lines and the orchestrator reads them as plain chat
-text, and a decision stays on the board and a topic is not created.
+The orchestrator charter now teaches these lines; that change waited for the owner's decision D20.
+A web `sent` receipt confirms delivery to the orchestrator. The orchestrator removes a DECIDE item
+only when its relay reports sent. On not-delivered or uncertain, it keeps the item, reports the
+outcome, and does not resend automatically. An older charter may still read the lines as plain chat.
 
 ## Security
 
