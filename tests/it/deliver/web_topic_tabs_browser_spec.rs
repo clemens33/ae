@@ -232,7 +232,7 @@ fn tabs_and_filter(tab: &mut Tab, rig: &Rig) -> Checked {
                  const recommended = form?.querySelector('[data-recommended] input'); \
                  const saw = {{n: radios.map(r => r.dataset.choice), rec: recommended?.dataset.choice || '', text: form?.textContent}}; \
                  return {{ok: saw.n.join(',') === '1,2' && saw.rec === want && \
-                 (want || (saw.text.includes('part2) #C') && saw.text.includes('#reserved_extra'))), saw}};"
+                 (Boolean(want) || (saw.text.includes('part2) #C') && saw.text.includes('#reserved_extra'))), saw}};"
             ),
             recommendation,
         )?;
