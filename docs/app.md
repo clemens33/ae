@@ -543,7 +543,7 @@ the reader in the main column, and the rest acts on the panel's chat; `O` and
 
 The panel's header. A panel bound to a running orchestrator names the session and
 its pair, then the work of the whole fleet, in place of the open ask the other
-headers name: `fleet 7 working · 2 wait you · 4 sessions`. The counts come from
+headers name: `fleet ● 7 working · ⚠ 2 wait you · ≡ 4 sessions`. The marks are the ones the sidebar's summary band wears (`●` working, `⚠` waits on you, `≡` sessions; `*`, `!` and `=` with `icons = off`), each in its accent, counts in the text ink and labels dim, and a wait-you count above 0 in the needs-you tone. The counts come from
 the fleet listing that `ae list` reads, so they cover every running session on
 every server it reads, the orchestrator included, and they refresh with the
 app's fleet refresh. `working` counts the seats whose recorded declaration is
@@ -553,22 +553,22 @@ not establish still counts. They are the seats' declarations, not what each
 harness shows now. `sessions` counts the running sessions (`1 session` for one).
 A stopped session counts nothing, and a zero stays visible as `0`. When a session's liveness is
 unknown or a source of the listing failed, the two seat counts are lower bounds
-and carry a `+` (`fleet 5+ working · 2+ wait you · 5 sessions`). The segment is
+and carry a `+` (`fleet ● 5+ working · ⚠ 2+ wait you · ≡ 5 sessions`). The segment is
 not the sidebar's Working count, which counts the watchdog verdicts of this
 app's tmux server alone, so the two can differ. The segment shortens in whole
-steps, the longest that fits: `fleet 7 working · 2 wait you · 4 sessions`, then
-`7 working · 2 wait you · 4 sessions`, then `7 working · 2 wait you`, then
-`7 working`. It is never cut, and it disappears when the shortest step no longer
+steps, the longest that fits: `fleet ● 7 working · ⚠ 2 wait you · ≡ 4 sessions`, then
+`● 7 working · ⚠ 2 wait you · ≡ 4 sessions`, then `● 7 · ⚠ 2 · ≡ 4`, then
+`● 7 · ⚠ 2`. It is never cut, and it disappears when the shortest step no longer
 fits, before the header drops the session and agent names. The activity word
 keeps its place and the segment takes the room it leaves, the branch giving way
 to a longer step first. With short seat names, single-digit counts and the
 44-cell sidebar of a terminal 140 columns wide or more, the side panel shows
-the first step from about 230 columns, the second from about 217 (the
-lower-bound form of the second from about 222), the third from about 191 and
+the first step from about 241 columns, the second from about 229 (the
+lower-bound form of the second from about 233), the third from about 177 and
 the fourth from about 165. At the 200 columns of the default layout the side
 panel therefore shows the third step beside the activity word, for example
-`7 working · 2 wait you  active -`. The zoomed panel shows the first step from
-about 95 columns. `F full` / `F side` and `pane` stay on the right.
+`● 7 · ⚠ 2 · ≡ 4  active -`. The zoomed panel shows the first step from
+about 97 columns. `F full` / `F side` and `pane` stay on the right.
 
 The panel's pane. A panel bound to a running orchestrator draws the word
 `pane` in its header, left of `F full` / `F side` and plain with any

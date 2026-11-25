@@ -39,23 +39,23 @@ pub(super) const MAIN_TURN: &str = "ORCHHEAD_MAIN_SENTINEL";
 const API_ASK: &str = "API_ASK_SENTINEL";
 const ORCH_ASK: &str = "ORCH_ASK_SENTINEL";
 pub(super) const WIDE: u16 = 200;
-/// A frame whose side panel (97 cells here, 77 at [`WIDE`]) keeps the whole
+/// A frame whose side panel (about 102 cells here, 77 at [`WIDE`]) keeps the whole
 /// work segment beside the names, the activity and the zoom label. A side panel
 /// is half the columns right of the sidebar (44 wide from 140 columns, rule
 /// included).
-const FIT: u16 = 240;
+const FIT: u16 = 250;
 pub(super) const HEIGHT: u16 = 35;
 
 /// What the exact fleet below adds up to: five working seats (the
 /// orchestrator's three, one of `api`, one of `farm` on another server), two
 /// `waiting-user` seats and five running sessions.
-const WORK: &str = "fleet 5 working · 2 wait you · 5 sessions";
+const WORK: &str = "fleet ● 5 working · ⚠ 2 wait you · ≡ 5 sessions";
 /// The shorter steps of the segment, longest first after [`WORK`].
-const STEP2: &str = "5 working · 2 wait you · 5 sessions";
-const STEP3: &str = "5 working · 2 wait you";
-const STEP4: &str = "5 working";
+const STEP2: &str = "● 5 working · ⚠ 2 wait you · ≡ 5 sessions";
+const STEP3: &str = "● 5 · ⚠ 2 · ≡ 5";
+const STEP4: &str = "● 5 · ⚠ 2";
 /// What [`Mix::Flipped`] adds up to, a later read of the same fleet.
-const FLIPPED: &str = "fleet 0 working · 4 wait you · 3 sessions";
+const FLIPPED: &str = "fleet ● 0 working · ⚠ 4 wait you · ≡ 3 sessions";
 
 /// Which fleet the fixture lists.
 #[derive(Clone, Copy)]
@@ -426,14 +426,15 @@ fn zero_counts_stay_visible_and_one_session_is_singular() {
     let cells = paint(&mut app, FIT, HEIGHT);
     let (_, panel) = headers(&app, &cells);
     assert!(
-        panel.contains("fleet 0 working · 0 wait you · 2 sessions"),
+        panel.contains("fleet ● 0 working · ⚠ 0 wait you · ≡ 2 sessions"),
         "{panel:?}"
     );
     let (_root, mut alone) = rig("orchhead-alone", Mix::Alone);
     let cells = paint(&mut alone, FIT, HEIGHT);
     let (_, panel) = headers(&alone, &cells);
     assert!(
-        panel.contains("fleet 0 working · 0 wait you · 1 session") && !panel.contains("1 sessions"),
+        panel.contains("fleet ● 0 working · ⚠ 0 wait you · ≡ 1 session")
+            && !panel.contains("1 sessions"),
         "a stopped session's old working seats count nothing: {panel:?}"
     );
 }
@@ -456,7 +457,7 @@ fn an_unknown_session_or_a_lost_source_makes_the_seat_counts_lower_bounds() {
         let cells = paint(&mut app, FIT, HEIGHT);
         let (_, panel) = headers(&app, &cells);
         assert!(
-            panel.contains("fleet 5+ working · 2+ wait you · 5 sessions"),
+            panel.contains("fleet ● 5+ working · ⚠ 2+ wait you · ≡ 5 sessions"),
             "{why}: {panel:?}"
         );
     }
@@ -496,7 +497,7 @@ fn the_orchestrator_header_drops_its_ask_and_other_seats_keep_theirs() {
             );
         }
         assert!(
-            !panel.contains(ORCH_ASK) && !panel.contains('⚠') && !panel.contains("olead:"),
+            !panel.contains(ORCH_ASK) && !panel.contains("olead:"),
             "full={full}: the orchestrator header carries no attention segment: {panel:?}"
         );
         assert!(
@@ -509,9 +510,9 @@ fn the_orchestrator_header_drops_its_ask_and_other_seats_keep_theirs() {
 #[test]
 fn the_activity_word_keeps_its_place_and_the_segment_takes_the_room_it_leaves() {
     let (_root, mut app) = rig("orchhead-priority", Mix::Exact);
-    // A side panel of 86 cells leaves 35 beside the activity: the second step
-    // and no more. The first step needs the 92 cells of a 229-column frame.
-    for (width, shown) in [(218, STEP2), (FIT, WORK)] {
+    // At 232 columns the side panel leaves 41 cells beside the activity: the second step
+    // and no more. The first step needs 47 cells, a frame of about 241 columns.
+    for (width, shown) in [(232, STEP2), (FIT, WORK)] {
         let cells = paint(&mut app, width, HEIGHT);
         let (_, panel) = headers(&app, &cells);
         assert_eq!(
@@ -544,28 +545,28 @@ fn segment(header: &str) -> Option<String> {
 fn at_the_owners_200_columns_the_side_panel_shows_the_counts_beside_the_activity() {
     // The side panel is 77 cells at 200 columns and leaves 26 beside the
     // names, the activity and the controls: the third step, without the fleet
-    // word or the session count. The lower-bound form (two `+` more, 24 cells)
-    // still fits there, and the lower-bound second step (37) needs a frame of
-    // about 222 columns.
+    // word or the session count (15 cells). The lower-bound form (two `+` more, 17 cells)
+    // still fits there, and the lower-bound second step (45 cells) needs a frame of
+    // about 233 columns, its first step one of about 245.
     for (tag, mix, width, counts) in [
         ("orchhead-200", Mix::Exact, WIDE, STEP3),
         (
             "orchhead-200-partial",
             Mix::Partial,
             WIDE,
-            "5+ working · 2+ wait you",
+            "● 5+ · ⚠ 2+ · ≡ 5",
         ),
         (
             "orchhead-210-partial",
             Mix::Partial,
             210,
-            "5+ working · 2+ wait you",
+            "● 5+ · ⚠ 2+ · ≡ 5",
         ),
         (
-            "orchhead-226-partial",
+            "orchhead-240-partial",
             Mix::Partial,
-            226,
-            "5+ working · 2+ wait you · 5 sessions",
+            240,
+            "● 5+ working · ⚠ 2+ wait you · ≡ 5 sessions",
         ),
     ] {
         let (_root, mut app) = rig(tag, mix);
@@ -597,7 +598,7 @@ fn a_narrower_side_panel_shows_a_shorter_step_never_a_cut_one() {
     // gone at 130 columns, where the side panel is 47 cells wide.
     for (width, step, activity) in [
         (195, Some(STEP3), true),
-        (180, Some(STEP4), true),
+        (175, Some(STEP4), true),
         (160, None, true),
         (130, None, false),
     ] {
@@ -641,7 +642,7 @@ fn a_narrowing_header_shortens_the_segment_by_whole_steps_and_loses_it_before_an
         // checked on their own: with a name missing none of them may stand.
         assert!(
             names
-                || !["working", "wait you", "session"]
+                || !["working", "wait you", "session", "●", "⚠", "≡"]
                     .iter()
                     .any(|word| header.contains(word)),
             "{width}: the segment never outlives the session and agent names: {header:?}"
@@ -744,4 +745,93 @@ fn the_keys_help_lists_no_board_key() {
         !word("board"),
         "the Keys tab still names the board:\n{shown}"
     );
+}
+
+/// The foreground of `needle`'s first symbol in row 0 of the orchestrator
+/// panel's header, never of the sidebar's band to its left.
+fn ink_at(app: &App, cells: &Buffer, needle: &str) -> ratatui_core::style::Color {
+    let panel = app.layout.panel.expect("the panel is on screen");
+    let width = u16::try_from(needle.chars().count()).expect("short needle");
+    let at = (panel.x..=panel.right().saturating_sub(width)).find(|x| {
+        let seen: String = (*x..*x + width).map(|cx| cells[(cx, 0)].symbol()).collect();
+        seen == needle
+    });
+    cells[(
+        at.unwrap_or_else(|| panic!("{needle:?} on the panel header")),
+        0,
+    )]
+        .fg
+}
+
+#[test]
+fn the_segment_glyphs_and_counts_wear_the_inks_of_the_sidebar_band() {
+    use crate::theme::{Look, Mark, Palette, rgb};
+    let look = Look::DEFAULT;
+    let palette: Palette = look.palette;
+    let colour = |token: &str| {
+        let [r, g, b] = rgb(token);
+        ratatui_core::style::Color::Rgb(r, g, b)
+    };
+    for (mix, waiting) in [(Mix::Exact, true), (Mix::Quiet, false)] {
+        let (_root, mut app) = rig("orchhead-ink", mix);
+        for name in ["api", ORCH] {
+            app.looks.insert(name.to_owned(), (Some(look), None));
+        }
+        let cells = paint(&mut app, FIT, HEIGHT);
+        let tone = if waiting {
+            palette.needs_you
+        } else {
+            palette.text
+        };
+        assert_eq!(
+            ink_at(&app, &cells, "●"),
+            colour(palette.accent(Mark::Working))
+        );
+        assert_eq!(
+            ink_at(&app, &cells, "⚠ "),
+            colour(palette.accent(Mark::NeedsYou))
+        );
+        assert_eq!(
+            ink_at(&app, &cells, "≡"),
+            colour(palette.text),
+            "≡ wears the text ink"
+        );
+        let n = if waiting { "2 wait" } else { "0 wait" };
+        assert_eq!(
+            ink_at(&app, &cells, n),
+            colour(tone),
+            "the wait-you count: {waiting}"
+        );
+        assert_eq!(ink_at(&app, &cells, "working"), colour(palette.dim));
+        assert_eq!(
+            ink_at(
+                &app,
+                &cells,
+                if waiting { "5 working" } else { "0 working" }
+            ),
+            colour(palette.text),
+            "the working count"
+        );
+    }
+}
+
+#[test]
+fn with_icons_off_the_segment_wears_the_ascii_marks() {
+    let (_root, mut app) = rig("orchhead-ascii", Mix::Exact);
+    for name in ["api", ORCH] {
+        let look = crate::theme::Look {
+            icons: false,
+            ..crate::theme::Look::DEFAULT
+        };
+        app.looks.insert(name.to_owned(), (Some(look), None));
+    }
+    for (width, want) in [
+        (FIT, "fleet * 5 working · ! 2 wait you · = 5 sessions"),
+        (WIDE, "* 5 · ! 2 · = 5"),
+    ] {
+        let cells = paint(&mut app, width, HEIGHT);
+        let (_, panel) = headers(&app, &cells);
+        assert_eq!(segment(&panel).as_deref(), Some(want), "{panel:?}");
+        assert!(!panel.contains('●') && !panel.contains('≡'), "{panel:?}");
+    }
 }

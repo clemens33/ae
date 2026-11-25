@@ -10,7 +10,7 @@ use crate::attention::Reason;
 use crate::console::needs::{Section, Verdict};
 use crate::digest::{SessionEntry, Status};
 use crate::listing::World;
-use crate::theme::{FleetOrder, FleetRow, Mark};
+use crate::theme::{FleetOrder, FleetRow, Mark, picker_glyph};
 use crate::time::Timestamp;
 use crate::tmux::PickerAgent;
 
@@ -255,6 +255,26 @@ pub fn orchestrator(
     ))
 }
 
+/// How one piece of a work step is inked: a mark in its accent, a count in the
+/// text ink, a label or separator dim, and a wait-you count above zero in the
+/// needs-you tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ink {
+    Mark(Mark),
+    Text,
+    Dim,
+    Needs,
+}
+
+/// One work step as the pieces it is drawn in, each with its ink.
+pub type Step = Vec<(String, Ink)>;
+
+/// The text of `step`, its pieces joined.
+#[must_use]
+pub fn flat(step: &[(String, Ink)]) -> String {
+    step.iter().map(|(text, _)| text.as_str()).collect()
+}
+
 /// The work of the whole fleet, as the orchestrator's panel header counts it:
 /// what the fleet listing says of every running session on every server
 /// `ae list` reads, the orchestrator included. The sidebar's own `Working`
@@ -308,22 +328,77 @@ impl Work {
         work
     }
 
-    /// The header segment at each width it may take, longest first:
-    /// `fleet 7 working · 2 wait you · 4 sessions`, the same without `fleet`,
-    /// `7 working · 2 wait you` and `7 working`. A `+` follows a seat count that
-    /// is a lower bound, and `1 session` is the singular.
+    /// The header segment at each width it may take, longest first, as the
+    /// sidebar band wears its counts: a mark and a count each,
+    /// `fleet ● 7 working · ⚠ 2 wait you · ≡ 4 sessions`, the same without
+    /// `fleet`, `● 7 · ⚠ 2 · ≡ 4` and `● 7 · ⚠ 2`. The marks are the band's
+    /// (`*`, `!` and `=` with `icons` off). A `+` follows a seat count that is a
+    /// lower bound, and `1 session` is the singular.
     #[must_use]
-    pub fn steps(&self) -> [String; 4] {
+    pub fn steps(&self, icons: bool) -> [Step; 4] {
         let bound = if self.partial { "+" } else { "" };
         let noun = if self.sessions == 1 {
             "session"
         } else {
             "sessions"
         };
-        let working = format!("{}{bound} working", self.working);
-        let two = format!("{working} · {}{bound} wait you", self.waiting);
-        let three = format!("{two} · {} {noun}", self.sessions);
-        [format!("fleet {three}"), three, two, working]
+        let wait = if self.waiting > 0 {
+            Ink::Needs
+        } else {
+            Ink::Text
+        };
+        let counts = [
+            (
+                Ink::Mark(Mark::Working),
+                Mark::Working.glyph(icons),
+                format!("{}{bound}", self.working),
+                Ink::Text,
+                " working",
+            ),
+            (
+                Ink::Mark(Mark::NeedsYou),
+                Mark::NeedsYou.glyph(icons),
+                format!("{}{bound}", self.waiting),
+                wait,
+                " wait you",
+            ),
+            (
+                Ink::Text,
+                picker_glyph(icons),
+                self.sessions.to_string(),
+                Ink::Text,
+                "",
+            ),
+        ];
+        let build = |fleet: bool, words: bool, keep: usize| {
+            let mut step: Step = Vec::new();
+            if fleet {
+                step.push(("fleet ".to_owned(), Ink::Dim));
+            }
+            for (at, (mark, glyph, count, ink, label)) in counts.iter().take(keep).enumerate() {
+                if at > 0 {
+                    step.push((" · ".to_owned(), Ink::Dim));
+                }
+                step.push(((*glyph).to_owned(), *mark));
+                step.push((" ".to_owned(), Ink::Dim));
+                step.push((count.clone(), *ink));
+                if words {
+                    let label = if at == 2 {
+                        format!(" {noun}")
+                    } else {
+                        (*label).to_owned()
+                    };
+                    step.push((label, Ink::Dim));
+                }
+            }
+            step
+        };
+        [
+            build(true, true, 3),
+            build(false, true, 3),
+            build(false, false, 3),
+            build(false, false, 2),
+        ]
     }
 }
 
@@ -501,12 +576,106 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{Counts, Facts, Fleet, Line2, Row, rows};
+    use super::{Counts, Facts, Fleet, Ink, Line2, Row, Work, rows};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
     use crate::theme::{FleetOrder, Mark};
     use crate::time::Timestamp;
     use crate::tmux::PickerAgent;
+
+    fn plain(work: &Work, icons: bool) -> Vec<String> {
+        work.steps(icons)
+            .iter()
+            .map(|step| super::flat(step))
+            .collect()
+    }
+
+    #[test]
+    fn the_work_steps_wear_the_icons_the_sidebar_band_wears() {
+        let work = Work {
+            working: 1,
+            waiting: 4,
+            sessions: 13,
+            partial: false,
+        };
+        assert_eq!(
+            plain(&work, true),
+            [
+                "fleet ● 1 working · ⚠ 4 wait you · ≡ 13 sessions",
+                "● 1 working · ⚠ 4 wait you · ≡ 13 sessions",
+                "● 1 · ⚠ 4 · ≡ 13",
+                "● 1 · ⚠ 4",
+            ]
+        );
+        assert_eq!(
+            plain(&work, false),
+            [
+                "fleet * 1 working · ! 4 wait you · = 13 sessions",
+                "* 1 working · ! 4 wait you · = 13 sessions",
+                "* 1 · ! 4 · = 13",
+                "* 1 · ! 4",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lower_bound_keeps_its_plus_and_one_session_stays_singular() {
+        let work = Work {
+            working: 5,
+            waiting: 2,
+            sessions: 1,
+            partial: true,
+        };
+        assert_eq!(
+            plain(&work, true),
+            [
+                "fleet ● 5+ working · ⚠ 2+ wait you · ≡ 1 session",
+                "● 5+ working · ⚠ 2+ wait you · ≡ 1 session",
+                "● 5+ · ⚠ 2+ · ≡ 1",
+                "● 5+ · ⚠ 2+",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_glyph_is_one_cell_and_the_inks_follow_the_band() {
+        let work = Work {
+            working: 0,
+            waiting: 3,
+            sessions: 2,
+            partial: false,
+        };
+        for icons in [true, false] {
+            for step in work.steps(icons) {
+                for (text, _) in &step {
+                    assert!(!text.is_empty());
+                }
+                let glyphs: Vec<_> = step
+                    .iter()
+                    .filter(|(_, ink)| matches!(ink, Ink::Mark(_)))
+                    .collect();
+                assert!(glyphs.iter().all(|(text, _)| text.chars().count() == 1));
+            }
+        }
+        let step = &work.steps(true)[0];
+        let ink_of = |needle: &str| {
+            step.iter()
+                .find(|(text, _)| text == needle)
+                .map(|(_, ink)| *ink)
+        };
+        assert_eq!(ink_of("●"), Some(Ink::Mark(Mark::Working)));
+        assert_eq!(ink_of("⚠"), Some(Ink::Mark(Mark::NeedsYou)));
+        assert_eq!(ink_of("≡"), Some(Ink::Text));
+        assert_eq!(ink_of("0"), Some(Ink::Text));
+        assert_eq!(ink_of("3"), Some(Ink::Needs));
+        assert_eq!(ink_of("2"), Some(Ink::Text));
+        assert_eq!(ink_of(" working"), Some(Ink::Dim));
+        assert_eq!(ink_of(" · "), Some(Ink::Dim));
+        let calm = Work { waiting: 0, ..work };
+        let step = &calm.steps(true)[1];
+        let wait = step.iter().find(|(_, ink)| *ink == Ink::Needs);
+        assert!(wait.is_none(), "a zero wait-you count wears the text ink");
+    }
 
     fn fleet_of(names: &[&str], home: &str) -> Fleet {
         let now = Timestamp::from_epoch(1_759_500_600);

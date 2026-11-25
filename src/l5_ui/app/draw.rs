@@ -2679,7 +2679,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     let segment = ctx
         .wait
         .work
-        .and_then(|work| work_step(&work, &fits, (from, end)));
+        .and_then(|work| work_step(&work, ctx.icons, &fits, (from, end)));
     let right = segment.as_ref().map_or(right, |(_, right)| Some(*right));
     let stop = right.map_or(end, |right| {
         put(
@@ -2694,11 +2694,12 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     });
     let room = stop.saturating_sub(from);
     let lead = match ctx.wait.work {
-        Some(_) => segment.map(|(text, _)| (text, paint.fg(|p| p.text))),
-        None => reason_words(ctx, room).map(|words| (words, paint.mark(Mark::NeedsYou))),
+        Some(_) => segment.map(|(step, _)| step),
+        None => reason_words(ctx, room)
+            .map(|words| vec![(words, super::fleet::Ink::Mark(Mark::NeedsYou))]),
     };
-    let dir_from = lead.as_ref().map_or(from, |(words, ink)| {
-        let used = put(buf, from, 0, words, room, *ink);
+    let dir_from = lead.as_ref().map_or(from, |step| {
+        let used = put_step(ctx, buf, from, room, step);
         used + 3
     });
     let room = stop.saturating_sub(dir_from);
@@ -2715,18 +2716,45 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
 /// label takes the room of the branch, never the activity's.
 fn work_step<'a>(
     work: &super::fleet::Work,
+    icons: bool,
     rights: &[&'a String],
     (from, end): (u16, u16),
-) -> Option<(String, &'a String)> {
-    work.steps().into_iter().find_map(|text| {
-        let need = cells(text.chars().count());
+) -> Option<(super::fleet::Step, &'a String)> {
+    work.steps(icons).into_iter().find_map(|step| {
+        let need = cells(super::fleet::flat(&step).chars().count());
         (rights.iter().copied())
             .find(|right| {
                 let stop = end.saturating_sub(cells(right.chars().count()) + 2);
                 need <= stop.saturating_sub(from)
             })
-            .map(|right| (text, right))
+            .map(|right| (step, right))
     })
+}
+
+/// Draws `step` from column `x` in its inks and answers the column after it.
+fn put_step(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    x: u16,
+    room: u16,
+    step: &super::fleet::Step,
+) -> u16 {
+    use super::fleet::Ink;
+    let paint = ctx.paint;
+    let needs = paint.fg(|p| p.needs_you);
+    let spans: Vec<Span<'static>> = step
+        .iter()
+        .map(|(text, ink)| {
+            let style = match ink {
+                Ink::Mark(mark) => paint.mark(*mark),
+                Ink::Text => paint.fg(|p| p.text),
+                Ink::Dim => paint.fg(|p| p.dim),
+                Ink::Needs => needs,
+            };
+            Span::styled(text.clone(), style)
+        })
+        .collect();
+    put_line(buf, x, 0, &Line::from(spans), room)
 }
 
 /// The main column header's right end: the zoom label, `X zoom` or `X unzoom`,

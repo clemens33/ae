@@ -141,7 +141,7 @@ fn the_app_doc_says_what_the_orchestrator_header_shows_and_that_the_board_column
         "a key table row still serves the board"
     );
     for kept in [
-        "fleet 7 working · 2 wait you · 4 sessions",
+        "fleet ● 7 working · ⚠ 2 wait you · ≡ 4 sessions",
         "the sidebar's Working",
         "no board column",
         "desk check",
