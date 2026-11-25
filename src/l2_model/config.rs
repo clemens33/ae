@@ -75,20 +75,28 @@ pub(crate) const SEAT_CHARTER_3_MARKER: &str =
 pub(crate) const SEAT_CHARTER_4_MARKER: &str =
     "queues a move of this seat to another model or account of the same tool";
 
+/// The sentence a seat prompt carries from charter version 5 on, when the
+/// orchestrator seat tags its replies by topic and reads the owner lines of
+/// `ae web`.
+pub(crate) const SEAT_CHARTER_5_MARKER: &str =
+    "Begin every reply about one topic with that topic's `#<slug>`";
+
 /// The charter version the seat template teaches. A running seat launched
 /// with an older one gets one charter update turn from its watchdog.
-pub(crate) const SEAT_CHARTER_VERSION: u32 = 4;
+pub(crate) const SEAT_CHARTER_VERSION: u32 = 5;
 
 /// The charter version a seat context or prompt `text` teaches: the count of
 /// the markers it carries in order, [`SEAT_CHARTER_MARKER`] (2),
-/// [`SEAT_CHARTER_3_MARKER`] (3) and [`SEAT_CHARTER_4_MARKER`] (4), from 1: a
-/// later marker without an earlier one teaches nothing more.
+/// [`SEAT_CHARTER_3_MARKER`] (3), [`SEAT_CHARTER_4_MARKER`] (4) and
+/// [`SEAT_CHARTER_5_MARKER`] (5), from 1: a later marker without an earlier one
+/// teaches nothing more.
 #[must_use]
 pub(crate) fn charter_version(text: &str) -> u32 {
     let markers = [
         SEAT_CHARTER_MARKER,
         SEAT_CHARTER_3_MARKER,
         SEAT_CHARTER_4_MARKER,
+        SEAT_CHARTER_5_MARKER,
     ];
     let mut version = 1;
     for marker in markers {

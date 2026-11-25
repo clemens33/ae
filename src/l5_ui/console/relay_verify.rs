@@ -2,8 +2,8 @@
 //! carries the human's own words, read-only and from stored records alone.
 //!
 //! Two shapes read as `owner ingress`. An ask this session's own chat opened
-//! (`ae chat` or Telegram: actor `console:local`, no relay keys, addressed to
-//! this session's `session_id`). And a bound relay to this session's
+//! (`ae chat`, Telegram or `ae web`: actor `console:local`, no relay keys,
+//! addressed to this session's `session_id`). And a bound relay to this session's
 //! `session_id` whose cited ask still sits in the dispatcher's ledger: the
 //! dispatcher is the one session holding the `relay_origin` id now, whatever
 //! its name; its journal holds exactly one claim of `id` that cites the same
@@ -102,7 +102,7 @@ fn prove(dir: &Path, id: &str) -> Result<Proof, String> {
     let Some(origin) = ask.relay_origin.as_deref() else {
         let owner = source_ask(dir, &events, id, &own)?;
         return Ok(Proof {
-            origin: ask.actor.clone(),
+            origin: owner.origin,
             holding: session,
             time: owner.said.to_string(),
             target,
@@ -160,7 +160,7 @@ fn prove(dir: &Path, id: &str) -> Result<Proof, String> {
     }
     let source = source_ask(&holder_dir, &held, cited, origin)
         .map_err(|why| format!("the dispatcher's ledger: {why}"))?;
-    let (words, time) = (source.text, source.said.to_string());
+    let (words, time, origin) = (source.text, source.said.to_string(), source.origin);
     if words != copy_words {
         return Err("the relay's quoted words differ from the stored ask".to_owned());
     }
@@ -168,7 +168,7 @@ fn prove(dir: &Path, id: &str) -> Result<Proof, String> {
         return Err("the relay's time differs from the stored ask".to_owned());
     }
     Ok(Proof {
-        origin: tracked::CONSOLE_SINK.to_owned(),
+        origin,
         holding: holder,
         time,
         target,
@@ -267,6 +267,7 @@ mod tests {
         let ask = OwnerAsk {
             said: Timestamp::parse(said).expect("time"),
             text: text.to_owned(),
+            origin: crate::tracked::CONSOLE_SINK.to_owned(),
         };
         sections(&parsed, Some(&ask))
     }

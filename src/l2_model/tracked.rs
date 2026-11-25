@@ -198,6 +198,11 @@ pub fn is_human_sink(target: &str) -> bool {
 /// it and nothing but a `reply` is addressed to it.
 pub const CONSOLE_SINK: &str = "console:local";
 
+/// The label an `ae web` owner line records on its opening as `origin`. It is
+/// never an actor: the opening's actor stays [`CONSOLE_SINK`], no authority
+/// check reads the label, and only `requests --verify` prints it.
+pub const WEB_ORIGIN: &str = "web:local";
+
 /// How the console sink reads wherever an AGENT sees it: the first-line marker,
 /// the `REQUEST` line, the `requests` table. Stored records keep [`CONSOLE_SINK`]
 /// byte for byte; only rendering maps through [`display_sender`].
@@ -3222,6 +3227,8 @@ pub(crate) struct Extra<'a> {
     pub(crate) seat: Option<&'a mut Dispatch>,
     /// A confirmed console redirect's destination.
     pub(crate) role: Option<RolePin<'a>>,
+    /// The ingress label the opening records as `origin` ([`WEB_ORIGIN`]).
+    pub(crate) origin: Option<&'static str>,
 }
 
 /// What a carry that must name its seat's launch adds to [`run_with`]: the
@@ -3406,7 +3413,10 @@ pub(crate) fn run_carried(
         caller: caller_session,
         target: &resolved.session,
     });
-    let relay_keys = extra.relay.map(RelayStamp::keys).unwrap_or_default();
+    let mut relay_keys = extra.relay.map(RelayStamp::keys).unwrap_or_default();
+    if let Some(label) = extra.origin {
+        relay_keys.push(("origin", label));
+    }
     let code = record_tracked_delivery_with_launches(
         dir,
         &fields,

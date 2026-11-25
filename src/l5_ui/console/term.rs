@@ -748,6 +748,7 @@ impl Carry {
             receipt: Some(&mut receipt),
             seat: None,
             role: self.redirect.as_ref().map(RoleRoute::pin),
+            origin: None,
         };
         let run = tracked::run_with(
             tracked::Kind::Ask,

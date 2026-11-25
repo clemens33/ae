@@ -700,6 +700,7 @@ impl Sending {
                 receipt: Some(&mut receipt),
                 seat: None,
                 role: Some(role.pin()),
+                origin: Some(tracked::WEB_ORIGIN),
             },
             tracked::Carried {
                 expect: Ok(Some(("main", launch))),

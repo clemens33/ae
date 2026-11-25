@@ -137,6 +137,13 @@ included, reads `(origin unreadable)`. The UUID itself is never shown. Presence
 is kept as written; a wrong type or duplicate key invalidates the record, and an
 older core steps over the additive key as unknown data.
 
+`origin` is the label an `ae web` owner line records on its opening, exactly
+`web:local`; the actor stays `console:local`. It is LENIENT and outside the
+policed key set: a missing, repeated, non-string or other value reads as no
+label and never costs the record. No authority check reads it; only
+`requests --verify` prints it as its `origin:` line. An older core steps over
+it as unknown data.
+
 `relay_mode` is how the relay's opening named its owner section: `bound`,
 `attested` or `interim`, as written. A reader of this core shows the sender of
 a row that has both `relay_origin` and `relay_mode`, whatever the mode word, as

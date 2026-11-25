@@ -644,6 +644,10 @@ pub(crate) struct OwnerAsk {
     pub(crate) said: Timestamp,
     /// The words, byte for byte as the chat stored them.
     pub(crate) text: String,
+    /// The ingress the ask's opening names: its `origin` label
+    /// ([`tracked::WEB_ORIGIN`]), else [`tracked::CONSOLE_SINK`]. A label
+    /// only: the predicate above never reads it.
+    pub(crate) origin: String,
 }
 
 /// The one human-opened ask `id` of the session at `dir` whose `session_id` is
@@ -684,7 +688,14 @@ pub(crate) fn source_ask(
         ));
     }
     match console::ask_body(dir, ask) {
-        console::lane::Body::Whole(text) => Ok(OwnerAsk { said: ask.ts, text }),
+        console::lane::Body::Whole(text) => Ok(OwnerAsk {
+            said: ask.ts,
+            text,
+            origin: ask
+                .origin
+                .clone()
+                .unwrap_or_else(|| tracked::CONSOLE_SINK.to_owned()),
+        }),
         gap => Err(format!(
             "the text of {id} cannot be read whole ({})",
             console::lane::body_gap(&gap).unwrap_or_default()

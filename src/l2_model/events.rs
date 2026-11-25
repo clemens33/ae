@@ -106,6 +106,11 @@ pub struct Event {
     /// `wait_on`, so outside [`KNOWN_KEYS`]: no value costs the record, and
     /// [`crate::birth::decode`] is its one reader.
     pub birth: Option<crate::birth::Raw>,
+    /// The ingress label an `ae web` opening carries, exactly
+    /// [`crate::tracked::WEB_ORIGIN`]. LENIENT like `wait_on`, so outside
+    /// [`KNOWN_KEYS`]: a missing, repeated, non-string or other value reads as
+    /// `None` and never costs the record. A label only: no authority reads it.
+    pub origin: Option<String>,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -534,11 +539,13 @@ impl Event {
             body_file: optional(value, "body_file")?,
             wait_on: None,
             birth: None,
+            origin: None,
         };
         if event.action == "state" && event.reference.as_deref() == Some("waiting-agent") {
             event.wait_on = wait_on_of(fields);
         }
         event.birth = crate::birth::Raw::of(&event.action, fields);
+        event.origin = origin_of(fields);
         Ok(event)
     }
 
@@ -876,6 +883,16 @@ fn wait_on_of(fields: &[(String, Value)]) -> Option<String> {
         return None;
     }
     crate::wait_on::Target::parse(text, "").map(|_| text.clone())
+}
+
+/// The record's one `origin` member when it is exactly the web label: any
+/// other value, a repeat or another type reads as no label.
+fn origin_of(fields: &[(String, Value)]) -> Option<String> {
+    let mut named = fields.iter().filter(|(key, _)| key == "origin");
+    let (_, Value::Str(text)) = named.next()? else {
+        return None;
+    };
+    (named.next().is_none() && text == crate::tracked::WEB_ORIGIN).then(|| text.clone())
 }
 
 /// A required string key.

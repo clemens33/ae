@@ -30,9 +30,10 @@
 
 use super::{SEAT_CONFIG_CAP, publish_reseed};
 use crate::config::{
-    SEAT_CHARTER_3_MARKER, SEAT_CHARTER_4_MARKER, SEAT_CHARTER_MARKER, SEAT_CHARTER_VERSION,
-    SEAT_TEMPLATE, seat_backup_path, seat_config_directory_repair, seat_config_repair,
-    seat_prompt_charter, seat_prompt_is_current, seat_prompt_replaced, seat_prompt_stanza,
+    SEAT_CHARTER_3_MARKER, SEAT_CHARTER_4_MARKER, SEAT_CHARTER_5_MARKER, SEAT_CHARTER_MARKER,
+    SEAT_CHARTER_VERSION, SEAT_TEMPLATE, seat_backup_path, seat_config_directory_repair,
+    seat_config_repair, seat_prompt_charter, seat_prompt_is_current, seat_prompt_replaced,
+    seat_prompt_stanza,
 };
 use crate::install::sha256_hex;
 use crate::store::{SourcePresence, SourceRead};
@@ -172,6 +173,11 @@ const LEDGER: &[Released] = &[
         file: "cf59e6550b31d7eb0c0cdec458449c42dc458e842340f2dd1782aac1e4529935",
         stanza: Some("6b3cf5c2babb8776722f8417b0f707975d2798277a7ca64bd60b1c6d8a1202f0"),
     },
+    Released {
+        tag: "v2026.11.TAG",
+        file: "419d8593aeecd33af0d79440c6a3ea18c23602526e7420e26323ca0640f3e89e",
+        stanza: Some("978b31e109c4c8529d5c0bb2a82998956ee3defa891148a231cf05fbbc5cabf4"),
+    },
 ];
 
 /// What a publish does with one seat config.
@@ -284,7 +290,8 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
             let missing = match seat_prompt_charter(&text) {
                 0 | 1 => SEAT_CHARTER_MARKER,
                 2 => SEAT_CHARTER_3_MARKER,
-                _ => SEAT_CHARTER_4_MARKER,
+                3 => SEAT_CHARTER_4_MARKER,
+                _ => SEAT_CHARTER_5_MARKER,
             };
             return unchanged(&format!(
                 "its seat prompt keeps the bound owner words but lacks the charter sentence \
