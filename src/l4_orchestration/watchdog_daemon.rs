@@ -1236,6 +1236,17 @@ fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
     )
 }
 
+/// The launch row a snapshot's `ids` hold for `slot`: what a leg to that
+/// seat is asked to prove before anything runs. Every other slot's row says
+/// nothing about it.
+fn launch_row<'a>(ids: &'a [(String, SeatLaunch)], slot: &str) -> crate::tracked::LaunchRow<'a> {
+    match ids.iter().find(|(at, _)| at == slot) {
+        None => crate::tracked::LaunchRow::Legacy,
+        Some((_, SeatLaunch::Id(id))) => crate::tracked::LaunchRow::Token(id),
+        Some((_, SeatLaunch::Unproven(why))) => crate::tracked::LaunchRow::Damaged(why),
+    }
+}
+
 fn launch_id_for<'a>(ids: &'a [(String, SeatLaunch)], slot: &str) -> Option<&'a str> {
     ids.iter()
         .find(|(seat, _)| seat.as_str() == slot)

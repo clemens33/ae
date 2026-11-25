@@ -3,12 +3,12 @@
 use super::{
     ACTOR, AUTO_PLACEHOLDER, Acting, AutoAct, AutoSeat, Carry, Cycle, DoneProgress, Effect, Event,
     HarnessState, Journal, OVERDUE_SUMMARY, Observation, PaneState, QuietKind, QuietQuery,
-    QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatLaunch, SeatVerdict, SweepAlert, Timestamp,
-    UNIX_EPOCH, Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with,
-    declared_clause, done_challenge_text, entry_mut, epoch_second, latest_relevant_event,
-    launch_id_for, limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge,
-    record_sweep, slot_latched, stale_display, store, sweep_effects, system_time_from_epoch,
-    target_moved_text, tmux, tracked, transport, wait_challenge_text,
+    QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatVerdict, SweepAlert, Timestamp, UNIX_EPOCH,
+    Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with, declared_clause,
+    done_challenge_text, entry_mut, epoch_second, latest_relevant_event, launch_id_for,
+    limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge, record_sweep,
+    slot_latched, stale_display, store, sweep_effects, system_time_from_epoch, target_moved_text,
+    tmux, tracked, transport, wait_challenge_text,
 };
 use super::{DeathEpisode, deadnotice};
 
@@ -830,12 +830,8 @@ impl Cycle<'_> {
 
     /// The launch row this cycle's snapshot read for `slot`: what the send
     /// helper is asked to prove before anything runs.
-    fn launch_row(&self, slot: &str) -> tracked::LaunchRow<'_> {
-        match self.launch_ids.iter().find(|(at, _)| at == slot) {
-            None => tracked::LaunchRow::Legacy,
-            Some((_, SeatLaunch::Id(id))) => tracked::LaunchRow::Token(id),
-            Some((_, SeatLaunch::Unproven(why))) => tracked::LaunchRow::Damaged(why),
-        }
+    pub(super) fn launch_row(&self, slot: &str) -> tracked::LaunchRow<'_> {
+        super::launch_row(&self.launch_ids, slot)
     }
 
     /// The auto reseat step: journal each hold and overdue failure the pure

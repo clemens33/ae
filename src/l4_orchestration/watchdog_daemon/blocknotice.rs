@@ -129,10 +129,10 @@ impl Cycle<'_> {
         let (Some(pane), None) = (panes.next(), panes.next()) else {
             return;
         };
-        let launch = match self.launch_ids.iter().find(|(slot, _)| *slot == entry.slot) {
-            None => "",
-            Some((_, super::SeatLaunch::Id(id))) => id.as_str(),
-            Some((_, super::SeatLaunch::Unproven(_))) => return,
+        let launch = match self.launch_row(&entry.slot) {
+            crate::tracked::LaunchRow::Legacy => "",
+            crate::tracked::LaunchRow::Token(id) => id,
+            crate::tracked::LaunchRow::Damaged(_) => return,
         };
         let text = record.notice();
         let request = crate::deliver::Request {
@@ -389,6 +389,29 @@ mod tests {
                 "{lead:?} {reference}"
             );
         }
+    }
+
+    /// The lead's own launch row decides its leg: its token, legacy when it
+    /// has none beside another seat's token, damaged when its row is.
+    #[test]
+    fn the_leads_launch_row_is_its_own_slots_row() {
+        use super::super::SeatLaunch::{Id, Unproven};
+        use crate::tracked::LaunchRow::{Damaged, Legacy, Token};
+        let worker = ("worker.1".to_owned(), Id("w-token".to_owned()));
+        let proved = [
+            worker.clone(),
+            ("main".to_owned(), Id("m-token".to_owned())),
+        ];
+        assert_eq!(super::super::launch_row(&proved, "main"), Token("m-token"));
+        assert_eq!(
+            super::super::launch_row(std::slice::from_ref(&worker), "main"),
+            Legacy
+        );
+        let damaged = [worker, ("main".to_owned(), Unproven("duplicate"))];
+        assert_eq!(
+            super::super::launch_row(&damaged, "main"),
+            Damaged("duplicate")
+        );
     }
 
     fn stems(scopes: &[crate::vendorblock::Scope]) -> Vec<String> {
