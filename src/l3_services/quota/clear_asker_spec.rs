@@ -13,8 +13,14 @@ fn human(session: &str) -> Option<PaneRead> {
 #[test]
 fn only_no_markers_at_all_is_the_terminal() {
     let never = |_: &str| -> Option<PaneRead> { panic!("no pane is read") };
-    assert_eq!(clear_asker(Marker::Absent, None, never), ClearAsker::Terminal);
-    assert_eq!(clear_asker(Marker::Absent, Some(""), never), ClearAsker::Terminal);
+    assert_eq!(
+        clear_asker(Marker::Absent, None, never),
+        ClearAsker::Terminal
+    );
+    assert_eq!(
+        clear_asker(Marker::Absent, Some(""), never),
+        ClearAsker::Terminal
+    );
 }
 
 #[test]
@@ -65,7 +71,13 @@ fn a_read_pane_is_the_human_only_when_it_is_described_and_no_seat() {
 fn the_refusal_and_the_prompt_name_the_stem_and_the_human_route() {
     let line = clear_refusal("client-muse");
     assert!(!line.contains('\n'));
-    assert!(line.contains("ae quota clear client-muse") && line.contains("human"), "{line}");
+    assert!(
+        line.contains("ae quota clear client-muse") && line.contains("human"),
+        "{line}"
+    );
     let prompt = clear_prompt("provider-github-copilot");
-    assert!(prompt.contains("provider-github-copilot") && prompt.ends_with("(y/n)"), "{prompt}");
+    assert!(
+        prompt.contains("provider-github-copilot") && prompt.ends_with("(y/n)"),
+        "{prompt}"
+    );
 }

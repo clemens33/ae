@@ -1626,7 +1626,9 @@ pub(crate) fn quota_clear_argv(
     checkout: Option<&Path>,
 ) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    let mut argv = ["env", "-u", "TMUX", "-u", "TMUX_PANE"].map(ToOwned::to_owned).to_vec();
+    let mut argv = ["env", "-u", "TMUX", "-u", "TMUX_PANE"]
+        .map(ToOwned::to_owned)
+        .to_vec();
     if let Some(config) = checkout {
         argv.push(format!("AE_HOME={}", root.display()));
         argv.push(format!("CONFIG_FILE={}", config.display()));

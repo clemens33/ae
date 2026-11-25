@@ -175,10 +175,7 @@ mod tests {
              zen = opencode --model opencode/big-pickle\n",
         )
         .expect("config");
-        assert_eq!(
-            stems(&reach(&cfg, &pairs(""), &[])),
-            ["provider-opencode"]
-        );
+        assert_eq!(stems(&reach(&cfg, &pairs(""), &[])), ["provider-opencode"]);
     }
 
     /// Two `OpenCode` clients: an approved pair adds the scope the pair's
@@ -228,11 +225,22 @@ mod tests {
         };
         let events = [
             line("watchdog", "send", "client-muse@1#main"),
-            line("lead", crate::vendorblock::NOTICE_ACTION, "client-muse@1#spawned.0"),
-            line("watchdog", crate::vendorblock::NOTICE_ACTION, "client-muse@1#worker.0"),
+            line(
+                "lead",
+                crate::vendorblock::NOTICE_ACTION,
+                "client-muse@1#spawned.0",
+            ),
+            line(
+                "watchdog",
+                crate::vendorblock::NOTICE_ACTION,
+                "client-muse@1#worker.0",
+            ),
         ];
         assert!(!noticed(&events, "client-muse@1#main"));
-        assert!(!noticed(&events, "client-muse@1#spawned.0"), "another actor's line");
+        assert!(
+            !noticed(&events, "client-muse@1#spawned.0"),
+            "another actor's line"
+        );
         assert!(noticed(&events, "client-muse@1#worker.0"));
     }
 }

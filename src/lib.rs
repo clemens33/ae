@@ -596,9 +596,17 @@ fn quota_clear_asked(
             let Some(server) = server.as_ref() else {
                 return refuse(err, &quota::clear_refusal(client));
             };
-            return match lifecycle::confirm_on_client(server, session, &quota::clear_prompt(client), &argv) {
+            return match lifecycle::confirm_on_client(
+                server,
+                session,
+                &quota::clear_prompt(client),
+                &argv,
+            ) {
                 lifecycle::ClientPrompt::Shown => {
-                    writeln!(out, "ae quota: confirm on your tmux client to clear the block on {client}")?;
+                    writeln!(
+                        out,
+                        "ae quota: confirm on your tmux client to clear the block on {client}"
+                    )?;
                     Ok(Some(0))
                 }
                 lifecycle::ClientPrompt::Nobody | lifecycle::ClientPrompt::Failed => refuse(
@@ -612,7 +620,11 @@ fn quota_clear_asked(
         (quota::ClearAsker::Terminal, false)
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) =>
         {
-            write!(out, "{} [y/N] ", quota::clear_prompt(client).trim_end_matches(" (y/n)"))?;
+            write!(
+                out,
+                "{} [y/N] ",
+                quota::clear_prompt(client).trim_end_matches(" (y/n)")
+            )?;
             out.flush()?;
             let mut reply = String::new();
             let answered = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut reply)

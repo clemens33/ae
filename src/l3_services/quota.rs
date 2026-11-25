@@ -3254,7 +3254,9 @@ fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> 
     if held.is_empty() {
         return String::new();
     }
-    let mut text = String::from("\nblocked scopes (spawn, launch and reseat refuse them until the human clears them):\n");
+    let mut text = String::from(
+        "\nblocked scopes (spawn, launch and reseat refuse them until the human clears them):\n",
+    );
     for record in &held {
         text.push_str(&record.quota_line());
         text.push('\n');

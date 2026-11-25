@@ -37,7 +37,10 @@ fn seed(dir: &std::path::Path, first: &str) {
 }
 
 fn journal(dir: &std::path::Path) -> String {
-    #[allow(clippy::disallowed_methods, reason = "test reads the journal it trimmed")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test reads the journal it trimmed"
+    )]
     let text = std::fs::read_to_string(dir.join("events.jsonl")).expect("journal");
     text
 }
@@ -60,7 +63,10 @@ fn a_resume_trim_keeps_the_receipt_of_a_standing_block() {
 fn a_resume_trim_drops_the_receipt_of_a_cleared_or_replaced_block() {
     for (tag, stale) in [
         ("cleared", None),
-        ("replaced", Some(RECORD.replace("since=1788858600", "since=1788858700"))),
+        (
+            "replaced",
+            Some(RECORD.replace("since=1788858600", "since=1788858700")),
+        ),
     ] {
         let (root, dir, identity) = fleet(tag);
         match stale {

@@ -23,11 +23,11 @@ use crate::tool::ToolKind;
 use crate::{deliver, roster, tmux, transport};
 
 pub(crate) mod assets;
-mod caller;
-pub(crate) mod capture;
 #[cfg(test)]
 #[path = "session_launch/blocknotice_trim_spec.rs"]
 mod blocknotice_trim_spec;
+mod caller;
+pub(crate) mod capture;
 #[cfg(test)]
 #[path = "session_launch/effort_trim_bounded_spec.rs"]
 mod effort_trim_bounded_spec;
