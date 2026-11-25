@@ -311,7 +311,7 @@ fn decision(tab: &mut Tab, rig: &Rig) -> Checked {
              return {{ok: saw?.includes(question) && saw.includes(option) && \
              radios.map(r => r.dataset.choice).join(',') === '1,2' && radios[0].name === radios[1].name && \
              !form.querySelector('[data-t1-hostile], input[type=checkbox], input:checked') && \
-             !!form.querySelector('[data-recommended] input[data-choice=2]'), saw}};"
+             !!form.querySelector('[data-recommended] input[data-choice=\"2\"]'), saw}};"
         ),
         "",
     )?;
@@ -343,6 +343,13 @@ fn decision(tab: &mut Tab, rig: &Rig) -> Checked {
     tab.click_selector(CHECK, &format!("{D61} [data-action=talk-send]"))?;
     tab.click_selector(CHECK, &format!("{D61} [data-action=undo]"))?;
     std::thread::sleep(Duration::from_secs(6));
+    tab.until(
+        CHECK,
+        "const saw = __t1.posts; \
+         return {ok: saw.some(p => p.body.text === want && p.receipt?.outcome === 'sent'), saw};",
+        "#smoke D61: Please explain",
+        SEND_WAIT,
+    )?;
     tab.holds(
         CHECK,
         "const saw = __t1.posts.map(p => p.body); return {ok: __t1.nonces === 1 && saw.length >= 1 && \
@@ -352,7 +359,7 @@ fn decision(tab: &mut Tab, rig: &Rig) -> Checked {
 
     script(tab, CHECK, "__t1.posts.length = 0; __t1.nonces = 0;")?;
     const CHANGED: &str = "t1-choice-changed";
-    tab.click_selector(CHANGED, &format!("{D61} input[data-choice=1]"))?;
+    tab.click_selector(CHANGED, &format!("{D61} input[data-choice=\"1\"]"))?;
     tab.click_selector(CHANGED, &format!("{D61} [data-action=answer]"))?;
     aboard(rig, "Go later");
     wait(
@@ -376,12 +383,12 @@ fn decision(tab: &mut Tab, rig: &Rig) -> Checked {
         tab,
         CHANGED,
         "const form = document.querySelector('form[data-item=D61]'); const saw = form?.textContent; \
-         return {ok: !!form.querySelector('input[data-choice=1]:enabled') && !saw.includes('Go later'), saw};",
+         return {ok: !!form.querySelector('input[data-choice=\"1\"]:enabled') && !saw.includes('Go later'), saw};",
         "",
     )?;
     ok(CHANGED, CELL);
 
-    tab.click_selector(CHECK, &format!("{D61} input[data-choice=1]"))?;
+    tab.click_selector(CHECK, &format!("{D61} input[data-choice=\"1\"]"))?;
     tab.click_selector(CHECK, &format!("{D61} [data-action=answer]"))?;
     choose(tab, CHECK, "calm")?;
     choose(tab, CHECK, "smoke")?;
