@@ -5062,6 +5062,118 @@ mod tests {
         format!("[prompt]\ninstructions = \"\"\"\n{body}\n\"\"\"\n")
     }
 
+    /// The packet inserts both blocks together immediately before Boundaries.
+    fn web_charter_blocks(text: &str) -> &str {
+        let (_, tail) = text
+            .split_once("## Topics, tags and decisions\n")
+            .expect("the Topics block");
+        tail.split_once("\n## Boundaries\n")
+            .expect("the end of the Owner lines block")
+            .0
+    }
+
+    fn web_charter_prompt() -> String {
+        prompt_rows(include_str!(
+            "../../contrib/aeorchestrator/orchestrator.config"
+        ))
+        .pop()
+        .expect("the effective prompt")
+        .value
+    }
+
+    #[test]
+    fn web_charter_uses_the_same_topic_and_owner_rules_in_the_seat_and_the_handbook() {
+        let prompt = web_charter_prompt();
+        let blocks = web_charter_blocks(&prompt);
+        assert_eq!(
+            blocks,
+            web_charter_blocks(include_str!("../../contrib/aeorchestrator/CHARTER.md"))
+        );
+        for fragment in [
+            "topic-<slug>",
+            "state: <word>",
+            "`needs`",
+            "`moving`",
+            "`quiet`",
+            "`parked`",
+            "`closed`",
+            "#reserved",
+            "never open a topic record with the slug `reserved`",
+            "## Owner lines from ae web",
+            "`#<slug> keep`",
+            "`#<slug> ask`",
+            "`#<slug> close <reason>`",
+            "`D<n> <answer>`",
+            "`#<slug> new <title>`",
+            "`#<slug>: <text>`",
+            "`#<slug> D<n>: <text>`",
+            "is ordinary conversation in that topic",
+            "desk show",
+            "--owner-input <ask-id>",
+        ] {
+            assert!(blocks.contains(fragment), "the charter lacks {fragment:?}");
+        }
+        let marker = "Begin every reply about one topic with that topic's `#<slug>`";
+        assert!(blocks.lines().any(|line| line.contains(marker)));
+        assert_eq!(charter_version(&prompt), 5);
+    }
+
+    #[test]
+    fn web_charter_decide_example_parses_as_a_tagged_reserved_item() {
+        let prompt = web_charter_prompt();
+        let line = web_charter_blocks(&prompt)
+            .split('`')
+            .find(|part| part.starts_with("D7 | "))
+            .expect("the example board line in the Topic block");
+        let input = format!("DECIDE\n{line}");
+        let items = crate::desk::parse_input(input.as_bytes()).expect("the real DECIDE grammar");
+        assert_eq!(items.len(), 1);
+        let text = items[0].text.as_str();
+        assert!(text.chars().count() <= 160 && !text.contains('|'), "{text}");
+        assert_eq!(
+            crate::topic::tags(text).first().copied(),
+            Some("gta-rollout")
+        );
+        assert!(text.split_whitespace().any(|token| token == "#reserved"));
+    }
+
+    #[test]
+    fn web_charter_bookkeeping_examples_parse_as_topic_records() {
+        let prompt = web_charter_prompt();
+        let forms: Vec<_> = web_charter_blocks(&prompt).split('`').collect();
+        for review in ["review: keep", "review: ask"] {
+            assert!(forms.contains(&review), "the charter lacks {review}");
+            let record = crate::topic::parse_record(review);
+            assert_eq!(
+                (record.state, record.title, record.close),
+                (None, None, None)
+            );
+        }
+        let close = forms
+            .iter()
+            .find(|part| part.starts_with("state: closed | close:"))
+            .expect("the close record form");
+        let close = crate::topic::parse_record(&close.replace("<reason>", r"Done \| parked \\"));
+        assert_eq!(close.state.as_deref(), Some("closed"));
+        assert_eq!(close.close.as_deref(), Some(r"Done | parked \"));
+
+        let new = forms
+            .iter()
+            .find(|part| part.starts_with("title: <title shortened to 24 characters>"))
+            .expect("the new topic record form");
+        let new = crate::topic::parse_record(
+            &new.replace("<title shortened to 24 characters>", "Launch")
+                .replace("<the full title>", r"Launch \| verify \\ archive"),
+        );
+        assert_eq!(new.title.as_deref(), Some("Launch"));
+        assert_eq!(new.state.as_deref(), Some("moving"));
+        assert_eq!(new.what.as_deref(), Some(r"Launch | verify \ archive"));
+        assert_eq!(
+            new.src.as_deref(),
+            Some("owner, new topic from the web page")
+        );
+    }
+
     #[test]
     fn a_marker_outside_the_effective_prompt_row_does_not_make_a_seat_prompt_current() {
         let old = with_prompt("the old prompt");

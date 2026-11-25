@@ -620,6 +620,25 @@ fn loss_after_opening_and_before_outcome_never_carries_on_retry() {
 }
 
 #[test]
+fn web_origin_is_written_with_the_console_actor_on_a_real_send() {
+    let rig = role_rig("wcorigin");
+    let time = TestClock::new();
+    let web = Web::live(&rig, &time, 0);
+    let draft = web.draft(&web.route(&rig), TEXT);
+    let id = confirmed(&web.send(&draft), &rig);
+    let journal = rig.events();
+    let opening = journal
+        .lines()
+        .map(|line| {
+            json::parse(line).unwrap_or_else(|error| panic!("invalid event: {line}: {error}"))
+        })
+        .find(|row| row.get_str("action") == Some("ask") && row.get_str("ref") == Some(id.as_str()))
+        .expect("the opening the web receipt named");
+    assert_eq!(opening.get_str("actor"), Some("console:local"));
+    assert_eq!(opening.get_str("origin"), Some("web:local"));
+}
+
+#[test]
 fn a_completed_draft_keeps_its_receipt_across_restart_and_rejects_other_input() {
     let rig = role_rig("wcreplay");
     let time = TestClock::new();

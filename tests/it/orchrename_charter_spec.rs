@@ -184,7 +184,7 @@ fn assert_delivery(rig: &Rig) {
         .lines()
         .find_map(|line| line.strip_prefix("charter.main="))
         .expect("charter version stamp");
-    assert_eq!(stamp, "4", "{meta}");
+    assert_eq!(stamp, "5", "{meta}");
     assert!(
         meta.lines()
             .any(|line| line == "charter_launch.main=tok-rig")
@@ -249,7 +249,7 @@ fn waiting_user_refreshes_once_when_the_same_launch_is_idle_and_empty() {
     fs::write(&overlay, RELEASE_103).expect("the old on-disk charter stays at version 3");
     stepper.step();
     assert_held(&rig);
-    fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 4");
+    fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 5");
     stepper.step();
     assert_delivery(&rig);
     stepper.steps(2);

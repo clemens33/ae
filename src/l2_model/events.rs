@@ -1844,6 +1844,27 @@ mod tests {
         );
     }
 
+    /// A duplicate is inert because origin stays outside `KNOWN_KEYS`.
+    #[test]
+    fn web_origin_is_a_lenient_event_member() {
+        let opening = r#"{"ts":"2026-05-19T07:29:45Z","actor":"console:local","action":"ask""#;
+        for (member, expected) in [
+            ("", None),
+            (r#","origin":"telegram:x""#, None),
+            (r#","origin":5"#, None),
+            (r#","origin":"web:local","origin":"web:local""#, None),
+            (r#","origin":"web:local","origin":5"#, None),
+            (r#","origin":5,"origin":"web:local""#, None),
+            (r#","origin":"web:local""#, Some("web:local")),
+        ] {
+            let event = Event::parse_line(&format!("{opening}{member}}}"))
+                .expect("the optional label must never cost the record");
+            assert_eq!(event.actor, "console:local");
+            assert_eq!(event.action, "ask");
+            assert_eq!(event.origin.as_deref(), expected, "{member}");
+        }
+    }
+
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
     const DOCUMENTED_EVENT_KEYS: [&str; 28] = [

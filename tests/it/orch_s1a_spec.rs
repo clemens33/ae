@@ -124,6 +124,10 @@ fn verify(r: &Rig, session: &str, pane: &str, id: &str) -> Out {
 }
 
 fn proved(out: &Out, time: &str, holder: &str, target: &str, text: &str) {
+    proved_with_origin(out, "console:local", time, holder, target, text);
+}
+
+fn proved_with_origin(out: &Out, origin: &str, time: &str, holder: &str, target: &str, text: &str) {
     assert_eq!(out.0, Some(0), "verify: {}", words(out));
     let (_, body) = out
         .1
@@ -131,7 +135,7 @@ fn proved(out: &Out, time: &str, holder: &str, target: &str, text: &str) {
         .expect("verify prints full text");
     let mut lines = out.1.lines();
     assert_eq!(lines.next(), Some("owner ingress"));
-    assert_eq!(lines.next(), Some("origin: console:local"));
+    assert_eq!(lines.next(), Some(format!("origin: {origin}").as_str()));
     let holding = lines
         .next()
         .and_then(|line| line.strip_prefix("holding session: "));
@@ -400,6 +404,105 @@ fn binding_copies_telegram_words_into_exact_frame_and_checks_current_ledger() {
         .collect();
     fs::write(log, without).expect("delete cited opening while retaining its body");
     unproved(&check());
+}
+
+/// Model an alternate ingress writer by changing only one opening's actor and
+/// extra members. The real ingress above supplies the ask and its body.
+fn substitute_owner_opening(r: &Rig, id: &str, actor_and_extra: &str) {
+    let log = r.caller.dir.join("events.jsonl");
+    let original = read(&log);
+    let reference = format!(r#""ref":"{id}""#);
+    let mut changed = 0;
+    let updated: String = original
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.contains(r#""action":"ask""#) && line.contains(&reference) {
+                let updated = line.replacen(r#""actor":"console:local""#, actor_and_extra, 1);
+                assert_ne!(updated, line, "fixture did not change the opening");
+                changed += 1;
+                updated
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    assert_eq!(changed, 1, "replace exactly the cited opening");
+    fs::write(log, updated).expect("substitute the opening");
+}
+
+#[test]
+fn web_origin_is_printed_for_a_direct_owner_opening() {
+    let r = rig("s1awebdir");
+    let input = telegram(
+        &r.world.root,
+        &r.caller.dir,
+        "orch",
+        "boss",
+        &uuid_of("orch"),
+        31,
+    );
+    let id = input.reference.as_deref().expect("input id");
+    substitute_owner_opening(&r, id, r#""actor":"console:local","origin":"web:local""#);
+    proved_with_origin(
+        &verify(&r, "orch", &r.caller.pane, id),
+        "web:local",
+        &input.ts.to_string(),
+        "orch",
+        "boss",
+        OWNER,
+    );
+}
+
+#[test]
+fn web_origin_on_a_bound_relay_comes_from_the_cited_owner_opening() {
+    let r = rig("s1awebbnd");
+    stamp(&r, "1");
+    let input = telegram(
+        &r.world.root,
+        &r.caller.dir,
+        "orch",
+        "boss",
+        &uuid_of("orch"),
+        32,
+    );
+    let input_id = input.reference.as_deref().expect("input id");
+    let (id, _) = deliver(&r, &["--owner-input", input_id, "--task", TASK]);
+    let check = || verify(&r, &r.owner.home, &r.owner.tool.pane, &id);
+    let time = input.ts.to_string();
+    proved(&check(), &time, "orch", "lead", OWNER);
+    substitute_owner_opening(
+        &r,
+        input_id,
+        r#""actor":"console:local","origin":"web:local""#,
+    );
+    proved_with_origin(&check(), "web:local", &time, "orch", "lead", OWNER);
+}
+
+#[test]
+fn web_origin_is_never_a_console_actor() {
+    for (tag, row) in [
+        ("s1awebact", r#""actor":"web:local""#),
+        ("s1aweboth", r#""actor":"agent","origin":"web:local""#),
+    ] {
+        let r = rig(tag);
+        let input = telegram(
+            &r.world.root,
+            &r.caller.dir,
+            "orch",
+            "boss",
+            &uuid_of("orch"),
+            33,
+        );
+        let id = input.reference.as_deref().expect("input id");
+        substitute_owner_opening(&r, id, row);
+        let refused = verify(&r, "orch", &r.caller.pane, id);
+        unproved(&refused);
+        assert!(
+            words(&refused).contains("was not opened by the console"),
+            "{}",
+            words(&refused)
+        );
+    }
 }
 
 #[test]

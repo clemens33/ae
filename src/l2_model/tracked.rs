@@ -3668,6 +3668,33 @@ mod tests {
     const SOCK_B: &str = "session=b\ntmux_server_kind=socket\ntmux_server=/srv/b.sock\n";
 
     #[test]
+    fn web_origin_extra_keeps_the_console_actor_on_the_opening() {
+        let fields = EventFields::new(
+            Timestamp::from_epoch(1_779_175_785),
+            "console:local",
+            "ask",
+            "lead",
+            "ae-20260519T072945Z-00000001",
+            "",
+            "",
+            "main",
+            "session",
+            "question",
+            "",
+        );
+        for (extra, expected) in [
+            (&[][..], None),
+            (&[("origin", "web:local")][..], Some("web:local")),
+        ] {
+            let line = super::render_event_line(&fields, false, None, None, extra);
+            let row = crate::json::parse(&line).expect("the journal row is JSON");
+            assert_eq!(row.get_str("actor"), Some("console:local"));
+            assert_eq!(row.get_str("action"), Some("ask"));
+            assert_eq!(row.get_str("origin"), expected);
+        }
+    }
+
+    #[test]
     fn a_redirect_receipt_keeps_any_input_that_may_have_reached_the_pane() {
         use super::Receipt;
         use crate::deliver::{Failure, Request, Shape, Stage};

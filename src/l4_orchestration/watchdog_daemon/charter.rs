@@ -907,26 +907,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The queued self-reseat sentence raised the charter from 3 to 4: a
-    /// running launch stamped 3 is behind and gets the update turn ONCE, which
-    /// teaches the sentence and stamps 4, and a launch stamped 4 gets nothing.
+    /// The web topic and owner lines raised the charter from 4 to 5: a
+    /// running launch stamped 4 is behind and gets the update turn ONCE, which
+    /// teaches the sentence and stamps 5, and a launch stamped 5 gets nothing.
     /// The literals stand apart from [`crate::config::SEAT_CHARTER_VERSION`],
-    /// so a constant that falls back to 3 fails here.
+    /// so a constant that falls back to 4 fails here.
     #[test]
-    fn a_launch_at_charter_3_gets_the_self_reseat_charter_once_and_one_at_4_nothing() {
-        let marker = "queues a move of this seat to another model or account of the same tool";
-        assert_eq!(crate::config::charter_version(TEMPLATE), 4);
-        assert!(behind(3), "a launch stamped 3 is owed the update");
-        assert!(!behind(4), "a launch stamped 4 is owed nothing");
+    fn a_launch_at_charter_4_gets_the_web_charter_once_and_one_at_5_nothing() {
+        let marker = "Begin every reply about one topic with that topic's `#<slug>`";
+        assert_eq!(crate::config::charter_version(TEMPLATE), 5);
+        assert!(behind(4), "a launch stamped 4 is owed the update");
+        assert!(!behind(5), "a launch stamped 5 is owed nothing");
         let idle = (Some("waiting-user"), Frame::Idle);
-        let dir = scratch("v3-to-v4");
+        let dir = scratch("v4-to-v5");
         std::fs::write(
             dir.join("meta"),
-            "session=orch\nlaunch_id.main=tok\ncharter.main=3\ncharter_launch.main=tok\n",
+            "session=orch\nlaunch_id.main=tok\ncharter.main=4\ncharter_launch.main=tok\n",
         )
-        .expect("a launch stamped at charter 3");
+        .expect("a launch stamped at charter 4");
         let seat = Seat {
-            running: 3,
+            running: 4,
             ..seat_in(&dir)
         };
         let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
@@ -935,8 +935,8 @@ mod tests {
         assert!(pasted.starts_with(HEAD), "{pasted}");
         assert!(pasted.contains(marker), "the turn teaches the sentence");
         let after = meta(&dir);
-        assert!(after.contains("charter.main=4\n"), "{after}");
-        assert!(!after.contains("charter.main=3\n"), "{after}");
+        assert!(after.contains("charter.main=5\n"), "{after}");
+        assert!(!after.contains("charter.main=4\n"), "{after}");
         let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
         assert_eq!(
             charter,
@@ -946,14 +946,14 @@ mod tests {
         assert_eq!(pasted, None);
         let _ = std::fs::remove_dir_all(&dir);
 
-        let dir = scratch("v4-current");
+        let dir = scratch("v5-current");
         std::fs::write(
             dir.join("meta"),
-            "session=orch\nlaunch_id.main=tok\ncharter.main=4\ncharter_launch.main=tok\n",
+            "session=orch\nlaunch_id.main=tok\ncharter.main=5\ncharter_launch.main=tok\n",
         )
-        .expect("a launch stamped at charter 4");
+        .expect("a launch stamped at charter 5");
         let seat = Seat {
-            running: 4,
+            running: 5,
             ..seat_in(&dir)
         };
         let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));

@@ -715,6 +715,22 @@ mod tests {
     }
 
     #[test]
+    fn a_web_charter_repair_names_the_fifth_marker_for_an_edited_v4_prompt() {
+        let v4 = include_str!("../../../tests/fixtures/orchestrator/v2026.11.117.config");
+        let (body, tail) = v4.rsplit_once("\n\"\"\"").expect("the v4 prompt block");
+        let edited = format!("{body}\nAn owner note.\n\"\"\"{tail}");
+        assert_eq!(seat_prompt_charter(&edited), 4);
+        let scratch = root_with("web-charter-v4", Some(edited.as_bytes()));
+        let line = reconcile(&scratch.0, "9.9").expect("a repair line for the edited v4 prompt");
+        assert!(
+            line.contains("Begin every reply about one topic with that topic's `#<slug>`"),
+            "{line}"
+        );
+        let path = scratch.0.join("orchestrator.config");
+        assert_eq!(std::fs::read_to_string(path).expect("seat config"), edited);
+    }
+
+    #[test]
     fn a_prompt_that_teaches_the_owner_words_stays_whatever_else_the_owner_edited() {
         let (body, tail) = SEAT_TEMPLATE
             .rsplit_once("\n\"\"\"")
