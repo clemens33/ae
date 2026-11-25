@@ -44,6 +44,11 @@ const VERSION: &str = "1";
 /// and a cleared-then-reblocked scope is a new identity.
 pub const NOTICE_ACTION: &str = "vendorblock-notice";
 
+/// The watchdog event that says THIS session's seat drew a block, ref the
+/// standing record's [`Record::identity`]: the session's own lead is told
+/// about it whatever its config reaches.
+pub const WRITTEN_ACTION: &str = "vendorblock-written";
+
 /// The longest reason a record keeps, in chars.
 pub const REASON_MAX: usize = 200;
 
@@ -679,18 +684,25 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[must_use]
 pub fn notice_stands(state_root: &std::path::Path, reference: &str, now: i64) -> bool {
     let identity = reference.split_once('#').map_or(reference, |(id, _)| id);
-    let Some((stem, _)) = identity.split_once('@') else {
-        return false;
+    standing_identity(state_root, identity, now).is_some()
+}
+
+/// The record that stands at `now` under `state_root` with exactly the
+/// [`Record::identity`] `identity`, or `None`: a cleared, replaced, damaged or
+/// future record is not it. Read-only.
+#[must_use]
+pub fn standing_identity(state_root: &std::path::Path, identity: &str, now: i64) -> Option<Record> {
+    let (stem, _) = identity.split_once('@')?;
+    let (provider, word) = match Target::parse(stem)? {
+        Target::Client(label) => (false, label),
+        Target::Provider(name) => (true, name),
     };
-    let (provider, word) = match Target::parse(stem) {
-        Some(Target::Client(label)) => (false, label),
-        Some(Target::Provider(name)) => (true, name),
-        None => return false,
-    };
-    matches!(
-        standing(state_root, provider, word),
-        Standing::Held(record) if record.stands_at(now) && record.identity() == identity
-    )
+    match standing(state_root, provider, word) {
+        Standing::Held(record) if record.stands_at(now) && record.identity() == identity => {
+            Some(record)
+        }
+        _ => None,
+    }
 }
 
 /// What a human typed after `ae quota clear`: a record stem.

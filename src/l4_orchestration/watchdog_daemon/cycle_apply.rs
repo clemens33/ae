@@ -122,6 +122,7 @@ impl Cycle<'_> {
             return;
         };
         let scope = crate::vendorblock::Scope::new(&client, tool, provider);
+        let drawn = scope.clone();
         let record = crate::vendorblock::Record {
             tool: scope.tool,
             client: scope.client,
@@ -146,6 +147,24 @@ impl Cycle<'_> {
         }
         match crate::vendorblock::record_first(root, &record) {
             Ok(first) => {
+                // This session's own lead hears of the block its seat drew,
+                // whatever its config reaches: the event names the record
+                // that stands, a new one or the one this seat hit again.
+                if let Some(standing) =
+                    crate::vendorblock::block(root, &drawn, on.seen.now_epoch)
+                {
+                    let _ = super::Journal {
+                        meta_dir: self.meta_dir,
+                        session: self.session,
+                    }
+                    .record_referring(
+                        crate::vendorblock::WRITTEN_ACTION,
+                        on.agent,
+                        &standing.identity(),
+                        &format!("vendor block drawn: {}", standing.stem()),
+                        err,
+                    );
+                }
                 if first {
                     let _ = writeln!(
                         err,

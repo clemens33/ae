@@ -60,6 +60,21 @@ fn a_resume_trim_keeps_the_receipt_of_a_standing_block() {
 }
 
 #[test]
+fn a_resume_trim_keeps_the_own_seats_drawn_block_while_it_stands() {
+    let (root, dir, identity) = fleet("drawn");
+    let line = format!(
+        r#"{{"ts":"2026-09-08T09:10:00Z","actor":"watchdog","action":"{}","ref":"{identity}"}}"#,
+        crate::vendorblock::WRITTEN_ACTION
+    );
+    seed(&dir, &line);
+
+    super::trim_events(&dir);
+
+    assert!(journal(&dir).starts_with(&format!("{line}\n")));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_resume_trim_drops_the_receipt_of_a_cleared_or_replaced_block() {
     for (tag, stale) in [
         ("cleared", None),

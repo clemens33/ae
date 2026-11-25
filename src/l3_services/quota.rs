@@ -23,6 +23,9 @@ pub mod view;
 mod pace_history_spec;
 
 #[cfg(test)]
+#[path = "quota/blocked_display_spec.rs"]
+mod blocked_display_spec;
+#[cfg(test)]
 #[path = "quota/clear_asker_spec.rs"]
 mod clear_asker_spec;
 #[cfg(test)]

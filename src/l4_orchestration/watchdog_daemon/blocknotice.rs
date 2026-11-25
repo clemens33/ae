@@ -34,16 +34,24 @@ impl Cycle<'_> {
             return;
         };
         let global = crate::doors::config_file(crate::shape::current(), root);
-        let Ok(cfg) =
-            crate::config::read_identity(Some(global.as_path()), self.local_config.as_deref())
-        else {
-            return;
-        };
-        let approved = crate::vendorblock::approved_scopes(&global);
-        for scope in reach(&cfg, &approved, &self.roster) {
-            let Some(record) = crate::vendorblock::block(root, &scope, now) else {
-                continue;
-            };
+        let reached = crate::config::read_identity(
+            Some(global.as_path()),
+            self.local_config.as_deref(),
+        )
+        .map(|cfg| {
+            let approved = crate::vendorblock::approved_scopes(&global);
+            reach(&cfg, &approved, &self.roster)
+        })
+        .unwrap_or_default();
+        let mut records = written(events, root, now);
+        for scope in &reached {
+            if let Some(record) = crate::vendorblock::block(root, scope, now)
+                && !records.iter().any(|held| held.identity() == record.identity())
+            {
+                records.push(record);
+            }
+        }
+        for record in &records {
             let identity = record.identity();
             for entry in self
                 .roster
@@ -56,7 +64,7 @@ impl Cycle<'_> {
                 });
                 let reference = format!("{identity}#{}", entry.slot);
                 if live && !noticed(events, &reference) {
-                    self.claim_and_tell(entry, (root, &scope), &identity, &reference);
+                    self.claim_and_tell(entry, root, &identity, &reference);
                 }
             }
         }
@@ -73,7 +81,7 @@ impl Cycle<'_> {
     fn claim_and_tell(
         &self,
         entry: &crate::meta::RosterEntry,
-        (root, scope): (&std::path::Path, &Scope),
+        root: &std::path::Path,
         identity: &str,
         reference: &str,
     ) {
@@ -95,9 +103,7 @@ impl Cycle<'_> {
             return;
         }
         let now = crate::time::Timestamp::now().epoch();
-        let Some(record) = crate::vendorblock::block(root, scope, now)
-            .filter(|record| record.identity() == identity)
-        else {
+        let Some(record) = crate::vendorblock::standing_identity(root, identity, now) else {
             return;
         };
         let summary = format!("vendor block notice: {}", record.stem());
@@ -110,6 +116,27 @@ impl Cycle<'_> {
             Some(&entry.slot),
         );
     }
+}
+
+/// The standing records this session's own seats drew, from the watchdog's
+/// [`crate::vendorblock::WRITTEN_ACTION`] events: the own lead hears of these
+/// whether or not a configured profile reaches the scope, and whether or not
+/// the config reads at all. A cleared or replaced record is gone from here.
+fn written(events: &[Event], root: &std::path::Path, now: i64) -> Vec<crate::vendorblock::Record> {
+    let mut records: Vec<crate::vendorblock::Record> = Vec::new();
+    for event in events.iter().filter(|event| {
+        event.action == crate::vendorblock::WRITTEN_ACTION && event.actor == super::ACTOR
+    }) {
+        let Some(identity) = event.reference.as_deref() else {
+            continue;
+        };
+        if let Some(record) = crate::vendorblock::standing_identity(root, identity, now)
+            && !records.iter().any(|held| held.identity() == identity)
+        {
+            records.push(record);
+        }
+    }
+    records
 }
 
 /// Whether the journal holds the watchdog's notice `reference` names, whether
@@ -127,8 +154,9 @@ fn noticed(events: &[Event], reference: &str) -> bool {
 /// spawn of it would be in ([`Scope::of_profile`]): every configured profile
 /// on its own client, every approved `profile@client` pair
 /// ([`crate::vendorblock::approved_scopes`]), and every seat of the roster on
-/// the client it records. A profile that names no configured client reaches
-/// nothing.
+/// the client it records while its profile is still configured. A profile
+/// that names no configured client, or a seat whose profile is gone, reaches
+/// nothing: a removed profile proves no launch.
 pub(super) fn reach(
     cfg: &crate::config::IdentityConfig,
     approved: &[Scope],
@@ -140,6 +168,7 @@ pub(super) fn reach(
         .filter_map(|(profile, _)| Scope::of_profile(cfg, profile, None));
     let seated = roster.iter().filter_map(|entry| {
         let profile = entry.profile.as_deref()?;
+        cfg.profile(profile)?;
         let client = match &entry.client {
             crate::meta::RecordedClient::Label(label) => Some(label.as_str()),
             _ => None,
@@ -157,7 +186,7 @@ pub(super) fn reach(
 
 #[cfg(test)]
 mod tests {
-    use super::{noticed, reach};
+    use super::{noticed, reach, written};
     use crate::events::Event;
     use crate::meta::{
         RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
@@ -214,6 +243,61 @@ mod tests {
             stems(&reach(&cfg, &approved, &roster)),
             ["client-opencode", "client-ocwork"]
         );
+        let gone = [RosterEntry {
+            profile: Some("removed".to_owned()),
+            ..roster[0].clone()
+        }];
+        assert_eq!(
+            stems(&reach(&cfg, &[], &gone)),
+            ["client-opencode"],
+            "a seat whose profile is gone proves no launch on its recorded client"
+        );
+    }
+
+    /// The blocks this session's own seat drew stand on their own, from the
+    /// watchdog's events alone and with no config: a cleared or replaced
+    /// record, another actor's line and a repeat add nothing.
+    #[test]
+    fn the_written_blocks_are_the_standing_records_the_own_seats_drew() {
+        let root = std::env::temp_dir().join(format!(
+            "ae-blocknotice-written-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let record = crate::vendorblock::parse(
+            b"version=1\ntool=opencode\nclient=ocbin\nsince=1788858600\nkind=account\n\
+              seat=w\nreason=You have exceeded your monthly quota\n",
+        )
+        .expect("record");
+        assert_eq!(
+            crate::vendorblock::record_first(&root, &record).ok(),
+            Some(true)
+        );
+        let identity = record.identity();
+        let line = |actor: &str, reference: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"2026-09-08T09:10:00Z","actor":"{actor}","action":"{}","ref":"{reference}"}}"#,
+                crate::vendorblock::WRITTEN_ACTION
+            ))
+            .expect("event")
+        };
+        let stale = identity.replace("1788858600", "1788858599");
+        let events = [
+            line("watchdog", &identity),
+            line("watchdog", &identity),
+            line("lead", &identity),
+            line("watchdog", &stale),
+        ];
+        let found = written(&events, &root, record.since);
+        assert_eq!(
+            found.iter().map(crate::vendorblock::Record::identity).collect::<Vec<_>>(),
+            [identity.clone()]
+        );
+        assert!(written(&events[2..], &root, record.since).is_empty());
+        std::fs::remove_file(root.join("vendorblock/client-ocbin.rec")).expect("clear");
+        assert!(written(&events, &root, record.since).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

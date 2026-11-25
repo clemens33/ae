@@ -3122,15 +3122,19 @@ fn trim_events(dir: &Path) {
     );
 }
 
-/// Whether `line` is a vendor block notice receipt whose block still stands:
-/// the cut must keep it, or the next watchdog would tell the lead again about
-/// the block it was already told of.
+/// Whether `line` is a vendor block notice receipt, or the event that this
+/// session's seat drew a block, whose block still stands: the cut must keep
+/// it, or the next watchdog would tell the lead again about the block it was
+/// already told of, or forget the block its own seat drew.
 fn standing_notice(root: &Path, line: &str, now: i64) -> bool {
-    if !line.contains(crate::vendorblock::NOTICE_ACTION) {
+    if !line.contains(crate::vendorblock::NOTICE_ACTION)
+        && !line.contains(crate::vendorblock::WRITTEN_ACTION)
+    {
         return false;
     }
     crate::events::Event::parse_line(line).is_ok_and(|event| {
-        event.action == crate::vendorblock::NOTICE_ACTION
+        (event.action == crate::vendorblock::NOTICE_ACTION
+            || event.action == crate::vendorblock::WRITTEN_ACTION)
             && event
                 .reference
                 .as_deref()
