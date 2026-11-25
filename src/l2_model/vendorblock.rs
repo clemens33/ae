@@ -1263,15 +1263,24 @@ mod tests {
              [profiles]\ncop = opencode --model github-copilot/gpt-6.1-sol\n",
         )
         .expect("global");
-        std::fs::write(&local, "[profiles]\ncop = opencode --model opencode-go/glm-5\n")
-            .expect("overlay");
+        std::fs::write(
+            &local,
+            "[profiles]\ncop = opencode --model opencode-go/glm-5\n",
+        )
+        .expect("overlay");
         let on_ocwork = |provider: &str| Record {
             client: "ocwork".to_owned(),
             provider: Some(provider.to_owned()),
             ..copilot()
         };
-        assert_eq!(record_first(&root, &on_ocwork("github-copilot")).ok(), Some(true));
-        assert_eq!(record_first(&root, &on_ocwork("opencode-go")).ok(), Some(true));
+        assert_eq!(
+            record_first(&root, &on_ocwork("github-copilot")).ok(),
+            Some(true)
+        );
+        assert_eq!(
+            record_first(&root, &on_ocwork("opencode-go")).ok(),
+            Some(true)
+        );
         let at = copilot().since;
         let why = scope_refusal(&root, &global, Some(&local), "cop", Some("ocwork"), at)
             .expect("the global pair is in the Copilot scope");

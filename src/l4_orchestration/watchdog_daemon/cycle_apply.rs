@@ -150,9 +150,7 @@ impl Cycle<'_> {
                 // This session's own lead hears of the block its seat drew,
                 // whatever its config reaches: the event names the record
                 // that stands, a new one or the one this seat hit again.
-                if let Some(standing) =
-                    crate::vendorblock::block(root, &drawn, on.seen.now_epoch)
-                {
+                if let Some(standing) = crate::vendorblock::block(root, &drawn, on.seen.now_epoch) {
                     let _ = super::Journal {
                         meta_dir: self.meta_dir,
                         session: self.session,

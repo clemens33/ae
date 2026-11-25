@@ -34,19 +34,19 @@ impl Cycle<'_> {
             return;
         };
         let global = crate::doors::config_file(crate::shape::current(), root);
-        let reached = crate::config::read_identity(
-            Some(global.as_path()),
-            self.local_config.as_deref(),
-        )
-        .map(|cfg| {
-            let approved = crate::vendorblock::approved_scopes(&global);
-            reach(&cfg, &approved, &self.roster)
-        })
-        .unwrap_or_default();
+        let reached =
+            crate::config::read_identity(Some(global.as_path()), self.local_config.as_deref())
+                .map(|cfg| {
+                    let approved = crate::vendorblock::approved_scopes(&global);
+                    reach(&cfg, &approved, &self.roster)
+                })
+                .unwrap_or_default();
         let mut records = written(events, root, now);
         for scope in &reached {
             if let Some(record) = crate::vendorblock::block(root, scope, now)
-                && !records.iter().any(|held| held.identity() == record.identity())
+                && !records
+                    .iter()
+                    .any(|held| held.identity() == record.identity())
             {
                 records.push(record);
             }
@@ -259,10 +259,8 @@ mod tests {
     /// record, another actor's line and a repeat add nothing.
     #[test]
     fn the_written_blocks_are_the_standing_records_the_own_seats_drew() {
-        let root = std::env::temp_dir().join(format!(
-            "ae-blocknotice-written-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ae-blocknotice-written-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         let record = crate::vendorblock::parse(
@@ -291,7 +289,10 @@ mod tests {
         ];
         let found = written(&events, &root, record.since);
         assert_eq!(
-            found.iter().map(crate::vendorblock::Record::identity).collect::<Vec<_>>(),
+            found
+                .iter()
+                .map(crate::vendorblock::Record::identity)
+                .collect::<Vec<_>>(),
             [identity.clone()]
         );
         assert!(written(&events[2..], &root, record.since).is_empty());
