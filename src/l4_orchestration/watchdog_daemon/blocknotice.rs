@@ -50,16 +50,12 @@ impl Cycle<'_> {
                     reach(&cfg, &approved, &self.roster)
                 })
                 .unwrap_or_default();
-        let mut records = written(events, root, now);
-        for scope in &reached {
-            if let Some(record) = crate::vendorblock::block(root, scope, now)
-                && !records
-                    .iter()
-                    .any(|held| held.identity() == record.identity())
-            {
-                records.push(record);
-            }
-        }
+        let records = union(
+            written(events, root, now),
+            reached
+                .iter()
+                .filter_map(|scope| crate::vendorblock::block(root, scope, now)),
+        );
         for record in &records {
             let identity = record.identity();
             for entry in self
@@ -67,10 +63,7 @@ impl Cycle<'_> {
                 .iter()
                 .filter(|entry| super::in_lead_pair(&entry.slot, self.lead_pair))
             {
-                let live = verdicts.iter().any(|(slot, seat)| {
-                    *slot == entry.slot
-                        && !matches!(seat.verdict, Verdict::Dead | Verdict::HumanPrompt)
-                });
+                let live = can_hear(verdicts, &entry.slot);
                 let reference = format!("{identity}#{}", entry.slot);
                 if live && !noticed(events, &reference) {
                     self.claim_and_tell((entry, observed), root, &identity, &reference);
@@ -202,6 +195,32 @@ fn notice_source(
     }
 }
 
+/// The blocks to tell: the own seats' written ones first, then each reached
+/// block whose identity is not already listed, each identity once.
+fn union(
+    mut records: Vec<crate::vendorblock::Record>,
+    reached: impl IntoIterator<Item = crate::vendorblock::Record>,
+) -> Vec<crate::vendorblock::Record> {
+    for record in reached {
+        if !records
+            .iter()
+            .any(|held| held.identity() == record.identity())
+        {
+            records.push(record);
+        }
+    }
+    records
+}
+
+/// The seat in `slot` can hear a notice this cycle: this cycle judged that
+/// very seat, and it is neither dead nor on a prompt only the human answers.
+/// Another seat's verdict says nothing about it.
+fn can_hear(verdicts: &[(String, SeatVerdict)], slot: &str) -> bool {
+    verdicts.iter().any(|(judged, seat)| {
+        judged == slot && !matches!(seat.verdict, Verdict::Dead | Verdict::HumanPrompt)
+    })
+}
+
 /// The standing records this session's own seats drew, from the watchdog's
 /// [`crate::vendorblock::WRITTEN_ACTION`] events: the own lead hears of these
 /// whether or not a configured profile reaches the scope, and whether or not
@@ -270,11 +289,71 @@ pub(super) fn reach(
 
 #[cfg(test)]
 mod tests {
-    use super::{notice_source, noticed, reach, written};
+    use super::{can_hear, notice_source, noticed, reach, union, written};
     use crate::events::Event;
     use crate::meta::{
         RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
     };
+
+    fn record(client: &str, since: i64) -> crate::vendorblock::Record {
+        crate::vendorblock::parse(
+            format!(
+                "version=1\ntool=muse\nclient={client}\nsince={since}\nkind=billing\n\
+                 seat=ember\nreason=Billing verification failed\n"
+            )
+            .as_bytes(),
+        )
+        .expect("a record")
+    }
+
+    /// A written block and a reached block of another scope are both told;
+    /// a reached duplicate of the written one is told once.
+    #[test]
+    fn the_blocks_told_are_the_written_ones_and_every_other_reached_one() {
+        let told: Vec<String> = union(
+            vec![record("muse", 1_788_858_600)],
+            [
+                record("muse", 1_788_858_600),
+                record("ocwork", 1_788_858_700),
+            ],
+        )
+        .iter()
+        .map(crate::vendorblock::Record::identity)
+        .collect();
+        let stems: Vec<&str> = told
+            .iter()
+            .map(|identity| identity.split('@').next().unwrap_or_default())
+            .collect();
+        assert_eq!(stems, ["client-muse", "client-ocwork"], "{told:?}");
+        assert!(told[0].starts_with("client-muse@1788858600/"), "{told:?}");
+        assert!(told[1].starts_with("client-ocwork@1788858700/"), "{told:?}");
+    }
+
+    fn seat(verdict: super::Verdict) -> super::SeatVerdict {
+        super::SeatVerdict {
+            verdict,
+            frame: crate::harness_state::HarnessState::default(),
+            task: false,
+        }
+    }
+
+    /// Only the slot's own verdict counts: a dead or prompting lead waits even
+    /// while another seat of the session is live, and a live lead hears.
+    #[test]
+    fn only_the_leads_own_live_verdict_lets_it_hear_a_notice() {
+        use super::Verdict::{Dead, HumanPrompt, Idle};
+        for (lead, hears) in [(Dead, false), (HumanPrompt, false), (Idle, true)] {
+            let verdicts = [
+                ("worker.1".to_owned(), seat(Idle)),
+                ("main".to_owned(), seat(lead)),
+            ];
+            assert_eq!(can_hear(&verdicts, "main"), hears, "{lead:?}");
+        }
+        assert!(
+            !can_hear(&[("worker.1".to_owned(), seat(Idle))], "main"),
+            "a seat this cycle never judged waits"
+        );
+    }
 
     fn stems(scopes: &[crate::vendorblock::Scope]) -> Vec<String> {
         scopes.iter().map(crate::vendorblock::Scope::stem).collect()
