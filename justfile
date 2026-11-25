@@ -88,20 +88,39 @@ format:
 # Run all tests — THE GATE
 test: rust-check
 
+# THE GUARD FILTER: the one nextest term that `just pre` and `just guards` share, so they cannot
+# disagree. It selects the guard modules of the integration target, `doors` (capability
+# boundary), `floor` (tmux floor boundary) and `gate` (justfile/install hazards, fuzz target
+# lists, the Mac subset manifest), plus the one source guard that lives in a feature module, the
+# Copilot watchdog guard. The module list has two more copies: `GUARDS` in
+# tests/it/gate/affected.rs and `for term in doors floor gate` in `test-affected`. A new guard
+# module goes into all three. `the_guards_recipe_runs_the_shared_guard_filter` in
+# tests/it/gate.rs pins this value and that both recipes read it.
+GUARD_FILTER := "binary(it) & (test(/^(doors|floor|gate)::/) | test(=copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot))"
+
 # ADVISORY pre-check, NOT the gate and never citable as it: a red gate costs
 # minutes to learn that a format, lint or guard check failed, and this learns
 # the same three in a fraction of that. It is `rust-fmt-check` + `rust-lint` + the
-# unit tests (library and bin) + the guard modules of the integration target,
-# `doors` (capability boundary), `floor` (tmux floor boundary) and `gate`
-# (justfile/install hazards). A green `just pre` says nothing about the rest of
-# `tests/it`, the fuzz compile or the doctests; only `just test` does. No retries.
-# `-E` is nextest's filterset; the lane skips doctests for a filtered run.
+# unit tests (library and bin) + the guard tests of `GUARD_FILTER`. A green `just pre`
+# says nothing about the rest of `tests/it`, the fuzz compile or the doctests; only
+# `just test` does. No retries. `-E` is nextest's filterset; the lane skips doctests
+# for a filtered run.
 
 # Advisory fast pre-check (fmt + clippy + unit + guard tests). NOT THE GATE
 pre: rust-fmt-check rust-lint _pre-test
 
 _pre-test:
-    exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | (binary(it) & test(/^(doors|floor|gate)::/))'
+    exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | ({{ GUARD_FILTER }})'
+
+# ADVISORY guard run, NOT the gate and never citable as it: `rust-fmt-check` and the guard
+# tests of `GUARD_FILTER`, with no unit tests, lint, doctests, fuzz compile or retries. A
+# missing registration then fails in minutes, not after a whole lane. `--test it` builds the
+# integration target alone, so cargo skips the lib and bin unit-test harnesses. It does not
+# change the selection.
+
+# Advisory guard tests (fmt check + GUARD_FILTER only). NOT THE GATE
+guards: rust-fmt-check
+    exec just _tmux-isolated test --test it -E '{{ GUARD_FILTER }}'
 
 # THE MAC BOUNDARY SUBSET, what a release runs on the Mac while the hp runs the whole suite
 # (`just release-proof`, docs/development.md "Release proof"): every unit test, plus the
@@ -694,7 +713,8 @@ BASH_FLOOR := '''
 # HEAD and its tree must not move from the start to the end, or the recipe refuses. It never
 # writes a gate receipt: only a whole `just test` vouches for a tree. `base=<ref>` (default main)
 # measures the change from the merge-base with that ref. `print=yes` measures the working tree
-# instead, dirt included, prints the selector's answer with every reason and runs nothing else.
+# instead, dirt included, and prints the selector's answer with every reason. It runs no test but
+# may compile the selector, so run it inside a lane claim or at low load.
 
 # Run the merge gate: the checks, then the tests the change reaches; print=yes only prints the selection
 test-affected *args:

@@ -133,8 +133,9 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent, and CI asserts it |
 | `just test` / `just rust-check` | **the whole gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test`. The hp runs it for every release ([Release proof](#release-proof)) |
-| `just test-affected [base=<ref>] [print=yes]` | **the merge gate** (M1, one hop): `rust-fmt-check` + `rust-lint` + `rust-fuzz-check`, then every unit test, the `doors`, `floor` and `gate` guard modules and the integration modules the change reaches, through the lane's filtered arm, plus the doctests when a `src/` file changed and `just check` when `install` changed. The whole lane when the selector cannot place the change. A clean committed tree that does not move, no receipt. `print=yes` measures the working tree, prints the selection and runs nothing (see [The merge gate](#the-merge-gate)) |
-| `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
+| `just test-affected [base=<ref>] [print=yes]` | **the merge gate** (M1, one hop): `rust-fmt-check` + `rust-lint` + `rust-fuzz-check`, then every unit test, the `doors`, `floor` and `gate` guard modules and the integration modules the change reaches, through the lane's filtered arm, plus the doctests when a `src/` file changed and `just check` when `install` changed. The whole lane when the selector cannot place the change. A clean committed tree that does not move, no receipt. `print=yes` measures the working tree and prints the selection. It runs no test but may compile the selector, so run it inside a lane claim or at low load (see [The merge gate](#the-merge-gate)) |
+| `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the guard tests of `just guards`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
+| `just guards` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + the `doors`, `floor` and `gate` guard modules of `tests/it` + `copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot`, one justfile variable (`GUARD_FILTER`) that `just pre` reads too. No unit tests, lint, doctests, fuzz compile or retries. With a warm target dir it needs no lane claim; under load it follows the same rules as a scoped filter |
 | `just lane-lock claim <name> [secs]` / `release <name>` / `cancel-wait <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held). `claim` refuses, taking no lock, when a volume it is about to fill has less than `AE_LANE_MIN_FREE_GIB` free (see The lane lock). `claim` and `release` print the package temperature and throttle count, and a claim cools before it takes a free gate while the package is above `AE_LANE_MAX_TEMP_C` (default 75 °C, at most 10 min; see The lane lock). `cancel-wait <name>` stops a claim that is still waiting, never a holder (see The lane lock) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt`, including the separate fuzz crate with the product rustfmt, without the fuzz nightly |
@@ -168,11 +169,11 @@ small test-group: parallel load can starve a client the test is waiting on, and 
 bounds that contention without weakening a single assertion.
 
 **`just pre` is advisory, not the gate.** It runs `rust-fmt-check`, `rust-lint`, the unit tests
-(library and bin) and the `doors`, `floor` and `gate` guard modules of `tests/it` through the
-lane's filtered arm, so a format, lint or guard failure shows in minutes less than the gate
-needs to reach it. It skips the rest of `tests/it`, the fuzz compile and the doctests, retries
-nothing, and a green `just pre` is never cited as a green gate: only `just test-affected` (the
-merge gate) and `just test` (the whole gate) are.
+(library and bin) and the guard tests of `just guards` through the lane's filtered arm, so a
+format, lint or guard failure shows in minutes less than the gate needs to reach it. It skips
+the rest of `tests/it`, the fuzz compile and the doctests, retries nothing, and a green
+`just pre` is never cited as a green gate: only `just test-affected` (the merge gate) and
+`just test` (the whole gate) are.
 
 **The lane lock.** One machine runs one gate at a time. `just lane-lock claim <name> [secs]`
 takes the lock (waiting up to `secs`, printing the holder every 30 s), `release <name>` gives it
@@ -565,6 +566,9 @@ and `just check` too (`producer`, `selector-exit`, `selector-output`): nothing t
 `install` did not change. A symlink or non-regular Rust source file fails the producer before it
 opens the file.
 
+A slice that touched the justfile, `fuzz/`, `.config/macos-subset` or a `tests/it` module list
+runs `just guards` before its first whole-lane gate, so a missing registration fails in minutes.
+
 **The M1 gaps.** The human accepted three, with the release's whole hp run as the backstop:
 
 - a test that reaches a changed module only through another module (A → B → C);
@@ -578,7 +582,8 @@ has no static name, so the counter leaves it out on both sides.
 
 `just test-affected print=yes` measures the working tree instead, staged, unstaged and untracked
 changes included. It prints the selector's answer with every reason and every `why` line (owner,
-`file:line`, rule, target) and runs nothing else.
+`file:line`, rule, target). It runs no test but may compile the selector, so run it inside a lane
+claim or at low load.
 
 **Dry runs.** The selector on five slices that landed before it, 2026-11-13:
 

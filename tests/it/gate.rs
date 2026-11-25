@@ -10005,9 +10005,12 @@ fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
         body.starts_with("exec just _tmux-isolated test -E '"),
         "the unit and guard tests run through the lane's filtered arm, exec'd so a TERM reaches it (#340): {body}"
     );
-    for module in ["doors", "floor", "gate"] {
-        assert!(body.contains(module), "the guard module {module} is run");
-    }
+    // The guard terms themselves are pinned on the resolved recipe by
+    // `the_guards_recipe_runs_the_shared_guard_filter`.
+    assert!(
+        body.contains("{{ GUARD_FILTER }}"),
+        "the guard terms come from the one justfile variable: {body}"
+    );
     assert!(
         !body.contains("retries") && !body.contains("retry"),
         "a pre-check never retries: {body}"
@@ -10029,6 +10032,83 @@ fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
             .any(|line| line.contains("`just pre`") && line.to_lowercase().contains("advisory")),
         "docs/development.md must call `just pre` advisory"
     );
+}
+
+/// `just guards` runs the guard arm of `just pre` and nothing else, from ONE justfile
+/// variable, `GUARD_FILTER`. `just --dry-run --no-deps` resolves every `{{ }}` and runs
+/// nothing, so what is compared is what each recipe would run. The raw bodies must also
+/// interpolate the variable: a term typed into one recipe would agree today and drift
+/// tomorrow. Every term must still match a compiled test, because nextest does not fail on
+/// one dead OR term, so a renamed guard would leave both recipes without a word.
+#[test]
+fn the_guards_recipe_runs_the_shared_guard_filter() {
+    const COPILOT: &str = "copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot";
+    const GUARD_FILTER: &str = "binary(it) & (test(/^(doors|floor|gate)::/) | \
+         test(=copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot))";
+
+    let justfile = read(&root().join("justfile"));
+    assert_eq!(recipe_deps(&justfile, "guards"), ["rust-fmt-check"]);
+    for header in ["_pre-test:", "guards:"] {
+        let body = recipe_text(&justfile, header).join(" ");
+        assert!(
+            body.contains("{{ GUARD_FILTER }}"),
+            "{header} reads the guard filter from the one justfile variable: {body:?}"
+        );
+        for typed in ["test(", "doors", "floor", "gate", "copilot"] {
+            assert!(
+                !body.contains(typed),
+                "{header} types its own guard term {typed:?}: {body:?}"
+            );
+        }
+    }
+
+    let scratch = super::cli::OwnedScratch::root("gate", "guardsdry");
+    assert!(
+        std::fs::create_dir_all(scratch.join("io")).is_ok(),
+        "captures"
+    );
+    // What the recipe's own body would run: `just` prints it on stderr.
+    let resolved = |recipe: &str| {
+        let words = ["--dry-run", "--no-deps", recipe];
+        let (code, out, err) = run_in(&scratch, &root(), "just", &words);
+        assert_eq!(code, 0, "just --dry-run {recipe}: {out}{err}");
+        err.trim_end().to_owned()
+    };
+    assert_eq!(
+        resolved("guards"),
+        format!("exec just _tmux-isolated test --test it -E '{GUARD_FILTER}'"),
+        "guards runs one filtered lane over the integration target and nothing else"
+    );
+    assert_eq!(
+        resolved("_pre-test"),
+        format!("exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | ({GUARD_FILTER})'"),
+        "pre runs the unit tests and the same guard filter"
+    );
+
+    let names = compiled_it_test_names().unwrap_or_else(|why| panic!("{why}"));
+    for module in ["doors", "floor", "gate"] {
+        let prefix = format!("{module}::");
+        assert!(
+            names.iter().any(|name| name.starts_with(&prefix)),
+            "the guard module {module} holds no compiled test"
+        );
+    }
+    assert!(
+        names.iter().any(|name| name == COPILOT),
+        "{COPILOT} is not a compiled test, so its term of the guard filter selects nothing"
+    );
+
+    for path in ["AGENTS.md", "docs/development.md"] {
+        let text = read(&root().join(path));
+        let row = text
+            .lines()
+            .find(|line| line.starts_with("| `just guards` |"))
+            .unwrap_or_default();
+        assert!(
+            row.contains("ADVISORY") && row.contains("NOT the gate") && row.contains(COPILOT),
+            "{path} needs a `just guards` row that says ADVISORY, NOT the gate and names {COPILOT}: {row:?}"
+        );
+    }
 }
 
 /// The capture files of one child, named so concurrent callers never share one.
