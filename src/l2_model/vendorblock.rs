@@ -618,8 +618,10 @@ pub fn record_first(state_root: &std::path::Path, record: &Record) -> std::io::R
 /// refuses the Copilot profiles and no other provider of the same client. A
 /// model id with no `/` falls back to the client's scope. A profile that names
 /// no client, an unreadable config or an unknown label owes nothing here: those
-/// are the launch's own refusals, said where they already are. Read from
-/// `state_root`; never clears or writes.
+/// are the launch's own refusals, said where they already are. A
+/// `profile@client` pair is judged on `global` alone, the file the pair's
+/// launch resolves it through: the overlay `local` neither approves a pair nor
+/// changes its provider. Read from `state_root`; never clears or writes.
 #[must_use]
 pub fn scope_refusal(
     state_root: &std::path::Path,
@@ -629,6 +631,7 @@ pub fn scope_refusal(
     client: Option<&str>,
     now: i64,
 ) -> Option<String> {
+    let local = if client.is_some() { None } else { local };
     let cfg = crate::config::read_identity(Some(global), local).ok()?;
     scope_refusal_in(&cfg, state_root, profile, client, now)
 }
