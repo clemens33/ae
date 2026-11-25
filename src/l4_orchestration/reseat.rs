@@ -1819,7 +1819,19 @@ pub(crate) fn scope_blocked(
     now: i64,
 ) -> Option<crate::vendorblock::Record> {
     let root = dir.parent()?.parent()?;
-    let cfg = identity_config(dir, bytes).ok()?;
+    // A `profile@client` pair launches what the global file alone says
+    // ([`resolve_pair`]), so its scope is judged on that file too: a project
+    // overlay that renames a pair's provider must not move the check.
+    let cfg = match client {
+        Some(_) => {
+            let global = crate::lifecycle::meta_value(bytes, "config");
+            if global.is_empty() {
+                return None;
+            }
+            crate::config::read_identity(Some(Path::new(&global)), None).ok()?
+        }
+        None => identity_config(dir, bytes).ok()?,
+    };
     crate::vendorblock::profile_block(&cfg, root, profile, client, now)
 }
 
@@ -2224,21 +2236,7 @@ fn admit<'w>(
             return Err(refused);
         }
     };
-    // A destination whose scope its vendor refused is refused HERE, before
-    // anything is stopped: the move would only stop a working seat to start
-    // one on an account the vendor will not serve. The same hold as the
-    // lock-time recheck ([`blocked_guard`]), so a block that beat the
-    // admission spends no attempt either.
-    if let Some(record) = scope_blocked(
-        &dir,
-        &bytes,
-        &parsed.profile,
-        parsed.client.as_deref(),
-        crate::time::Timestamp::now().epoch(),
-    ) {
-        writeln!(err, "Error: {}. Nothing was reseated.", record.refusal())?;
-        return Err(Halt::End(Ended::Refused(CauseClass::ScopeBlocked)));
-    }
+    admission_block(&dir, &bytes, parsed, err)?;
     let from_command = match source_command(&dir, &bytes, seated) {
         Ok(command) => command,
         Err(why) => {
@@ -2420,6 +2418,30 @@ fn requested_guard(
 
 /// Under the lock and before the stop: the automatic gate, the keep question,
 /// the carry Check and the tool-change note — reads and stderr only.
+/// A destination whose scope its vendor refused is refused at admission,
+/// before anything is stopped: the move would only stop a working seat to
+/// start one on an account the vendor will not serve. The same hold as the
+/// lock-time recheck ([`blocked_guard`]), so a block that beat the admission
+/// spends no attempt either.
+fn admission_block(
+    dir: &Path,
+    bytes: &[u8],
+    parsed: &Parsed,
+    err: &mut impl Write,
+) -> Result<(), Halt> {
+    let Some(record) = scope_blocked(
+        dir,
+        bytes,
+        &parsed.profile,
+        parsed.client.as_deref(),
+        crate::time::Timestamp::now().epoch(),
+    ) else {
+        return Ok(());
+    };
+    writeln!(err, "Error: {}. Nothing was reseated.", record.refusal())?;
+    Err(Halt::End(Ended::Refused(CauseClass::ScopeBlocked)))
+}
+
 /// THE VENDOR BLOCK, read again under the lock and before anything is
 /// checked, copied or stopped: a block booked since the destination was chosen
 /// holds the move, and the next round's chooser skips it. The clock is read

@@ -3239,7 +3239,9 @@ fn run_with(
 /// ([`crate::vendorblock`]), in config order, each with the one command that
 /// clears it. Empty when none is blocked, so a healthy table is unchanged. A
 /// scope is a `[clients]` label, or for an `OpenCode` profile whose model id is
-/// `provider/model` that upstream provider. Its record must parse, sit at its
+/// `provider/model` that upstream provider, on the profile's own client or on
+/// a client an approved `profile@client` pair names
+/// ([`crate::vendorblock::approved_scopes`]). Its record must parse, sit at its
 /// own file, name this scope's client, harness and provider, and not be stamped
 /// in the future. Reading is observation only: it never clears, repairs or
 /// rewrites a record.
@@ -3247,7 +3249,17 @@ fn blocked_section(inputs: &Inputs<'_>, cfg: &crate::config::IdentityConfig) -> 
     let Some(root) = inputs.state_root() else {
         return String::new();
     };
-    let held: Vec<crate::vendorblock::Record> = crate::vendorblock::Scope::configured(cfg)
+    let mut scopes = crate::vendorblock::Scope::configured(cfg);
+    for scope in inputs
+        .global
+        .map(crate::vendorblock::approved_scopes)
+        .unwrap_or_default()
+    {
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    let held: Vec<crate::vendorblock::Record> = scopes
         .iter()
         .filter_map(|scope| crate::vendorblock::block(root, scope, inputs.now))
         .collect();

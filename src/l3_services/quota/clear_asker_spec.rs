@@ -3,11 +3,11 @@
 
 use super::{ClearAsker, Marker, PaneRead, clear_asker, clear_prompt, clear_refusal};
 
-fn human(session: &str) -> Option<PaneRead> {
-    Some(PaneRead {
+fn human(session: &str) -> PaneRead {
+    PaneRead {
         session: Some(session.to_owned()),
         human: true,
-    })
+    }
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn a_read_pane_is_the_human_only_when_it_is_described_and_no_seat() {
     assert_eq!(
         clear_asker(Marker::Resolved, Some("%3"), |pane| {
             assert_eq!(pane, "%3");
-            human("work")
+            Some(human("work"))
         }),
         ClearAsker::Pane("work".to_owned())
     );

@@ -489,6 +489,42 @@ impl Scope {
     }
 }
 
+/// The scopes the approved `profile@client` pairs of the global config `global`
+/// launch in, judged as a spawn judges a pair: the identity, the profiles and
+/// the `[client_pairs]` list all from that one file's bytes, so a project
+/// overlay neither approves a pair nor changes what it runs, and a pair onto a
+/// client of another adapter reaches nothing. An unreadable file reaches
+/// nothing.
+#[must_use]
+pub fn approved_scopes(global: &std::path::Path) -> Vec<Scope> {
+    let Ok(text) = crate::config::read_selected(global) else {
+        return Vec::new();
+    };
+    let Ok(cfg) = crate::config::parse_identity_in(global, &text) else {
+        return Vec::new();
+    };
+    let pairs = crate::pairs::parse_in(global, &text);
+    let mut scopes: Vec<Scope> = Vec::new();
+    for (profile, _) in &cfg.profiles {
+        let own = cfg
+            .profile_client_label(profile)
+            .and_then(|label| cfg.client(&label).map(|client| client.tool));
+        for (label, client) in &cfg.clients {
+            if own != Some(client.tool)
+                || pairs.judge(profile, label) != crate::pairs::Verdict::Approved
+            {
+                continue;
+            }
+            if let Some(scope) = Scope::of_profile(&cfg, profile, Some(label))
+                && !scopes.contains(&scope)
+            {
+                scopes.push(scope);
+            }
+        }
+    }
+    scopes
+}
+
 /// How one scope's record stands on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
@@ -1286,6 +1322,33 @@ mod tests {
                 "{other} is not the Zen provider"
             );
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An approved pair adds the scope its launch is in, read from the global
+    /// file alone; an unlisted pair and a listed pair onto another adapter's
+    /// client add nothing, and no other profile reaches that client here.
+    #[test]
+    fn the_approved_scopes_are_the_same_adapter_pairs_of_the_global_file() {
+        let root = scratch("approved");
+        let global = root.join("config");
+        std::fs::write(
+            &global,
+            "[clients]\nopencode = opencode\nocwork = opencode\nmuse = muse\n\n\
+             [profiles]\ncop = opencode --model github-copilot/gpt-6.1-sol\n\
+             bare = opencode --model glm-5\n\n\
+             [client_pairs]\ncop = ocwork, muse\n",
+        )
+        .expect("config");
+        let found: Vec<(String, Option<String>)> = approved_scopes(&global)
+            .into_iter()
+            .map(|scope| (scope.client, scope.provider))
+            .collect();
+        assert_eq!(
+            found,
+            vec![("ocwork".to_owned(), Some("github-copilot".to_owned()))]
+        );
+        assert!(approved_scopes(&root.join("absent")).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

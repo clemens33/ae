@@ -513,7 +513,7 @@ fn run_public_quota_clear(
     // The stem first: no question is shown and no refusal repeats a word that
     // names no record.
     if vendorblock::Target::parse(client).is_none() {
-        writeln!(err, "ae quota: unknown scope {client}")?;
+        writeln!(err, "ae quota: unknown scope {}", client.escape_debug())?;
         return Ok(state::EXIT_FAILED);
     }
     let Some(root) = doors::state_root(shape) else {
