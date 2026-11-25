@@ -59,10 +59,30 @@ A tab bar sits under the header. **All** comes first and is open when the page l
 tab while it needs you: an open DECIDE item, the state `needs` or `moving`, or a filed topic (one
 with a title, a state or a review) whose state word cannot be read. The tabs follow the desk's
 order. A topic without a tab opens from the All tab, from the Revisit line or from the strip, and
-gets a tab that lasts only while it is open; the page keeps no pinned tabs. A tab whose topic no
-longer needs you leaves the bar, and when it was open the page shows All. A narrow screen shows the
-chat or the panel, with **Chat** and **Overview** (or **Topic**) at the bottom; a tab press shows
-the chat.
+gets a tab that lasts only while it is open. A tab whose topic no longer needs you leaves the bar,
+unless you pinned it, and when it was open the page shows All. A narrow screen shows the chat or
+the panel, with **Chat** and **Overview** (or **Topic**) at the bottom; a tab press shows the
+chat.
+
+- **Pins.** The button at the top of a topic's card pins its tab or unpins it. A pinned tab is
+  marked with a star and stays, whatever its topic's state, until you unpin it. When you unpin the
+  open tab, it stays until you open another one. At most 32 tabs are pinned: then the button of
+  another topic is disabled and the card says why. Your browser keeps the pins (see
+  [Security](#security)). A pin can outlive its topic: when the limit is reached and no pinned tab
+  shows, clearing the site's data in the browser frees the pins.
+- **Closed topics.** A topic in state `closed` leaves the bar unless it is pinned, and when it was
+  open the page shows All. While a DECIDE item that tags it is open, it keeps its tab. When you
+  open a topic that is already closed, its tab lasts while it is open.
+- **Unread.** A tab shows the number of turns with its tag that arrived since you last had it open
+  in this page; opening it clears the number. Your own turns do not count. A tag that a turn gets
+  after it arrived does not count either: a new topic can tag older turns. A turn that first shows
+  up more than 120 s older than the newest one already seen is taken for an old one that came back
+  and does not count, even when it is new. The counts live in the page: after a reload every tab
+  starts at zero, and the turns the page reads first are not unread.
+- **The bar** is one line that scrolls sideways, by touch, with a trackpad or with the mouse
+  wheel. The tab you select scrolls into view, and stays in view when the bar changes around it.
+  When you scroll away from it, the bar does not pull you back. With many topics, **All topics**
+  and its search reach every one.
 
 - **All** shows the whole chat. Its panel holds the new-topic line first, then the Revisit line,
   every DECIDE item under **Decisions**, **All topics** with a search over slug and title, and the
@@ -245,6 +265,14 @@ outcome, and does not resend automatically. An older charter may still read the 
   `localhost:<port>` and `[::1]:<port>` (anything else: `421`). Each `POST` must carry the matching
   `Origin` (`403`). Every `/api/` route but the code exchange needs the session secret as a bearer
   header (`401`); no cookie exists, so another site's page cannot ride on a session.
+- The page keeps two things in the browser. The session secret is in the tab's `sessionStorage`,
+  as above. The pins are in `localStorage` under the key `ae-web-pins`: a JSON list of topic slugs
+  and nothing else, no chat, card or memo text. The browser keeps it for this profile and this
+  address (host and port), also after `ae web` stops, so a later page served at the same address
+  can read it, and a slug can give away what a topic is about. Clearing the site's data in the
+  browser removes it. The page reads the list as untrusted: it takes only valid slugs, each once,
+  at most 32. When the browser refuses to store the list, the pins live in that page only until
+  it is reloaded, and the page stops reading and writing the stored list.
 - Every answer carries `Cache-Control: no-store`, a content security policy without inline script
   or style, `nosniff`, `no-referrer` and same-origin opener and resource policies, and closes its
   connection.
@@ -324,6 +352,10 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   that keeps the draft and its focus, choices with and without a recommendation, reserved items,
   an answer by choice with Undo beside a discussion, a board that changes under a choice, and
   tagged, untagged and verdict-like drafts as the fake TUI receives them.
+- After the topic tab cases, the tab lifecycle cases run on a listener of their own, in 1440x900
+  dark and 360x740 dark (`t2-*`): the mouse wheel over the bar, the selected tab in view and a
+  scrolled bar left alone, unread counts across a new conversation, pins across a reload and
+  another tab's write, a closed topic's tab, and a damaged or hostile stored pin list.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the

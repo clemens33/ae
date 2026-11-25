@@ -32,8 +32,9 @@
 //! After the four cells one signed-out stage runs in the same tab (see
 //! `web_signedout_browser`): a page whose session is gone asks the listener
 //! once and then stops until a code is redeemed in its tab. The compose cases
-//! (`web_compose_browser_spec`) and then the topic tab cases
-//! (`web_topic_tabs_browser_spec`) follow, each on listeners of their own.
+//! (`web_compose_browser_spec`), the topic tab cases
+//! (`web_topic_tabs_browser_spec`) and then the tab lifecycle cases
+//! (`web_topic_lifecycle_browser_spec`) follow, each on listeners of their own.
 //!
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
@@ -550,15 +551,19 @@ fn live_web_smoke() {
             ));
         }
     }
-    // The S3a compose cases follow on the same tab, and the topic tab cases
-    // after them, each only when every earlier check passed, so a plant that
-    // fails an earlier check never reaches them.
+    // The S3a compose cases follow on the same tab, then the topic tab cases and
+    // the tab lifecycle cases, each only when every earlier check passed, so a
+    // plant that fails an earlier check never reaches them.
     if failure.is_none() {
         let ran = web_compose_browser_spec::check_s3a(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
     }
     if failure.is_none() {
         let ran = web_topic_tabs_browser_spec::check_t1(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
+    }
+    if failure.is_none() {
+        let ran = web_topic_lifecycle_browser_spec::check_t2(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
     }
     // A checked failure ends Chrome the way a pass does, before it is told:
@@ -571,7 +576,7 @@ fn live_web_smoke() {
     }
     println!(
         "web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage, the \
-         compose cases and the topic tab cases"
+         compose cases, the topic tab cases and the tab lifecycle cases"
     );
 }
 
@@ -1419,6 +1424,13 @@ mod web_compose_browser_spec;
 )]
 #[path = "web_topic_tabs_browser_spec.rs"]
 mod web_topic_tabs_browser_spec;
+
+#[allow(
+    clippy::expect_used,
+    reason = "the frozen spec's fixture writes keep the bytes nav froze"
+)]
+#[path = "web_topic_lifecycle_browser_spec.rs"]
+mod web_topic_lifecycle_browser_spec;
 
 #[path = "web_signedout_browser.rs"]
 mod web_signedout_browser;

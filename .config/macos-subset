@@ -183,6 +183,7 @@ helper tests/it/deliver.rs::Rig::run = deliver::human_prompt_blocks_bare_interru
 helper tests/it/deliver/web_compose_browser_spec.rs::check_s3a = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_send_spec.rs::role_rig = deliver::web_send_spec::web_verdict_spec::keep_carries_once_and_waits_for_the_orchestrators_memo_and_reply
 helper tests/it/deliver/web_smoke.rs::smoke_rig = deliver::web_smoke::live_web_smoke
+helper tests/it/deliver/web_topic_lifecycle_browser_spec.rs::check_t2 = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_topic_tabs_browser_spec.rs::check_t1 = deliver::web_smoke::live_web_smoke
 helper tests/it/dialogseat_live_spec.rs::install_fakes = dialogseat_live_spec::dialogseat_a_launch_and_a_resume_report_a_seat_held_at_the_settings_dialog
 helper tests/it/effort_live_spec.rs::remap_main = effort_live_spec::spawned::p2_s1_spawned_claude_adjusts_and_restores_without_changing_identity

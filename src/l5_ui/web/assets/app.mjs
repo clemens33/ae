@@ -2,7 +2,7 @@
 // rendered as a Preact text child, never as markup. Network calls go through
 // the one wrapper below, to this origin's /api/ routes.
 import { h, render } from "./preact.mjs";
-import { useState, useEffect, useRef, useCallback } from "./hooks.mjs";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "./hooks.mjs";
 import htm from "./htm.mjs";
 
 const html = htm.bind(h);
@@ -16,6 +16,146 @@ const NO_SESSION = "open the newest link from ae web";
 const SEND_AGAIN_MS = 1000;
 const SEND_TRIES = 120;
 const UNREACHABLE = "ae web is not reachable";
+// The one thing the browser keeps beyond the session: the slugs of the pinned tabs, nothing else.
+const PINS_KEY = "ae-web-pins";
+const PINS_MAX = 32;
+// A turn that first shows up this much older than the newest turn already seen is
+// an old one come back, not a new one.
+const LATE_MICROS = 120 * 1000 * 1000;
+// The most missing turns the unread book remembers: one full chat window.
+const MISSING_MAX = 500;
+
+// The stored pins: only slugs, each once, at most PINS_MAX. Any other value is no
+// pin. Null says the store cannot be read at all.
+function readPins() {
+  let text;
+  try {
+    text = localStorage.getItem(PINS_KEY);
+  } catch (_) {
+    return null;
+  }
+  let list = [];
+  try {
+    list = JSON.parse(text || "[]");
+  } catch (_) {
+    // A value that is no JSON holds no pin.
+  }
+  const pins = [];
+  for (const slug of Array.isArray(list) ? list : []) {
+    if (pins.length < PINS_MAX && typeof slug === "string" && slugOk(slug, 48) && !pins.includes(slug)) {
+      pins.push(slug);
+    }
+  }
+  return pins;
+}
+
+// The pinned tabs, and a press that pins or unpins one. Every tab of this address
+// shares the store, so a press reads it again before it writes, and a change made
+// in another tab is read back at once. Once the store refuses a write, the pins
+// live in this page only until it is reloaded: the page neither writes nor reads
+// the store again, so its older list never replaces another tab's.
+function usePins() {
+  const [pins, setPins] = useState(() => readPins() || []);
+  const refused = useRef(false);
+  useEffect(() => {
+    const changed = (event) => {
+      if (!refused.current && (event.key === PINS_KEY || event.key === null)) {
+        const read = readPins();
+        if (read) {
+          setPins(read);
+        }
+      }
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+  const press = (slug, pin) => {
+    const rest = ((!refused.current && readPins()) || pins).filter((one) => one !== slug);
+    const next = pin && rest.length < PINS_MAX ? rest.concat(slug) : rest;
+    if (!refused.current) {
+      try {
+        localStorage.setItem(PINS_KEY, JSON.stringify(next));
+      } catch (_) {
+        refused.current = true;
+      }
+    }
+    setPins(next);
+    return next;
+  };
+  return [pins, press];
+}
+
+// What each tab has not shown yet, kept in this page only. A turn is known by
+// whether it is the owner's, its time, its speaker and its text. For each one the
+// book holds an entry per copy: the round that first showed it and the tags it
+// carried then. It follows the turns of the newest snapshot, and those that went
+// missing but could still come back as new. For each tab it holds the round the tab
+// was last open in.
+function newBook() {
+  return { state: null, started: false, round: 0, high: 0, turns: new Map(), shown: [], opened: new Map() };
+}
+
+// Takes a new snapshot into the book. The first one with a turn is the start, so
+// nothing in it is unread. A copy more than there were before is new, unless it is
+// far older than the newest turn seen. Then an old turn came back, as one does
+// when a full window loses a newer turn.
+function admit(book, state) {
+  book.state = state;
+  const rows = state.chat.rows;
+  if (!book.started && !rows.length) {
+    return;
+  }
+  book.round += book.started ? 1 : 0;
+  const turns = new Map();
+  let newest = book.high;
+  book.shown = rows.map((row) => {
+    // A seat may be named "you" too, so the owner's turns are kept apart.
+    const id = [row.voice === "you", row.micros, row.who, row.body].join("\n");
+    const copies = turns.get(id) || [];
+    const before = book.turns.get(id) || [];
+    const fresh = book.started && row.micros >= book.high - LATE_MICROS;
+    const copy = before[copies.length] || { micros: row.micros, at: fresh ? book.round : 0, tags: row.tags || [] };
+    copies.push(copy);
+    turns.set(id, copies);
+    newest = Math.max(newest, row.micros);
+    return copy;
+  });
+  // A turn stamped later than the server read it must not make later turns old.
+  book.high = Math.max(book.high, Math.min(newest, state.read_at * 1000000));
+  // A missing turn is remembered while it is recent enough to pass for new when it
+  // returns, as the turns of a transcript that one poll could not read do. The
+  // ones that went missing last come first here; past MISSING_MAX the rest are
+  // forgotten, and such a turn can count again if it returns while still recent.
+  let room = MISSING_MAX;
+  for (const [id, before] of book.turns) {
+    const now = turns.get(id) || [];
+    const gone = before.length - now.length;
+    if (gone > 0 && gone <= room && before[0].micros >= book.high - LATE_MICROS) {
+      turns.set(id, now.concat(before.slice(now.length)));
+      room -= gone;
+    }
+  }
+  book.turns = turns;
+  book.started = true;
+}
+
+// How many turns of each tag arrived since its tab was last open. The owner's own
+// lines never count, and neither does a tag a turn got after it arrived.
+function unreadCounts(book, rows) {
+  const counts = new Map();
+  book.shown.forEach((copy, at) => {
+    const row = rows[at];
+    if (row.voice === "you") {
+      return;
+    }
+    for (const tag of row.tags || []) {
+      if (copy.tags.includes(tag) && copy.at > (book.opened.get(tag) || 0)) {
+        counts.set(tag, (counts.get(tag) || 0) + 1);
+      }
+    }
+  });
+  return counts;
+}
 
 function stored() {
   try {
@@ -185,17 +325,36 @@ const keepsTab = (row) =>
   row.state === "moving" ||
   (row.state === null && filed(row));
 
+// A pinned topic keeps its tab whatever the desk says about it.
+const keeps = (row, pins) => pins.includes(row.slug) || keepsTab(row);
+
+function deskRow(desk, slug) {
+  for (const group of desk ? desk.groups : []) {
+    const row = group.rows.find((one) => one.slug === slug);
+    if (row) {
+      return row;
+    }
+  }
+  return null;
+}
+
+// What the page remembers of a topic the owner opened that keeps no tab: its
+// slug, and whether it was closed then.
+const opening = (row) => ({ slug: row.slug, closed: row.state === "closed" });
+
 // The tabs after All: the topics that keep one, in the desk's order, then
-// `temp`, the topic the owner opened that keeps none. It lives in this page only.
-function topicTabs(desk, temp) {
+// `temp`, the topic the owner opened that keeps none. It lives in this page only
+// and goes when its topic closes, unless it was closed when it was opened.
+function topicTabs(desk, pins, temp) {
   const tabs = [];
   let opened = null;
   for (const group of desk.groups) {
     for (const row of group.rows) {
-      if (keepsTab(row)) {
-        tabs.push({ row, group: group.group });
-      } else if (row.slug === temp) {
-        opened = { row, group: group.group };
+      const one = { row, group: group.group, pinned: pins.includes(row.slug) };
+      if (keeps(row, pins)) {
+        tabs.push(one);
+      } else if (temp && row.slug === temp.slug && (temp.closed || row.state !== "closed")) {
+        opened = one;
       }
     }
   }
@@ -204,13 +363,14 @@ function topicTabs(desk, temp) {
 
 // One tab. A press keeps the focus where it was, so a draft being typed stays
 // focused.
-function Tab({ role, slug, label, title, group, active, select }) {
+function Tab({ role, slug, label, title, group, pinned, unread, active, select }) {
   return html`<button
     type="button"
     role="tab"
     class=${"tab" + (active ? " on" : "")}
     data-role=${role}
     data-slug=${slug || null}
+    data-pinned=${pinned ? "" : null}
     aria-selected=${active ? "true" : "false"}
     title=${title || null}
     onMouseDown=${(press) => press.preventDefault()}
@@ -218,25 +378,83 @@ function Tab({ role, slug, label, title, group, active, select }) {
   >
     ${group ? html`<span class=${"dot " + group}></span>` : null}
     <span class="tl">${label}</span>
+    ${unread ? html`<span class="n" data-role="unread">${unread}</span>` : null}
   </button>`;
 }
 
-// All first, then one tab per topic of `tabs`; `active` is "" for All.
-function TabBar({ tabs, active, select }) {
-  return html`<nav class="tabbar" role="tablist" aria-label="Topics">
-    <${Tab} key="all" role="tab-all" slug="" label="All" active=${!active} select=${select} />
-    ${tabs.map(
-      ({ row, group }) => html`<${Tab}
+// How far the bar has to move to show its selected tab whole: below zero to the
+// left, above zero to the right, zero when the tab is in view.
+function cutOff(bar) {
+  const tab = bar.querySelector("[aria-selected=true]");
+  if (!tab) {
+    return 0;
+  }
+  const box = bar.getBoundingClientRect();
+  const own = tab.getBoundingClientRect();
+  const left = own.left - box.left;
+  const right = own.right - box.right;
+  return left < 0 ? left : Math.max(0, Math.min(right, left));
+}
+
+// All first, then one tab per topic of `tabs`; `active` is "" for All. The bar
+// moves to show the selected tab when the selection changes, and when a change
+// would push a tab it showed whole out of view. A tab the owner scrolled away
+// from stays away.
+function TabBar({ tabs, unread, active, select }) {
+  const bar = useRef(null);
+  const follow = useRef(true);
+  const last = useRef(active);
+  const show = useCallback(() => {
+    if (follow.current && bar.current) {
+      bar.current.scrollLeft += cutOff(bar.current);
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (last.current !== active) {
+      last.current = active;
+      follow.current = true;
+    }
+    show();
+  });
+  useEffect(() => {
+    window.addEventListener("resize", show);
+    return () => window.removeEventListener("resize", show);
+  }, []);
+  const scrolled = (event) => {
+    follow.current = Math.abs(cutOff(event.currentTarget)) <= 1;
+  };
+  // A press on the open tab shows it whole again, also after a scroll away.
+  const pick = (slug) => {
+    if (slug === active) {
+      follow.current = true;
+      show();
+    }
+    select(slug);
+  };
+  // A mouse wheel turns up and down; over the bar that moves the bar sideways.
+  const wheel = ({ deltaX, deltaY, deltaMode, currentTarget }) => {
+    if (Math.abs(deltaY) > Math.abs(deltaX)) {
+      const step = deltaMode === 1 ? 16 : deltaMode === 2 ? currentTarget.clientWidth : 1;
+      currentTarget.scrollLeft += deltaY * step;
+    }
+  };
+  return html`<nav class="tabbar" role="tablist" aria-label="Topics" ref=${bar} onScroll=${scrolled} onWheel=${wheel}>
+    <${Tab} key="all" role="tab-all" slug="" label="All" active=${!active} select=${pick} />
+    ${tabs.map(({ row, group, pinned }) => {
+      const count = unread.get(row.slug) || 0;
+      return html`<${Tab}
         key=${"t" + row.slug}
         role="tab"
         slug=${row.slug}
         label=${row.title || row.slug}
-        title=${"#" + row.slug + " · " + (GROUPS[group] || group)}
+        title=${"#" + row.slug + " · " + (GROUPS[group] || group) + (pinned ? " · pinned" : "") + (count ? " · " + count + " unread" : "")}
         group=${group}
+        pinned=${pinned}
+        unread=${count}
         active=${active === row.slug}
-        select=${select}
-      />`,
-    )}
+        select=${pick}
+      />`;
+    })}
   </nav>`;
 }
 
@@ -349,7 +567,7 @@ function Source({ origin }) {
 }
 
 // A topic tab's panel: the topic's card and the decisions that wait on it.
-function Card({ card, closeLine, outcome, lines, route, decide, compose }) {
+function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned, full, pin }) {
   const fields = card.fields;
   // Only Quiet, Moving and Parked cards can be closed from here; a card with a
   // wait shows the button disabled and says why, a closed or unreadable one
@@ -359,7 +577,17 @@ function Card({ card, closeLine, outcome, lines, route, decide, compose }) {
   return html`<aside class="panel card" data-panel="topic" data-slug=${card.slug} aria-label="Topic">
     <div class="hd">
       <h2>${fields.title ? fields.title.value : card.slug}</h2>
+      <button
+        type="button"
+        class="btn pin"
+        data-action="pin"
+        aria-pressed=${pinned ? "true" : "false"}
+        disabled=${full}
+        onMouseDown=${(down) => down.preventDefault()}
+        onClick=${() => pin(card.slug, !pinned)}
+      >${pinned ? "Unpin tab" : "Pin tab"}</button>
     </div>
+    ${full ? html`<p class="note">${PINS_MAX} tabs are pinned; unpin one first.</p>` : null}
     <p class="sub">#${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
     ${WAITS.map(([kind, name]) => {
       const waits = card.waits.filter((wait) => wait.kind === kind);
@@ -1850,18 +2078,27 @@ function App() {
   // tab; whether this tab's draft goes untagged; the open topic's card, that
   // answer's tag; and what a narrow screen shows, the chat or the panel.
   const [chosen, setChosen] = useState("");
-  const [temp, setTemp] = useState("");
+  const [temp, setTemp] = useState(null);
+  const [pins, writePin] = usePins();
   const [untagged, setUntagged] = useState(false);
   const [card, setCard] = useState(null);
   const [view, setView] = useState("chat");
   const [cardProblem, setCardProblem] = useState("");
   const cardTag = useRef("");
   const desk = state && state.desk ? state.desk : null;
-  const tabs = desk ? topicTabs(desk, temp) : [];
+  const tabs = desk ? topicTabs(desk, pins, temp) : [];
   // A tab that left the bar shows All at once.
   const active = tabs.some((one) => one.row.slug === chosen) ? chosen : "";
-  const kept = (slug) =>
-    Boolean(desk) && desk.groups.some((group) => group.rows.some((row) => row.slug === slug && keepsTab(row)));
+  const book = useRef(null);
+  book.current = book.current || newBook();
+  if (state && book.current.state !== state) {
+    admit(book.current, state);
+  }
+  // The open tab has shown every turn there is.
+  if (active) {
+    book.current.opened.set(active, book.current.round);
+  }
+  const unread = state ? unreadCounts(book.current, state.chat.rows) : new Map();
   // The Revisit line's shown topic and the walk or close dialog.
   const [rv, setRv] = useState("");
   const [walk, setWalk] = useState(null);
@@ -1911,7 +2148,7 @@ function App() {
     cardTag.current = "";
     setCard(null);
     setChosen("");
-    setTemp("");
+    setTemp(null);
     setUntagged(false);
   };
   // Opens a tab, "" for All, and shows the chat or the panel on a narrow
@@ -1926,25 +2163,44 @@ function App() {
       setChosen(slug);
       setUntagged(false);
     }
-    setTemp(slug && !kept(slug) ? slug : "");
+    const row = deskRow(desk, slug);
+    setTemp(row && !keeps(row, pins) ? opening(row) : null);
     setView(shows);
   };
   const selectTab = (slug) => open(slug, "chat");
   const openTopic = (slug) => open(slug, "panel");
 
+  // Unpinning the open tab leaves it open until another one is chosen, also when
+  // nothing else keeps it.
+  const pinTab = (slug, pin) => {
+    const next = writePin(slug, pin);
+    const row = deskRow(desk, slug);
+    if (next.includes(slug)) {
+      setTemp((before) => (before && before.slug === slug ? null : before));
+    } else if (slug === active && row && !keepsTab(row)) {
+      setTemp(opening(row));
+    }
+  };
+
   // A tab that left the bar is closed for good, so it does not open again by
-  // itself when it comes back. An opened tab the board now keeps is one of its
-  // own from then on.
+  // itself when it comes back. An opened tab the board or a pin now keeps is one
+  // of its own from then on, and one that was closed when opened and no longer
+  // is goes when it closes again.
   useEffect(() => {
     if (!desk) {
       return;
     }
     if (chosen && !active) {
       leave();
-    } else if (temp && kept(temp)) {
-      setTemp("");
+      return;
     }
-  }, [state]);
+    const row = temp ? deskRow(desk, temp.slug) : null;
+    if (row && keeps(row, pins)) {
+      setTemp(null);
+    } else if (row && temp.closed && row.state !== "closed") {
+      setTemp(opening(row));
+    }
+  }, [state, pins]);
 
   // The open card follows every new snapshot: it is read from the same one.
   useEffect(() => {
@@ -2134,13 +2390,16 @@ function App() {
       route=${state ? state.route : null}
       decide=${desk ? desk.decide : []}
       compose=${(desk && desk.compose) || COMPOSE}
+      pinned=${pins.includes(shown.slug)}
+      full=${!pins.includes(shown.slug) && pins.length >= PINS_MAX}
+      pin=${pinTab}
     />`;
   } else if (active) {
     panel = html`<aside class="panel" aria-label="Topic"><p class="note">Reading #${active}.</p></aside>`;
   }
   return html`<div class=${"app view-" + view}>
     <${Head} state=${state} />
-    <${TabBar} tabs=${tabs} active=${active} select=${selectTab} />
+    <${TabBar} tabs=${tabs} unread=${unread} active=${active} select=${selectTab} />
     ${problem ? html`<p class="problem" role="status">${problem}</p>` : null}
     ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>

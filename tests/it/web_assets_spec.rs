@@ -121,8 +121,11 @@ fn the_application_source_keeps_agent_text_away_from_html_and_code_sinks() {
         "setHTMLUnsafe",
         "srcdoc",
         "eval",
-        "localStorage",
         "indexedDB",
+        "cookie",
+        "cookieStore",
+        "caches",
+        "openDatabase",
     ] {
         assert!(!words.clone().any(|word| word == forbidden), "{forbidden}");
     }
@@ -152,6 +155,37 @@ fn the_application_source_keeps_agent_text_away_from_html_and_code_sinks() {
             );
         }
     }
+}
+
+#[test]
+fn browser_storage_has_only_the_session_and_pin_keys() {
+    let app = compact(&source("app.mjs"));
+    for (area, binding, key, methods) in [
+        (
+            "sessionStorage",
+            "KEY",
+            "ae-web-session",
+            &["getItem", "setItem", "removeItem"][..],
+        ),
+        (
+            "localStorage",
+            "PINS_KEY",
+            "ae-web-pins",
+            &["getItem", "setItem"][..],
+        ),
+    ] {
+        let declaration = format!(r#"const{binding}="{key}";"#);
+        assert_eq!(app.matches(&declaration).count(), 1, "{key} binding");
+        assert_eq!(app.matches(area).count(), methods.len(), "{area} uses");
+        for method in methods {
+            let after_key = if *method == "setItem" { ',' } else { ')' };
+            let call = format!("{area}.{method}({binding}{after_key}");
+            assert_eq!(app.matches(&call).count(), 1, "{key}: {method}");
+        }
+    }
+    assert_eq!(app.matches(".getItem(").count(), 2, "storage reads");
+    assert_eq!(app.matches(".setItem(").count(), 2, "storage writes");
+    assert_eq!(app.matches(".removeItem(").count(), 1, "storage removal");
 }
 
 #[test]

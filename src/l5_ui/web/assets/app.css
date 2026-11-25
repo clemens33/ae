@@ -37,7 +37,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 /* One line of tabs of a fixed height, so a tab that comes or goes moves nothing below it. */
 .tabbar {
   display: flex; flex: none; flex-wrap: nowrap; gap: 2px; height: 45px; padding: 0 8px;
-  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  overflow-x: auto; overflow-y: hidden; overflow-anchor: none; scrollbar-width: none;
   border-bottom: 1px solid var(--line); background: var(--panel);
 }
 .tab {
@@ -48,6 +48,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .tab.on { color: var(--ink); border-bottom-color: var(--accent); }
 .tab .dot { flex: none; }
 .tab .tl { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab[data-pinned] .tl::before { content: "\2605\00a0"; color: var(--accent); }
+.tab .n {
+  flex: none; min-width: 18px; padding: 0 5px; border-radius: 9px; text-align: center;
+  font-size: .74em; line-height: 18px; background: var(--accent); color: var(--panel);
+}
 main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 34vw, 420px); }
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
 .panel {
@@ -81,7 +86,8 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .wait { border-left: 3px solid var(--need); }
 .note { color: var(--mute); border-left: 3px solid var(--line); }
 .card .hd { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
-.card h2 { margin: 0; font-size: 1.25em; overflow-wrap: anywhere; }
+.card h2 { margin: 0; font-size: 1.25em; overflow-wrap: anywhere; min-width: 0; }
+.card .hd .pin { flex: none; width: auto; min-height: 44px; text-align: center; white-space: nowrap; }
 .card .sub { color: var(--mute); font-size: .86em; margin: 2px 0 4px; }
 .fld { margin-top: 16px; }
 .fld h3 {
