@@ -3231,6 +3231,18 @@ pub(crate) struct Extra<'a> {
     pub(crate) origin: Option<&'static str>,
 }
 
+/// The extra keys an opening records: the relay's, then the `origin` label.
+fn opening_keys<'a>(
+    relay: Option<&'a RelayStamp>,
+    origin: Option<&'static str>,
+) -> Vec<(&'static str, &'a str)> {
+    let mut keys = relay.map(RelayStamp::keys).unwrap_or_default();
+    if let Some(label) = origin {
+        keys.push(("origin", label));
+    }
+    keys
+}
+
 /// What a carry that must name its seat's launch adds to [`run_with`]: the
 /// expected seat [`deliver_expected`] proves before any input, and a step run
 /// after the input and before the opening is recorded, whose error ends the
@@ -3413,10 +3425,7 @@ pub(crate) fn run_carried(
         caller: caller_session,
         target: &resolved.session,
     });
-    let mut relay_keys = extra.relay.map(RelayStamp::keys).unwrap_or_default();
-    if let Some(label) = extra.origin {
-        relay_keys.push(("origin", label));
-    }
+    let relay_keys = opening_keys(extra.relay, extra.origin);
     let code = record_tracked_delivery_with_launches(
         dir,
         &fields,
