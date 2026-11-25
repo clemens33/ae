@@ -128,11 +128,11 @@ impl Cycle<'_> {
 /// The events a cycle's notice step reads: the cycle's snapshot, or when a
 /// seat drew a block on this cycle the journal read again, so the row that
 /// the draw appended is in it.
-fn notice_source<'e>(
-    snapshot: &'e [Event],
+fn notice_source(
+    snapshot: &[Event],
     drawn: bool,
     reread: impl FnOnce() -> Vec<Event>,
-) -> std::borrow::Cow<'e, [Event]> {
+) -> std::borrow::Cow<'_, [Event]> {
     if drawn {
         std::borrow::Cow::Owned(reread())
     } else {
@@ -332,7 +332,7 @@ mod tests {
                 .iter()
                 .map(crate::vendorblock::Record::identity)
                 .collect::<Vec<_>>(),
-            [identity.clone()]
+            std::slice::from_ref(&identity)
         );
         assert!(written(&events[2..], &root, record.since).is_empty());
         std::fs::remove_file(root.join("vendorblock/client-ocbin.rec")).expect("clear");

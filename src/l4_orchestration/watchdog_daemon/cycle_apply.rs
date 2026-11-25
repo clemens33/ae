@@ -65,6 +65,32 @@ impl Cycle<'_> {
         }
     }
 
+    /// Journal that this session's seat drew the block standing on `drawn`:
+    /// the session's own lead hears of it whatever its config reaches. The
+    /// event names the record that stands, a new one or the one this seat hit
+    /// again.
+    fn journal_drawn(
+        &self,
+        root: &std::path::Path,
+        drawn: &crate::vendorblock::Scope,
+        on: &Acting<'_>,
+        err: &mut impl Write,
+    ) {
+        if let Some(standing) = crate::vendorblock::block(root, drawn, on.seen.now_epoch) {
+            let _ = super::Journal {
+                meta_dir: self.meta_dir,
+                session: self.session,
+            }
+            .record_referring(
+                crate::vendorblock::WRITTEN_ACTION,
+                on.agent,
+                &standing.identity(),
+                &format!("vendor block drawn: {}", standing.stem()),
+                err,
+            );
+        }
+    }
+
     /// Write the block record of this seat's scope under the session's own state
     /// root (`<root>/sessions/<name>`'s grandparent) and tell the human which
     /// word clears it. The scope is the seat's `[clients]` label, or for an
@@ -147,22 +173,7 @@ impl Cycle<'_> {
         }
         match crate::vendorblock::record_first(root, &record) {
             Ok(first) => {
-                // This session's own lead hears of the block its seat drew,
-                // whatever its config reaches: the event names the record
-                // that stands, a new one or the one this seat hit again.
-                if let Some(standing) = crate::vendorblock::block(root, &drawn, on.seen.now_epoch) {
-                    let _ = super::Journal {
-                        meta_dir: self.meta_dir,
-                        session: self.session,
-                    }
-                    .record_referring(
-                        crate::vendorblock::WRITTEN_ACTION,
-                        on.agent,
-                        &standing.identity(),
-                        &format!("vendor block drawn: {}", standing.stem()),
-                        err,
-                    );
-                }
+                self.journal_drawn(root, &drawn, on, err);
                 if first {
                     let _ = writeln!(
                         err,

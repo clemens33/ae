@@ -76,6 +76,7 @@ fn judge(
             left_on_headroom: false,
             model: ae::autoreseat::Model::default(),
             floor: None,
+            blocked: None,
         })
         .collect();
     if room.is_some() {
