@@ -910,8 +910,8 @@ mod tests {
     use super::super::clock::{Clock, ManualClock};
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
-        Receipt, Sending, Sends, Turned, admission_refusal, keep, reread, settled, told, words_of,
-        worker,
+        Receipt, Sending, Sends, Turned, admission_refusal, draft_shape, keep, reread, settled,
+        told, words_of, worker,
     };
 
     #[test]
@@ -932,6 +932,24 @@ mod tests {
         ] {
             assert!(Draft::parse(bad.as_bytes()).is_none(), "{bad}");
         }
+    }
+
+    /// The fuzz target reads a body as its text and, for a decision, its item
+    /// and bind; a body that is no draft has no shape.
+    #[test]
+    fn the_fuzz_shape_of_a_draft_is_its_text_and_decision() {
+        let route = "a".repeat(64);
+        let bind = "b".repeat(64);
+        let plain = format!(r#"{{"text":"hi","route":"{route}","nonce":"n"}}"#);
+        assert_eq!(draft_shape(plain.as_bytes()), Some(("hi".to_owned(), None)));
+        let answer = format!(
+            r#"{{"text":"D67 1","route":"{route}","nonce":"n","decide":{{"item":"D67","bind":"{bind}"}}}}"#
+        );
+        assert_eq!(
+            draft_shape(answer.as_bytes()),
+            Some(("D67 1".to_owned(), Some(("D67".to_owned(), bind.clone()))))
+        );
+        assert_eq!(draft_shape(b"{}"), None);
     }
 
     /// A draft that names a decision: exactly `item` and `bind` beside the
