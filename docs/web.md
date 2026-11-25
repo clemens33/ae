@@ -151,10 +151,14 @@ lives only in the browser tab, and one that stops being quiet falls back to the 
 
 The composer under the chat sends one owner ask to the orchestrator's main seat, the same ask `ae
 chat` opens: it passes the console's own admission, so the cap of five open asks holds and a cap
-refusal shows verbatim. On a topic tab a chip names the tag, and the draft is sent as
-`#<slug>: <draft>`; the chip's **×** sends that one draft without it. While an attempt is open the
-chip shows the tag that attempt carries. Ctrl+Enter or **Send** sends; opening a tab keeps the
-draft and the focus.
+refusal shows verbatim. Its opening also records `origin` as `web:local`, and the actor stays
+`console:local`. The label grants nothing: no authority check reads it, and only
+`requests --verify` prints it, as its `origin:` line
+([origin on an event](internals/events.md)).
+
+On a topic tab a chip names the tag, and the draft is sent as `#<slug>: <draft>`; the chip's **×**
+sends that one draft without it. While an attempt is open the chip shows the tag that attempt
+carries. Ctrl+Enter or **Send** sends; opening a tab keeps the draft and the focus.
 
 - Every draft gets one draft id from `GET /api/nonce`. The page posts the text, the draft id and
   the route it shows (`POST /api/send`) and repeats that same post until it gets a receipt, so a
