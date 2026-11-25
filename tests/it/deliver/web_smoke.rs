@@ -460,15 +460,12 @@ fn live_web_smoke() {
     // after them, each only when every earlier check passed, so a plant that
     // fails an earlier check never reaches them.
     if failure.is_none() {
-        failure = later_stage(
-            &mut tab,
-            out.as_deref(),
-            web_compose_browser_spec::check_s3a,
-        );
+        let ran = web_compose_browser_spec::check_s3a(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
     }
     if failure.is_none() {
-        let check = web_topic_tabs_browser_spec::check_t1;
-        failure = later_stage(&mut tab, out.as_deref(), check);
+        let ran = web_topic_tabs_browser_spec::check_t1(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
     }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
@@ -488,17 +485,13 @@ fn live_web_smoke() {
 /// failure as the run tells it. Only a failure is pictured here: a pass keeps
 /// the receipt shot of the 1440x900 dark cell, taken before the stages changed
 /// the page.
-fn later_stage(
-    tab: &mut Tab,
-    out: Option<&Path>,
-    check: fn(&mut Tab) -> Checked,
-) -> Option<String> {
+fn later_stage(tab: &mut Tab, out: Option<&Path>, ran: Checked) -> Option<String> {
     let cell = Cell {
         width: 1440,
         height: 900,
         dark: true,
     };
-    let failed = check(tab).err()?;
+    let failed = ran.err()?;
     if let Err(why) = tab.shot(out, cell, true) {
         eprintln!("web-smoke shot: {why}");
     }
