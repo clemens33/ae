@@ -2,6 +2,128 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.117] - 2026-11-25
+- Log the package temperature at lane claim and release and cool before a free claim
+- Freeze orchestrator auto-reseat acceptance tests
+- Keep the orchestrator on its own model when auto reseat moves it
+- Re-check the orchestrator's model policy under the lock before the stop
+- Answer the review of the orchestrator model guard
+- Let the orchestrator's refused moves tell once and cost no attempt
+- Verify the orchestrator notice command through reseat
+- Tell nothing from the leg while the orchestrator's hold persists
+- Make the orchestrator's holds recoverable and its unguarded seat a no-move
+- Keep the orchestrator's cooldown off the verdict and its gate's busy refusal a hold
+- Make every pre-stop hold of the orchestrator's move recoverable and share its admission check
+- Normalize the orchestrator's refusals once and tell a persistent hold by its count
+- Keep the owner notice's chat line in the model layer and list the new shared helper
+- Name three seat predicates the in-diff mutants showed unpinned and pin their cases
+- Freeze the live-model contradiction acceptance test
+- Tell the owner both models when the launch record and the live pane contradict
+- Name the profile pin in the owner's notice, since the observer drops the launch record
+- Share the one rule for who tells a hold at the trigger's observed-choice hold
+- Document the proof and the profile pin the owner's notice names for an unproven model
+- Say in the notice docs that the profile pin is named only when the profile pinned one
+- Add the frozen S1a acceptance specs for ae web
+- Add the frozen S1a response-limit acceptance spec for ae web
+- Add the frozen S1a licence-asset acceptance spec for ae web
+- Serve the orchestrator chat on a loopback page with ae web
+- Add the frozen S1b topic and desk acceptance specs for ae web
+- Install the S1b r2 fixture amendments of the archive and owner-wait specs
+- Show the orchestrator's topics in a desk column beside the ae web chat
+- Add the frozen S1c claim and send acceptance specs for ae web
+- Spell the S1c spec timeouts and one-byte ranges the way clippy wants
+- Send owner asks from the ae web composer through a durable claim
+- Smoke-test the ae web page in headless Chrome on demand with just web-smoke
+- Pin seven web behaviours the mutation plan expected to slip through
+- Test the request line limit while it arrives and the hourly claim prune
+- Allow the browser smoke its two exact ignored runs and pin them in the gate guard
+- Pin the browser smoke header, its gate and filter order, and the gate's early return
+- Observe the claim store's fsyncs and listings in its tests and kill its survivors
+- Kill the head parser's field-limit and bare-LF survivors and the claim store's missing-root survivor
+- Gate the claim store's test observer with an if the door census can place
+- Pin the request line's method and target checks and the GET-with-content refusal, and name the absolute-form deviation
+- Read a Content-Length of any number of digits and answer one past BODY_MAX with 413, as the plan says
+- Kill the send worker's deferral and idle-poll survivors
+- Answer the claim's second read through a pure function
+- Describe the head parser's target check and the GET refusal as built
+- Kill the settle survivors: an uncertain receipt outranks an abandonment
+- Classify a refused admission through a pure function
+- Cover plain's careful path, the web usage line and a non-held lock error
+- Decide a version follow in one pure function
+- Take the first link look before ae web prints its link
+- Prove an installed ae web tells a core it cannot follow
+- Witness the idle poll instead of sleeping past it
+- Cover plain's byte scan and pin the response chunk size
+- Remove the unused Running::drain_sends
+- Take the first link look only in an installed ae web
+- Cover the lingering close and the read and write waits of ae web
+- Drop the drain cap that linger can never reach
+- Cover the page-asset method, the fresh-link gap and the route server of ae web
+- Pause the write-timeout test past a write that sends nothing
+- Test the web state's JSON arrays and its followed console
+- Test the web topics' archive verdicts and ask lifetimes
+- Test the web chat rescan line and the kept archive verdict reuse
+- Pause the slow-reader write test past the Linux timeout
+- Read each reply in the web server tests with a bound
+- Freeze Claude home trust layout acceptance tests
+- Answer a Claude home settings block only from the settings reader's measured layout
+- Make the ocwarn and durable app view fixtures work on macOS
+- Size the board and side panel with < and >, and mark their rules with a grip
+- Freeze desk check acceptance tests
+- Fix waiting state reason in desk check fixture
+- Add desk check: list the owner asks, relays and waits that no board item names
+- Desk check: read stopped origins, report lost fleet sources, find the fleet from either layout, bind a wait strictly after its launch, split degraded proof from unrelated damage
+- Desk check: keep the readable claims of a damaged origin, bind a wait by its declaration row, keep stopped-origin asks as labelled candidates, index requests and joins once
+- Desk check: select a wait declaration by the stable session key, judge each owner join once for both lines, name a partial journal in one coverage line
+- Desk check: take the waiting seats from the roster by the stable session key, so a rename or a newer foreign row neither hides nor binds a wait
+- Say in the desk check contract that the waiting seats come from the roster by session key
+- Desk check: pass the lint gate with one function per owner row, one arm for the silent joins and writes into the report string
+- Desk check: pin the owner-opening pane filter, the no-session-id gap and the running-seat gate of the waits
+- Pin the appsingle record, take-over and focus decisions
+- Amend the appsingle freeze for the focus line and a stale holder
+- Pin the appsingle focus, take-over, stamp and fresh-app runs
+- Say how a held lock treats a handed restart and a second test app
+- Keep an exec restart governed when the record names itself
+- Restore the flag-parse test attribute
+- Record the live fixture session so ae app accepts its home
+- Paint the live fixture at 140x40 and run focus under sh
+- Clear the clippy warnings in the frozen appsingle specs
+- Exec the live app so the pane pid is ae, not the shell
+- Run the outside take-over through sh so fish never sees $$
+- Pass a byte to the newline contains check
+- Run one ae app per state root: focus it in tmux, take it over from anywhere else, add --new
+- Order the appsingle test modules alphabetically
+- Refuse instead of taking over when a same-server client cannot be switched, keep ps doubt apart from a gone pid, and start the second test apps with --new
+- Pin the instance helpers with unit tests and list the live appsingle spec in the Mac subset
+- Pin the client jump argv and its refusals with a unit test
+- Start the app as before when the ae home does not exist yet, and run the two-app specs as separate apps
+- Pin one anywin spec as the Mac test for the new outside_new rig helper
+- Pin the exec restart, the takeover waits, the guard tick and the placeless record with unit tests
+- Install the S2 acceptance specs and wire the browser child
+- Amend the S2 spec oracles for the framed console body
+- Share the draft and carry steps of the composer
+- Order quiet topics by review and serve the Revisit ring and verdict lines
+- Walk the quiet topics from the Revisit line and close a topic with one line
+- Keep a Next press when the Revisit selection settles and scope each browser check body
+- Say that the Revisit line, the strip and the walk stay hidden without readable quiet topics
+- Freeze orchestrator self-reseat acceptance tests
+- Let the orchestrator seat queue its own reseat for the watchdog to run after its turn
+- Pin the requested move's owner cancel, adapter rule, locked re-check and request helpers
+- Freeze the vendorblock acceptance tests
+- Pin the Copilot quote and later-row negatives
+- Pin a no-sidebar width to the end of the row
+- Pin the measured sidebar column
+- Pin that a latch release does not clear a block
+- Indent every line of the quoted Muse 402 negative
+- Key an opencode block by the model provider
+- Separate client and provider block records
+- Name ae quota clear with the record stem
+- Name the shortest clear word for each block
+- Pass the muse binary to the billing journal test
+- Book a measured vendor billing or account refusal as a scope block and show and clear it
+- Refuse a spawn or a launch seat on a blocked scope and fuzz the block record
+- Keep a client block and a provider block in separate record files
+
 ## [v2026.11.116] - 2026-11-24
 - Freeze Claude home-folder trust acceptance cases
 - Freeze Claude effective HOME trust acceptance tests
