@@ -36,6 +36,9 @@ const USAGE: &str = "Usage: ae _auto-reseat <dir> <slot> <key>";
 /// The widest a record's summary may be, in characters.
 const SUMMARY_CHARS: usize = 160;
 
+/// What a candidate passed over for its vendor block is called.
+const BLOCK_WORD: &str = "vendor block";
+
 /// A tool or model the records do not name.
 const UNKNOWN: &str = "unknown";
 
@@ -1636,16 +1639,28 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
         Skip::Floor(super::Floor::Unusable) => Borrowed("the lead floor is unusable"),
         Skip::OrchestratorModel => Borrowed("the orchestrator keeps its model"),
         Skip::OrchestratorOff => Borrowed("the orchestrator never moves automatically"),
-        Skip::Blocked => Borrowed("vendor block"),
+        Skip::Blocked => Borrowed(BLOCK_WORD),
     }
 }
 
 /// `text` as one control-free line of at most [`SUMMARY_CHARS`], or through a named
-/// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole. The
+/// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole. A
+/// line that names a candidate passed over for its vendor block keeps
+/// everything through that first block witness (its scope, time and stored
+/// reason) up to `REASON_MAX`: the hold is where the human reads why. The
 /// third rule is not here: a refused return's record is bounded whole by
 /// [`refused_return`] and written by [`close_refused_return`] alone.
 fn bounded(text: &str) -> String {
     let clean = crate::seatpack::neutralise(text);
+    let witness = format!(" ({BLOCK_WORD})");
+    if let Some(at) = clean.find(&witness) {
+        let through = clean[..at + witness.len()].chars().count();
+        let keep = through.clamp(SUMMARY_CHARS, crate::state::REASON_MAX);
+        return crate::state::summary_of(&clean)
+            .chars()
+            .take(keep)
+            .collect();
+    }
     let keep = match (clean.find("ae reseat "), clean.find(STOP_UNKNOWN)) {
         (Some(start), Some(at)) => {
             let whole = clean[..at + STOP_UNKNOWN.len()].chars().count();
@@ -3842,6 +3857,26 @@ mod seatinc_spec;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hold whose only destination is blocked keeps the whole stored reason
+    /// (the record's 200-char cap) in its durable journal summary, though an
+    /// ordinary summary stops at [`SUMMARY_CHARS`].
+    #[test]
+    fn a_blocked_hold_keeps_the_whole_stored_reason() {
+        let reason = format!("{}END", "x".repeat(197));
+        let skipped = vec![(
+            format!("mus [client-muse since 2026-09-08T09:10:00Z: {reason}]"),
+            Skip::Blocked,
+        )];
+        let kept = bounded(&no_candidate(&skipped));
+        assert!(
+            kept.contains(&format!("{reason}] (vendor block)")),
+            "{kept}"
+        );
+        assert!(kept.chars().count() <= crate::state::REASON_MAX);
+        let ordinary = bounded(&"y".repeat(400));
+        assert_eq!(ordinary.chars().count(), SUMMARY_CHARS);
+    }
     use crate::autoreseat::{
         DONE_ACTION, FAILED_ACTION, HELD_ACTION, REFUSED_ACTION, Skip, Tier, choose, left_profiles,
     };

@@ -3180,8 +3180,14 @@ fn choose_guarded(
     for candidate in candidates {
         let guarded = || pair.and_then(|pair| judge(pair, &candidate.profile));
         let floored = candidate.floor.as_ref();
-        let passed = floored
-            .map(|(skip, _)| *skip)
+        // A vendor block is named first, before the floor: a destination both
+        // below the floor and blocked keeps its block witness in the hold.
+        let passed = candidate
+            .blocked
+            .as_ref()
+            .filter(|_| candidate.configured)
+            .map(|_| Skip::Blocked)
+            .or_else(|| floored.map(|(skip, _)| *skip))
             .or_else(|| passed_over(candidate, now, room))
             .or_else(guarded);
         if let Some(skip) = passed {
@@ -4671,6 +4677,29 @@ mod tests {
     }
 
     const NOW: i64 = 10_000;
+
+    /// A destination both below the lead floor and on a blocked scope is
+    /// passed over for its block, with the block's witness as its detail.
+    #[test]
+    fn a_blocked_destination_below_the_floor_is_named_for_its_block() {
+        let blocked = Candidate {
+            floor: Some((
+                Skip::Floor(Floor::Below { tier: 1, floor: 2 }),
+                ", tier 1 below floor 2".to_owned(),
+            )),
+            blocked: Some(" [client-muse since 2026-09-08T09:10:00Z: Billing]".to_owned()),
+            ..candidate("mus", Vec::new())
+        };
+        let choice = choose(&[blocked], NOW);
+        assert_eq!(choice.pick, None);
+        assert_eq!(
+            choice.skipped,
+            vec![(
+                "mus [client-muse since 2026-09-08T09:10:00Z: Billing]".to_owned(),
+                Skip::Blocked
+            )]
+        );
+    }
 
     fn pick(candidates: &[Candidate]) -> Option<(String, Tier)> {
         choose(candidates, NOW).pick
