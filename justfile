@@ -92,11 +92,14 @@ test: rust-check
 # disagree. It selects the guard modules of the integration target, `doors` (capability
 # boundary), `floor` (tmux floor boundary) and `gate` (justfile/install hazards, fuzz target
 # lists, the Mac subset manifest), plus the one source guard that lives in a feature module, the
-# Copilot watchdog guard. The module list has two more copies: `GUARDS` in
-# tests/it/gate/affected.rs and `for term in doors floor gate` in `test-affected`. A new guard
-# module goes into all three. `the_guards_recipe_runs_the_shared_guard_filter` in
-# tests/it/gate.rs pins this value and that both recipes read it.
-GUARD_FILTER := "binary(it) & (test(/^(doors|floor|gate)::/) | test(=copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot))"
+# Copilot watchdog guard. The module list is `GUARD_MODULES`, one space between names: this
+# filter and the guard check of `test-affected` derive from it. `GUARDS` in
+# tests/it/gate/affected.rs is the one copy. `the_guards_recipe_runs_the_shared_guard_filter` in
+# tests/it/gate.rs pins that copy equal to `GUARD_MODULES`, the resolved filter and that both
+# recipes read it. A new guard module goes into `GUARD_MODULES` and `GUARDS`; the selector specs
+# under tests/it/gate/affected also spell the names out.
+GUARD_MODULES := "doors floor gate"
+GUARD_FILTER := "binary(it) & (test(/^(" + replace(GUARD_MODULES, " ", "|") + ")::/) | test(=copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot))"
 
 # ADVISORY pre-check, NOT the gate and never citable as it: a red gate costs
 # minutes to learn that a format, lint or guard check failed, and this learns
@@ -880,7 +883,7 @@ test-affected *args:
             # Every unit test, then the selected owners: the three guards and only owner lines.
             [[ "$filterset" =~ $filter_re ]] || { why="the filterset is not 'kind(lib) | kind(bin) | (binary_id(ae::it) & test(/^(<owner>|…)::/))'"; return 1; }
             IFS='|' read -r -a terms <<<"${BASH_REMATCH[1]}"
-            for term in doors floor gate; do
+            for term in {{ GUARD_MODULES }}; do
                 listed "$term" "${terms[@]}" || { why="the filterset leaves out the guard $term"; return 1; }
             done
             for term in "${terms[@]}"; do

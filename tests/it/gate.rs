@@ -10039,7 +10039,9 @@ fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
 /// variable, `GUARD_FILTER`. `just --dry-run --no-deps` resolves every `{{ }}` and runs
 /// nothing, so what is compared is what each recipe would run. The raw bodies must also
 /// interpolate the variable: a term typed into one recipe would agree today and drift
-/// tomorrow. Every term must still match a compiled test, because nextest does not fail on
+/// tomorrow. The guard module list is written once, in `GUARD_MODULES`: `GUARD_FILTER` and
+/// the guard check of `test-affected` derive from it, and the selector's `GUARDS` copy must
+/// equal it. Every term must still match a compiled test, because nextest does not fail on
 /// one dead OR term, so a renamed guard would leave both recipes without a word.
 #[test]
 fn the_guards_recipe_runs_the_shared_guard_filter() {
@@ -10049,6 +10051,28 @@ fn the_guards_recipe_runs_the_shared_guard_filter() {
 
     let justfile = read(&root().join("justfile"));
     assert_eq!(recipe_deps(&justfile, "guards"), ["rust-fmt-check"]);
+    assert_eq!(
+        justfile_string(&justfile, "GUARD_MODULES")
+            .split(' ')
+            .collect::<Vec<_>>(),
+        affected::GUARDS,
+        "GUARD_MODULES and the selector's GUARDS name the same guard modules, one space apart"
+    );
+    let definition = justfile
+        .lines()
+        .find(|line| line.starts_with("GUARD_FILTER := "))
+        .unwrap_or_default();
+    assert!(
+        definition.contains(r#"replace(GUARD_MODULES, " ", "|")"#),
+        "GUARD_FILTER derives its module list from GUARD_MODULES: {definition:?}"
+    );
+    let selection = recipe_text(&justfile, "test-affected *args:");
+    assert!(
+        selection
+            .iter()
+            .any(|line| line == "for term in {{ GUARD_MODULES }}; do"),
+        "test-affected checks the guards of GUARD_MODULES, not a typed list"
+    );
     for header in ["_pre-test:", "guards:"] {
         let body = recipe_text(&justfile, header).join(" ");
         assert!(
@@ -10085,9 +10109,13 @@ fn the_guards_recipe_runs_the_shared_guard_filter() {
         format!("exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | ({GUARD_FILTER})'"),
         "pre runs the unit tests and the same guard filter"
     );
+    assert!(
+        resolved("test-affected").contains("for term in doors floor gate; do"),
+        "the guard check of test-affected still names the three guards"
+    );
 
     let names = compiled_it_test_names().unwrap_or_else(|why| panic!("{why}"));
-    for module in ["doors", "floor", "gate"] {
+    for module in affected::GUARDS {
         let prefix = format!("{module}::");
         assert!(
             names.iter().any(|name| name.starts_with(&prefix)),

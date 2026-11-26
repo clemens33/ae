@@ -121,8 +121,9 @@ pub(crate) struct Selection {
     pub(crate) filterset: String,
 }
 
-/// The integration owners every run selects.
-const GUARDS: [&str; 3] = ["doors", "floor", "gate"];
+/// The integration owners every run selects. A copy of the justfile's `GUARD_MODULES`, which
+/// `the_guards_recipe_runs_the_shared_guard_filter` pins equal to it.
+pub(crate) const GUARDS: [&str; 3] = ["doors", "floor", "gate"];
 /// The selector's own sources: a change to them is a change to the gate itself.
 const SELECTOR_SOURCES: [&str; 3] = [
     "examples/affected.rs",
