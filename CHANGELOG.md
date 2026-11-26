@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.123] - 2026-11-26
+- Restyle ae web to Darcula and IntelliJ Light with AA contrast
+- Add topic tabs to ae web
+- Return a boolean from the topic tab recommendation check
+- Cover the row tag window and zero marker edges
+- Quote numeric selectors and wait for the Talk receipt
+- Let the Mac subset guard see both browser stages
+- Document the origin label of ae web openings
+- Describe what a web receipt and a DECIDE relay confirm
+- Give every web-smoke rig its own scratch root and tmux server
+
 ## [v2026.11.122] - 2026-11-26
 - Add just guards, the guard tests of just pre on their own
 - Specify lane lock queue behavior
