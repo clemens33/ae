@@ -41,6 +41,7 @@ mod mutantstime_spec;
 mod receipt_spec;
 mod affected;
 mod bashfloor;
+mod build_host;
 mod gatereap_lost;
 mod lanequeue_spec;
 mod lanesafe_spec;
@@ -6231,8 +6232,8 @@ fn the_release_builds_both_halves_in_one_cargo_invocation_with_two_targets() {
     ));
     assert!(!bundles_build_both_targets_once_ok(
         &justfile.replace(
-            "rust-build-release:\n    cargo build --release --locked\n",
-            "rust-build-release:\n    cargo build --release --locked --target {{ RUST_NATIVE_TARGET }}\n"
+            "rust-build-release: _build-host\n    cargo build --release --locked\n",
+            "rust-build-release: _build-host\n    cargo build --release --locked --target {{ RUST_NATIVE_TARGET }}\n"
         ),
         &toolchain
     ));
@@ -9980,9 +9981,9 @@ fn the_contract_names_every_lane_the_gate_runs() {
 // ── `just pre` and the lane lock ─────────────────────────────────────────
 
 /// `just pre` is a convenience in front of the gate, never part of it: `test`
-/// and `rust-check` keep exactly the dependencies they had, `pre` runs only
-/// the three checks it names through the lane's filtered arm, retries nothing,
-/// and the contract says in plain words that it is advisory.
+/// and `rust-check` keep exactly their listed dependencies, the `MacBook` guard
+/// first, `pre` runs only the three checks it names through the lane's filtered
+/// arm, retries nothing, and the contract says in plain words that it is advisory.
 #[test]
 fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
     let justfile = read(&root().join("justfile"));
@@ -9990,16 +9991,17 @@ fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
     assert_eq!(
         recipe_deps(&justfile, "rust-check"),
         [
+            "_build-host",
             "rust-fmt-check",
             "rust-lint",
             "rust-fuzz-check",
             "rust-test"
         ],
-        "the gate is exactly what it was; `pre` is not a member of it"
+        "the gate is the MacBook guard and its four checks; `pre` is not a member of it"
     );
     assert_eq!(
         recipe_deps(&justfile, "pre"),
-        ["rust-fmt-check", "rust-lint", "_pre-test"]
+        ["_build-host", "rust-fmt-check", "rust-lint", "_pre-test"]
     );
     let body = recipe_text(&justfile, "_pre-test:").join(" ");
     assert!(
@@ -10050,7 +10052,10 @@ fn the_guards_recipe_runs_the_shared_guard_filter() {
          test(=copilot_spec::the_watchdog_neither_fetches_nor_feeds_copilot))";
 
     let justfile = read(&root().join("justfile"));
-    assert_eq!(recipe_deps(&justfile, "guards"), ["rust-fmt-check"]);
+    assert_eq!(
+        recipe_deps(&justfile, "guards"),
+        ["_build-host", "rust-fmt-check"]
+    );
     assert_eq!(
         justfile_string(&justfile, "GUARD_MODULES")
             .split(' ')

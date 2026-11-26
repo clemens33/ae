@@ -75,6 +75,37 @@ format-check:
 format:
     shfmt -w -i 4 -ci install
 
+# ── Build hosts ──────────────────────────────────────────────────────
+
+# THE MACBOOK NEVER BUILDS ae; the hp and m2 do (docs/development.md, "Build hosts"). Releases
+# and whole gates that ran on the MacBook filled `target/` there until the disk was full. A
+# MacBook is a Mac with an internal battery: `pmset -g batt` names `InternalBattery` there, and
+# not on a Mac mini (m2), whose answer is only the power source line. Nothing else matches, so a
+# UPS does not refuse either, and Linux has no `pmset`. ANY DOUBT DOES NOT REFUSE: no `pmset`, a
+# failed one or any other answer lets the recipe run, so the hp, m2 and CI never break.
+#
+# Every recipe that compiles or runs the workspace names `_build-host` as its first dependency,
+# or has such a recipe first, or only calls such recipes through `just`: `just` runs dependencies
+# first and in order, so the refusal comes before any cargo call. `release` opens with the same
+# text as its first command instead, because release specs read its header line exactly.
+# `tests/it/gate/build_host.rs` derives that set from this file and pins it.
+# `AE_ALLOW_MACBOOK_BUILD=1` is the human-only override; agents never set it.
+BUILD_HOST := '''
+    if [ "${AE_ALLOW_MACBOOK_BUILD:-}" != 1 ] && batt="$(pmset -g batt 2>/dev/null </dev/null)"; then
+        case "$batt" in
+            *InternalBattery*)
+                echo "build-host: refused: this Mac has an internal battery (a MacBook), and ae is not built on the MacBook: run this on the hp or m2; AE_ALLOW_MACBOOK_BUILD=1 is the human-only override" >&2
+                exit 1
+                ;;
+        esac
+    fi
+'''
+
+[no-exit-message]
+_build-host:
+    #!/bin/sh
+    {{ BUILD_HOST }}
+
 # ── Testing ──────────────────────────────────────────────────────────
 
 # THE GATE, and it is one command. Slice Z4 retired the bash suites into
@@ -110,7 +141,7 @@ GUARD_FILTER := "binary(it) & (test(/^(" + replace(GUARD_MODULES, " ", "|") + ")
 # for a filtered run.
 
 # Advisory fast pre-check (fmt + clippy + unit + guard tests). NOT THE GATE
-pre: rust-fmt-check rust-lint _pre-test
+pre: _build-host rust-fmt-check rust-lint _pre-test
 
 _pre-test:
     exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | ({{ GUARD_FILTER }})'
@@ -122,7 +153,7 @@ _pre-test:
 # change the selection.
 
 # Advisory guard tests (fmt check + GUARD_FILTER only). NOT THE GATE
-guards: rust-fmt-check
+guards: _build-host rust-fmt-check
     exec just _tmux-isolated test --test it -E '{{ GUARD_FILTER }}'
 
 # THE MAC BOUNDARY SUBSET, what a release runs on the Mac while the hp runs the whole suite
@@ -137,7 +168,7 @@ guards: rust-fmt-check
 # prints the filterset and the selected tests and runs nothing.
 
 # Run the Mac boundary subset (`.config/macos-subset`); print=yes only prints it
-test-macos *args:
+test-macos *args: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ NEST }}
@@ -720,7 +751,7 @@ BASH_FLOOR := '''
 # may compile the selector, so run it inside a lane claim or at low load.
 
 # Run the merge gate: the checks, then the tests the change reaches; print=yes only prints the selection
-test-affected *args:
+test-affected *args: _build-host
     #!/usr/bin/env bash
     {{ BASH_FLOOR }}
     set -euo pipefail
@@ -2684,6 +2715,7 @@ changelog:
 release:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ BUILD_HOST }}
     {{ NEST }}
     {{ DETACHED }}
     {{ DISKFREE }}
@@ -3070,7 +3102,7 @@ release:
 # the whole `just test` runs here. Agents never set it.
 
 # Prove the hp whole suite plus the Mac subset for this clean commit (AE_RELEASE_HP, AE_RELEASE_HP_ROOT)
-release-proof *args:
+release-proof *args: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ NEST }}
@@ -3290,7 +3322,7 @@ bundle version platform binary:
 # previous version must never reach a release.
 
 # Build both platform bundles + the release SHA256SUMS into ./dist
-bundles:
+bundles: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ NEST }}
@@ -3410,7 +3442,7 @@ bundles:
 # would download a release over the developer's own build. Bundling the local
 # binary first keeps `bundle` the ONE spelling of what a bundle is, and the
 # checkout then publishes through `_install` exactly as a downloaded one does.
-install:
+install: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     version="$(just version)"
@@ -3609,7 +3641,7 @@ RUN_START := `h="$(git rev-parse --verify -q HEAD 2>/dev/null)"; t="$(git rev-pa
 # here is one `gate-receipt:` line on stderr and the gate keeps its green exit status.
 
 # The gate: everything a change must pass before it is offered for review
-rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
+rust-check: _build-host rust-fmt-check rust-lint rust-fuzz-check rust-test
     #!/usr/bin/env bash
     set -euo pipefail
     # The receipt's `cargo nextest` calls go without a compiler wrapper, as every other
@@ -4585,7 +4617,7 @@ HP_LEG := '''
 # Cargo runs `detached` and taplo through `nest`, so a TERM to any level ends both before the
 # recipe does (#342).
 # Clippy (-D warnings) + taplo lint
-rust-lint:
+rust-lint: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
@@ -4599,7 +4631,7 @@ rust-lint:
 # Sized by the one helper, then capped at four jobs (a small crate set). Cargo runs `detached`,
 # as in rust-lint (#342).
 # Type-check every fuzz bin with the product compiler, sharing the gate cache.
-rust-fuzz-check:
+rust-fuzz-check: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
@@ -4631,7 +4663,7 @@ rust-fuzz-check:
 # jobs-budget an inherited value stands, else cargo's own default); the
 # lane-specific AE_TEST_THREADS / AE_TEST_JOBS replace the rule. The three heavy
 # lanes run cargo at nice 10.
-_tmux-isolated lane *args:
+_tmux-isolated lane *args: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
@@ -5190,7 +5222,7 @@ rust-test:
 # mutants or CI: both tests are `#[ignore]`d and need AE_HARNESS_SMOKE=1, which
 # only this recipe sets. `just harness-smoke` drives AE_HARNESS_SMOKE_TOOLS;
 # `just harness-smoke control` runs the hanging-shim control, which spends nothing.
-harness-smoke mode="":
+harness-smoke mode="": _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     case "${1:-}" in
@@ -5411,7 +5443,7 @@ _fuzz-preflight:
     fi
 
 # Fuzz one parser (for example: just rust-fuzz target=config_parse secs=60)
-rust-fuzz target secs="secs=60": _fuzz-preflight
+rust-fuzz target secs="secs=60": _build-host _fuzz-preflight
     #!/usr/bin/env bash
     set -euo pipefail
     target="${1:-}"
@@ -5715,7 +5747,7 @@ rust-prune apply="":
 # CI's. {{ RUST_CROSS_TARGET }} is also deny.toml's second graph.
 
 # Release build: native binary (the musl half is `just bundles`; its RUN proof is Linux CI)
-rust-build-release:
+rust-build-release: _build-host
     cargo build --release --locked
     @echo "==> native binary: target/release/ae"
     @./target/release/ae --version
@@ -5771,7 +5803,7 @@ rust-linux-26 bus="stall": (_linux-gate "linux26" LINUX_IMAGE_26 bus)
 
 # The one body behind both lanes: `flavor` names the image and the cache
 # volumes, `image` is the pinned base, `bus` is off or stall.
-_linux-gate flavor image bus:
+_linux-gate flavor image bus: _build-host
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ bus }}" in off|stall) ;; *) echo "Error: bus must be off or stall, not {{ bus }}" >&2; exit 2 ;; esac
@@ -5955,5 +5987,5 @@ rust-linux-smoke:
 # part of the bootstrap contract.
 
 # Optional watch loop (requires bacon, installed separately)
-rust-watch:
+rust-watch: _build-host
     bacon clippy-all

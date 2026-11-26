@@ -125,6 +125,37 @@ all. Both lanes are on demand: `just test`, `just pre` and `just release` never 
 them. They are arm64 only; the x86_64 proof of Ubuntu 26.04 is a human run on
 x86_64 hardware, and nothing here claims it.
 
+## Build hosts
+
+The MacBook does not build ae. The hp (Linux) and m2 (a Mac mini) are the build hosts: gates,
+releases (`just release` on m2, which proves the hp's receipt over ssh) and every other build run
+there. Releases and whole gates that ran on the MacBook filled the checkout's `target/` until the
+disk was full.
+
+Every recipe that compiles or runs the workspace with cargo, directly or through another recipe,
+refuses on the MacBook before any cargo call, with one line that names the hosts and the override:
+`test`, `rust-check`, `test-affected`, `test-macos`, `pre`, `guards`, `release`, `release-proof`,
+`bundles`, `install`, the `rust-*` build, test, lint, fuzz, stress, coverage and mutation lanes,
+`harness-smoke`, `web-smoke`, `rust-linux` and `rust-linux-26` (their container builds on the same
+disk) and `rust-watch`. The one shared guard is the justfile text `BUILD_HOST`: the private recipe
+`_build-host` runs it, and `release` opens with it as its first command, because release specs read
+that header line exactly. `tests/it/gate/build_host.rs` derives the set from the justfile and pins
+that each member meets the guard before it can build. What compiles nothing of the workspace stays
+allowed: the bash lane (`just check`), `rust-fmt`, `rust-fmt-check`, `lane-lock`, `rust-prune`,
+`rust-deny`, `rust-vet` and `rust-setup`.
+
+**How the MacBook is told apart.** It is a Mac with an internal battery: `pmset -g batt` names
+`InternalBattery` there. A Mac mini answers with the power source line only, and nothing but
+`InternalBattery` matches, so a UPS does not refuse either. Linux has no `pmset`. `sysctl hw.model` does not say which Mac is a laptop
+(the MacBook answers `Mac17,9`, m2 `Mac14,12`). Any doubt does not refuse: no `pmset`, a failed
+one or any other answer lets the recipe run, so the hp, m2 and CI never break. The guard stops a
+habit, not an attack: a `cargo` typed by hand is not stopped.
+
+**The human override.** `AE_ALLOW_MACBOOK_BUILD=1`, that exact value, lets a recipe build on the
+MacBook. It is the human's call, and agents never set it. A test fixture that clears its
+environment drops it, so a whole `just test` on the MacBook can still meet the refusal inside such
+a fixture.
+
 ## Lane reference
 
 Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the short form of the rows that hold a rule (the gate, `just pre`, the lane lock, mutants, fuzz, deny/vet, prune, the on-demand lanes); every row is here in full.
