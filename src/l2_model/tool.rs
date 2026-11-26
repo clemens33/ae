@@ -1159,7 +1159,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
     name: "claude",
     process_family_prefix: None,
-    measured_version: Some("2.1.330"),
+    measured_version: Some("2.1.332"),
     label: Some("claude code"),
     client: "cc",
     launch_marker: None,
@@ -2053,6 +2053,15 @@ impl ToolKind {
         matches!(self, Self::OpenCode)
     }
 
+    /// Whether ae reads and gates this tool's own dictation: Claude Code's
+    /// hold-mode voice input, started by the `--settings` voice layer and
+    /// read from its footer. Codex CLI 0.172.0 has live voice and no
+    /// dictation; no other tool has one ae models.
+    #[must_use]
+    pub const fn dictates(self) -> bool {
+        matches!(self, Self::Claude)
+    }
+
     /// Canonical diagnostic and metadata spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -2446,7 +2455,7 @@ mod tests {
                     kind: ToolKind::Claude,
                     name: "claude",
                     process_family_prefix: None,
-                    measured_version: Some("2.1.330"),
+                    measured_version: Some("2.1.332"),
                     label: Some("claude code"),
                     client: "cc",
                     launch_marker: None,

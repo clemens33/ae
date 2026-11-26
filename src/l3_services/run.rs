@@ -968,8 +968,7 @@ fn build_with_snapshot(
     } else {
         reconcile_config_home(&mut prefix, seat.tool, &current, &identity);
     }
-    let voice = seat_main(dir, slot);
-    add_voice_settings(&mut argv, voice && seat.tool == ToolKind::Claude);
+    let (voice, voice_added) = voice_layer(dir, slot, seat.tool, &mut argv);
     let plan = Plan {
         mode,
         tool: seat.tool,
@@ -995,6 +994,7 @@ fn build_with_snapshot(
             proof: context_proof(dir, slot, seat.tool, exact),
             charter,
             voice,
+            voice_added,
         },
     };
     Ok((plan, choice))
@@ -1014,6 +1014,10 @@ struct ContextStart {
     /// This start is the orchestrator seat's main slot, so it records or drops
     /// the `voice.<slot>` proof ([`stamp_voice`]).
     voice: bool,
+    /// ae itself appended its voice settings pair to this start's argv: the
+    /// provenance the proof needs beside the argv check, because a command
+    /// that already passes the same bytes made ae add nothing.
+    voice_added: bool,
 }
 
 /// What a start of one seat proves of the relay context turn.
@@ -1090,12 +1094,21 @@ fn settings_flag(word: &str) -> bool {
 /// compete, so ae adds none and leaves the user's settings as they are. The
 /// end of the argv, not the word after the binary, because a launcher command
 /// (`npx claude`) puts the tool after its own first word.
-fn add_voice_settings(argv: &mut Vec<String>, wanted: bool) {
+/// Whether this start is the orchestrator seat's main slot, and whether ae
+/// appended its voice settings to the start's `argv` (a tool that dictates).
+fn voice_layer(dir: &Path, slot: &str, tool: ToolKind, argv: &mut Vec<String>) -> (bool, bool) {
+    let voice = seat_main(dir, slot);
+    (voice, add_voice_settings(argv, voice && tool.dictates()))
+}
+
+/// Whether ae appended the pair.
+fn add_voice_settings(argv: &mut Vec<String>, wanted: bool) -> bool {
     if !wanted || argv.iter().any(|word| settings_flag(word)) {
-        return;
+        return false;
     }
     argv.push(SETTINGS_FLAG.to_owned());
     argv.push(VOICE_SETTINGS.to_owned());
+    true
 }
 
 /// Whether the argv a start executes carries ae's voice settings and no other
@@ -1121,7 +1134,7 @@ fn stamp_voice(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> std
     if !start.voice || start.launch_id.is_empty() {
         return Ok(());
     }
-    let proved = plan.tool == ToolKind::Claude && voice_settings_held(&plan.argv);
+    let proved = plan.tool.dictates() && start.voice_added && voice_settings_held(&plan.argv);
     if let Err(why) = crate::meta::set_voice(dir, slot, &start.launch_id, proved) {
         writeln!(
             err,
@@ -3702,6 +3715,7 @@ mod tests {
             proof,
             charter: None,
             voice: false,
+            voice_added: false,
         };
         let go = |start: ContextStart| {
             let mut err = Vec::new();
@@ -3761,6 +3775,7 @@ mod tests {
             proof,
             charter: None,
             voice: false,
+            voice_added: false,
         };
         // The meta lock is a directory, so opening it fails for any user: the
         // clear cannot happen while the meta stays readable.
@@ -4729,6 +4744,76 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn only_the_settings_pair_ae_appended_proves_the_voice_launch() {
+        let dir = std::env::temp_dir().join(format!("ae-run-voice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let base = "schema=2\nsession_id=11111111-1111-4111-8111-111111111111\nseat.main=lead\nprofile.main=base\nagent_bin.main=claude\nlaunch_id.main=L1\n";
+        let plan = |argv: Vec<String>, context_stamp: ContextStart| Plan {
+            mode: Mode::Create,
+            tool: ToolKind::Claude,
+            clear: false,
+            unset: Vec::new(),
+            set: Vec::new(),
+            argv,
+            config_home_row: None,
+            config_home_base_row: None,
+            config_home_notice: None,
+            model_notice: None,
+            resume_notice: None,
+            fresh: None,
+            effort: None,
+            effort_notice: None,
+            variant_notice: None,
+            launch: None,
+            refusal: None,
+            reference: None,
+            birth: None,
+            context_stamp,
+        };
+        let proved = |plan: &Plan| {
+            std::fs::write(dir.join("meta"), base).expect("meta");
+            let mut err = Vec::new();
+            stamp_voice(&dir, "main", plan, &mut err).expect("never in the start's way");
+            crate::meta::voice_proved(&std::fs::read(dir.join("meta")).expect("meta"), "main")
+        };
+        // The profile already passes ae's exact bytes: ae appends nothing, so
+        // the argv alone looks like ae's layer, and it still proves nothing.
+        let user = vec![
+            "claude".to_owned(),
+            "--settings".to_owned(),
+            VOICE_SETTINGS.to_owned(),
+        ];
+        let unadded = ContextStart {
+            launch_id: "L1".to_owned(),
+            voice: true,
+            ..ContextStart::default()
+        };
+        assert!(voice_settings_held(&user));
+        assert!(!proved(&plan(user, unadded)), "a user's copy of ae's bytes");
+        // The pair ae appends proves the launch; the same pair on another
+        // tool does not.
+        let mut ours = vec!["claude".to_owned()];
+        let added = ContextStart {
+            launch_id: "L1".to_owned(),
+            voice: true,
+            voice_added: add_voice_settings(&mut ours, true),
+            ..ContextStart::default()
+        };
+        assert!(proved(&plan(ours.clone(), added.clone())), "ae's own pair");
+        let codex = Plan {
+            tool: ToolKind::Codex,
+            ..plan(ours, added)
+        };
+        assert!(!proved(&codex), "only a Claude start");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_voice_settings_ride_only_an_argv_without_its_own_settings_layer() {
         let words = |list: &[&str]| {
             list.iter()
@@ -4736,7 +4821,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut plain = words(&["claude", "--model", "m"]);
-        add_voice_settings(&mut plain, true);
+        assert!(add_voice_settings(&mut plain, true));
         assert_eq!(
             plain,
             words(&["claude", "--model", "m", "--settings", VOICE_SETTINGS])
@@ -4747,7 +4832,7 @@ mod tests {
             words(&["claude", "--settings=/u/s.json"]),
         ] {
             let mut argv = own.clone();
-            add_voice_settings(&mut argv, true);
+            assert!(!add_voice_settings(&mut argv, true));
             assert_eq!(argv, own, "the user's settings layer stays alone");
             assert!(!voice_settings_held(&argv), "and proves no voice launch");
         }

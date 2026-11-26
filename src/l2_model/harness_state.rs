@@ -182,17 +182,19 @@ pub fn classify(capture: &str, tool: ToolKind) -> HarnessState {
 pub fn read_frame(capture: &str, tool: ToolKind) -> Option<FrameReading> {
     match tool.input_model() {
         // A dictation runs in the composer, so a frame that shows one is no
-        // idle frame, whatever the row above the box says.
-        InputModel::BorderDelimited => read_claude(capture).map(|frame| {
-            if dictation(capture, tool).active() {
-                FrameReading {
-                    state: HarnessState::Busy,
-                    ..frame
-                }
-            } else {
-                frame
+        // idle frame, whatever the row above the box says. The positive voice
+        // read comes first: a voice row the frame grammar rejects still reads
+        // as the dictation it shows.
+        InputModel::BorderDelimited => {
+            let frame = read_claude(capture);
+            if !dictation(capture, tool).active() {
+                return frame;
             }
-        }),
+            Some(FrameReading {
+                state: HarnessState::Busy,
+                current: frame.and_then(|frame| frame.current),
+            })
+        }
         InputModel::StyleDelimited => read_codex(capture),
         InputModel::Unmodelled => None,
     }
@@ -299,20 +301,19 @@ const VOICE_WORDS: [&str; 8] = [
     "speak",
 ];
 
-/// The dictation state of the Claude Code frame `capture`, plain or styled.
-/// Every other tool reads [`Dictation::Unread`]: Muse draws the same box with
-/// no voice, so the tool's identity decides, never its input model.
+/// The dictation state of the Claude Code frame `capture`, read as plain rows:
+/// the service and UI callers turn a styled capture into them first
+/// (`deliver::region::plain_text`). Escapes left in a capture can keep its box
+/// from reading at all ([`Dictation::Unread`]), and a voice word in a row that
+/// keeps them still reads as a provisional dictation. Every other tool reads [`Dictation::Unread`]: Muse draws the
+/// same box with no voice, so the tool's identity decides, never its input
+/// model.
 #[must_use]
 pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
-    if tool != ToolKind::Claude {
+    if !tool.dictates() {
         return Dictation::Unread;
     }
-    let plain = if capture.contains('\u{1b}') {
-        Cow::Owned(crate::deliver::region::plain_text(capture))
-    } else {
-        Cow::Borrowed(capture)
-    };
-    let lines = clean_lines(&plain);
+    let lines = clean_lines(capture);
     let Some(prompt) = lines.iter().rposition(|line| line.starts_with('❯')) else {
         return Dictation::Unread;
     };
@@ -1238,13 +1239,32 @@ mod tests {
             IDLE.replace(" · ← for agents", suffix)
         }
 
+        /// A dictation the frame grammar cannot place still classifies Busy:
+        /// the positive voice read runs before the ordinary grammar, so the
+        /// verdict, the readiness wait and every effect gate agree.
+        #[test]
+        fn an_active_dictation_classifies_busy_where_the_frame_grammar_reads_none() {
+            let recording = format!("{IDLE}  ◉ recording\n");
+            assert_eq!(super::super::read_claude(&recording), None);
+            assert!(dictation(&recording, ToolKind::Claude).active());
+            assert_eq!(classify(&recording, ToolKind::Claude), HarnessState::Busy);
+            let staged = WARMING.replace("❯\u{a0}", "❯\u{a0}a draft the human typed");
+            assert_ne!(staged, WARMING, "the composer row takes the draft");
+            assert_eq!(dictation(&staged, ToolKind::Claude), Dictation::Warming);
+            assert_eq!(classify(&staged, ToolKind::Claude), HarnessState::Busy);
+        }
+
         #[test]
         fn the_measured_warmup_reads_warming_and_the_idle_frame_proves_nothing() {
             assert_eq!(dictation(IDLE, ToolKind::Claude), Dictation::Clear);
             assert_eq!(dictation(BUSY, ToolKind::Claude), Dictation::Clear);
-            for frame in [WARMING, WARMING_ESC] {
+            let printed = crate::deliver::region::plain_text(WARMING_ESC);
+            for frame in [WARMING, printed.as_str()] {
                 assert_eq!(dictation(frame, ToolKind::Claude), Dictation::Warming);
             }
+            // A styled capture left unprinted reads no box at all: no measured
+            // state, and the proved seat's gate holds on it.
+            assert_eq!(dictation(WARMING_ESC, ToolKind::Claude), Dictation::Unread);
             // `classify` reads plain captures; the redacted row above the box
             // reads Unknown, and a dictation in the footer still reads Busy.
             assert_eq!(classify(IDLE, ToolKind::Claude), HarnessState::Unknown);

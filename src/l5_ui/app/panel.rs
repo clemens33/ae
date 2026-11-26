@@ -750,7 +750,6 @@ impl App {
     /// composer, an idle Claude, a footer it reads.
     fn mic_refusal(&self, drawn: &Drawn, label: &str) -> String {
         use crate::harness_state::{Dictation, HarnessState, classify, dictation};
-        use crate::tool::{InputModel, ToolKind};
 
         if let Some(why) = self.pane_refusal() {
             return why.line(label);
@@ -771,8 +770,8 @@ impl App {
             Err(why) => return why.line(label),
         };
         let slot = target.seat.slot.as_str();
-        match crate::deliver::seat_tool(server, dir, &target.pane, slot) {
-            Some(ToolKind::Claude) => {}
+        let tool = match crate::deliver::seat_tool(server, dir, &target.pane, slot) {
+            Some(tool) if tool.dictates() => tool,
             Some(tool) => {
                 return format!(
                     "refused: dictation is unsupported in {}; only Claude Code has a dictation ae drives",
@@ -780,9 +779,8 @@ impl App {
                 );
             }
             None => return "refused: dictation unavailable: the seat's tool is unknown".to_owned(),
-        }
-        let meta = crate::meta::read_bytes(dir).unwrap_or_default();
-        if !crate::meta::voice_proved(&meta, slot) {
+        };
+        if !crate::deliver::VoiceGate::of(dir, slot, Some(tool)).proved() {
             return "refused: this launch has no proven hold-mode dictation; relaunch the orchestrator to enable it"
                 .to_owned();
         }
@@ -791,17 +789,17 @@ impl App {
         else {
             return "refused: dictation could not read the orchestrator's pane".to_owned();
         };
-        let state = dictation(&frame, ToolKind::Claude);
+        let plain = crate::deliver::region::plain_text(&frame);
+        let state = dictation(&plain, tool);
         if state.active() {
             return "refused: a dictation already runs in the orchestrator's pane".to_owned();
         }
-        let box_read = crate::deliver::region::read(&frame, InputModel::BorderDelimited);
+        let box_read = crate::deliver::region::read(&frame, tool.input_model());
         if box_read.occupancy != crate::deliver::region::Occupancy::Idle {
             return "refused: dictation starts only on an empty composer; the orchestrator's draft stays as it is"
                 .to_owned();
         }
-        let plain = crate::deliver::region::plain_text(&frame);
-        if classify(&plain, ToolKind::Claude) != HarnessState::Idle {
+        if classify(&plain, tool) != HarnessState::Idle {
             return "refused: dictation waits until Claude is idle; it is busy now".to_owned();
         }
         if state == Dictation::Unread {
@@ -1095,15 +1093,15 @@ pub(super) fn mic_read(
     pane: &str,
 ) -> draw::Mic {
     use crate::harness_state::{Dictation, dictation};
-    use crate::tool::ToolKind;
 
-    match crate::deliver::seat_tool(server, dir, pane, "main") {
-        Some(ToolKind::Claude) => {}
+    let tool = match crate::deliver::seat_tool(server, dir, pane, "main") {
+        Some(tool) if tool.dictates() => tool,
         Some(_) => return draw::Mic::Unsupported,
         None => return draw::Mic::Unknown,
-    }
+    };
     let frame = crate::transport::capture_screen(server, pane, crate::tmux::Styling::Escapes);
-    match frame.map(|frame| dictation(&frame, ToolKind::Claude)) {
+    let plain = frame.map(|frame| crate::deliver::region::plain_text(&frame));
+    match plain.map(|plain| dictation(&plain, tool)) {
         Some(Dictation::Holding | Dictation::Tapping) => draw::Mic::Recording,
         Some(Dictation::Warming | Dictation::Transcribing) => draw::Mic::Pending,
         Some(Dictation::Clear | Dictation::Unread) | None => draw::Mic::Unknown,

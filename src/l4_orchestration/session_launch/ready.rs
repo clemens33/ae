@@ -223,20 +223,90 @@ fn wait_ready(
     settle(reads, on)
 }
 
-/// The re-proof a launch turn makes under the pane's send lock: the seat is a
-/// live agent, not a shell, and its input is ready now, the recording gate
-/// read on the same capture. One poll for a modelled box; two captures for
-/// an unmodelled one, which is ready only when composed and settled.
+/// The seat's `launch_id.<slot>`, read through the classified no-follow door:
+/// `None` when the record names none or cannot be read.
+fn recorded_launch(dir: &Path, slot: &str) -> Option<String> {
+    match crate::store::read_capped_in(dir, crate::store::META, u64::MAX) {
+        Ok(crate::store::SourceRead::Ready(bytes)) => {
+            meta::Meta::parse(&String::from_utf8_lossy(&bytes))
+                .launch_id(slot)
+                .map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
+/// The re-proof a launch turn makes under the pane's send lock: the seat still
+/// carries the launch token it carried before the readiness wait (the lock
+/// wait can cross a replacement start in the same pane), it is a live agent,
+/// not a shell, and its input is ready now, the recording gate read on the
+/// same capture. [`READY_CHUNK`] polls: a delivery that just released the lock
+/// has verified its own submit, so the box is clear or about to be.
 fn ready_under_lock(
     dir: &Path,
     (server, pane): (&ServerId, &str),
-    slot: &str,
+    (slot, token): (&str, Option<&str>),
     (tool, gate): (ToolKind, deliver::VoiceGate),
 ) -> bool {
     let input = tool.adapter().input;
-    let polls = if input.model.is_modelled() { 1 } else { 2 };
-    deliver::observe_pane_liveness(server, dir, pane, slot) == deliver::PaneLiveness::Alive
-        && deliver::wait_input_ready(server, pane, (input.model, input.composed), gate, polls)
+    recorded_launch(dir, slot).as_deref() == token
+        && deliver::observe_pane_liveness(server, dir, pane, slot) == deliver::PaneLiveness::Alive
+        && deliver::wait_input_ready(
+            server,
+            pane,
+            (input.model, input.composed),
+            gate,
+            READY_CHUNK,
+        )
+}
+
+/// The launch turn's effects, run under the pane's send lock: the recording
+/// gate read from the record NOW (the readiness wait leaves the lock free, so
+/// a replacement start in the same pane can change the voice proof under a
+/// gate read before it), the re-proof, the paste and the proven submit. `Err`
+/// is the reason.
+fn turn_under_lock(
+    dir: &Path,
+    (server, pane): (&ServerId, &str),
+    (slot, token): (&str, Option<&str>),
+    tool: ToolKind,
+    prompt: &str,
+) -> Result<TurnOutcome, String> {
+    let gate = deliver::VoiceGate::of(dir, slot, Some(tool));
+    if !ready_under_lock(dir, (server, pane), (slot, token), (tool, gate)) {
+        return Err(
+            "the seat was replaced or left its ready input state before the paste; nothing was pasted"
+                .to_owned(),
+        );
+    }
+    // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
+    // selecting mid-send routes the human's in-flight keystrokes into the
+    // target — acute under lead-pair, where two agents share window 0.
+    let buffer = format!("ae-launch-{slot}");
+    match deliver::stage_and_paste(server, &buffer, prompt.as_bytes(), pane, gate) {
+        // A bare Enter is not a submit: a booting TUI swallows it, and for a
+        // seat resumed while its id is still `pending` this turn is the ONLY
+        // thing that will ever create a rollout to capture. So the press is
+        // PROVEN, and a turn left in the box falls through to the durable
+        // failure rather than passing as delivered.
+        Ok(()) => {
+            let model = tool.adapter().input.model;
+            match deliver::submit_staged_gated(server, pane, model, gate) {
+                deliver::SubmitState::Submitted => Ok(TurnOutcome::Submitted),
+                deliver::SubmitState::Unknown(_) => Ok(TurnOutcome::Unconfirmed),
+                deliver::SubmitState::StillStaged => Err(
+                    "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned(),
+                ),
+            }
+        }
+        Err(deliver::StageFailure::Held(state)) => Err(format!(
+            "{} — nothing was pasted",
+            deliver::DeferHeld::of_voice(state).describe()
+        )),
+        Err(failure) => Err(format!(
+            "submit UNCONFIRMED ({failure:?}) — it may be staged unsent"
+        )),
+    }
 }
 
 /// The gated, loud, DURABLE launch-turn delivery, for ONE seat.
@@ -258,7 +328,6 @@ pub(crate) fn deliver_launch_turn(
     on_prompt: OnHumanPrompt,
     err: &mut impl Write,
 ) -> io::Result<TurnOutcome> {
-    let model = tool.adapter().input.model;
     let mut outcome = TurnOutcome::Undelivered;
     // `auto_trust` answers a trust block inside this wait until an answer is
     // tried that is not a "not yet".
@@ -270,52 +339,28 @@ pub(crate) fn deliver_launch_turn(
         }
         false
     };
+    let token = recorded_launch(dir, slot);
     let gate = deliver::VoiceGate::of(dir, slot, Some(tool));
     let reason = match wait_ready(server, pane, (tool, gate), on_prompt, trusted) {
-        // The pane's send lock, taken without waiting only now that the pane
-        // is ready, so the readiness wait (and the trust answer inside it)
-        // never holds it. Under it the pane is proven live and ready AGAIN,
-        // and it is held from that read through the last Enter, like every
-        // other delivery to the pane.
-        Readiness::Ready => match deliver::lock_target(dir, pane, std::time::Duration::ZERO) {
+        // The pane's send lock, taken only now that the pane is ready, so the
+        // readiness wait (and the trust answer inside it) never holds it. It
+        // waits as long as every other delivery waits: a delivery that holds
+        // it now (the watchdog's quota checkpoint at a fresh seat) ends first.
+        // The callers hold no other lock here. Under it the seat is proven
+        // the same launch, live and ready AGAIN, and it is held from that read
+        // through the last Enter, like every other delivery to the pane.
+        Readiness::Ready => match deliver::launch_lock(dir, pane) {
             None => "another delivery held the target lock; nothing was pasted".to_owned(),
-            Some(_send) if !ready_under_lock(dir, (server, pane), slot, (tool, gate)) => {
-                "the pane left its ready input state before the paste; nothing was pasted"
-                    .to_owned()
-            }
-            Some(_send) => {
-                // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
-                // selecting mid-send routes the human's in-flight keystrokes into the
-                // target — acute under lead-pair, where two agents share window 0.
-                match deliver::stage_and_paste(
-                    server,
-                    &format!("ae-launch-{slot}"),
-                    prompt.as_bytes(),
-                    pane,
-                    gate,
-                ) {
-                    // A bare Enter is not a submit: a booting TUI swallows it, and for
-                    // a seat resumed while its id is still `pending` this turn is the
-                    // ONLY thing that will ever create a rollout to capture. So the
-                    // press is PROVEN, and a turn left in the box falls through to the
-                    // durable failure below rather than passing as delivered.
-                    Ok(()) => match deliver::submit_staged_gated(server, pane, model, gate) {
-                        deliver::SubmitState::Submitted => return Ok(TurnOutcome::Submitted),
-                        deliver::SubmitState::Unknown(_) => return Ok(TurnOutcome::Unconfirmed),
-                        deliver::SubmitState::StillStaged => {
-                            "submit UNCONFIRMED — the turn is staged unsent in the input box"
-                                .to_owned()
-                        }
-                    },
-                    Err(deliver::StageFailure::Held(state)) => format!(
-                        "{} — nothing was pasted",
-                        deliver::DeferHeld::of_voice(state).describe()
-                    ),
-                    Err(failure) => {
-                        format!("submit UNCONFIRMED ({failure:?}) — it may be staged unsent")
-                    }
-                }
-            }
+            Some(_send) => match turn_under_lock(
+                dir,
+                (server, pane),
+                (slot, token.as_deref()),
+                tool,
+                prompt,
+            ) {
+                Ok(turn) => return Ok(turn),
+                Err(reason) => reason,
+            },
         },
         Readiness::Blocked(asked) => {
             outcome = TurnOutcome::Blocked;

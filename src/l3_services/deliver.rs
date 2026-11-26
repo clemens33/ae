@@ -416,7 +416,6 @@ pub(crate) fn deliver_checked(
 ) -> io::Result<Result<Delivered, Failure>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
-    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
@@ -448,6 +447,10 @@ pub(crate) fn deliver_checked(
     if !address_check(guard, err)? {
         return Ok(Err(refused(&body_file, Stage::BeforeInput)));
     }
+    // The recording gate, read from the record under the send lock and after
+    // the address re-proof: until the lock is held, a replacement start in
+    // the same pane can change the voice proof a gate read earlier saw.
+    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     let prepared = notice::prepare(
         input.model,
         request.action,
@@ -566,7 +569,6 @@ pub(crate) fn deliver_composed_checked(
 ) -> io::Result<Option<Result<Delivered, Failure>>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
-    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     if refuses_as_dead(pane_liveness_at(
         &target_meta_dir(request),
         request.pane_slot,
@@ -583,6 +585,8 @@ pub(crate) fn deliver_composed_checked(
         )?;
         return Ok(None);
     };
+    // Read under the lock, as `deliver_checked` reads it.
+    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     if quiet_or_abandoned(request, input.model, tool, guard, "", err)?.is_err() {
         return Ok(None);
     }
@@ -766,6 +770,12 @@ pub(crate) fn seat_tool(
 pub(crate) fn prompt_tool(request: &Request<'_>) -> Option<ToolKind> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     target_input(request, &probe.command).1
+}
+
+/// The send lock a launch turn takes once its pane is ready, waiting as long
+/// as [`target_lock`] does.
+pub(crate) fn launch_lock(dir: &Path, pane: &str) -> Option<std::fs::File> {
+    lock_target(dir, pane, LOCK_WAIT)
 }
 
 /// The recording gate of `request`'s target pane, run by `tool`.
@@ -1874,36 +1884,47 @@ pub enum StageFailure {
 /// capture at all, holds too. Every other tool passes unread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoiceGate {
-    claude: bool,
+    /// The pane's tool when ae reads its dictation ([`ToolKind::dictates`]).
+    tool: Option<ToolKind>,
     proved: bool,
 }
 
 impl VoiceGate {
     /// No read: the pane is no Claude pane, or no agent at all.
     pub const OPEN: Self = Self {
-        claude: false,
+        tool: None,
         proved: false,
     };
 
     /// The gate for `slot`'s pane in the session `meta_dir` records, run by
-    /// `tool`.
+    /// `tool`. The record is read through the classified no-follow door, as
+    /// the address guard reads it: a FIFO, a link or any other damage at the
+    /// meta path is refused before an open and proves nothing.
     #[must_use]
     pub fn of(meta_dir: &Path, slot: &str, tool: Option<ToolKind>) -> Self {
-        let claude = tool == Some(ToolKind::Claude);
-        let proved = claude
+        let tool = tool.filter(|tool| tool.dictates());
+        let proved = tool.is_some()
             && !slot.is_empty()
-            && crate::meta::read_bytes(meta_dir)
-                .is_ok_and(|meta| crate::meta::voice_proved(&meta, slot));
-        Self { claude, proved }
+            && matches!(
+                crate::store::read_capped_in(meta_dir, crate::store::META, u64::MAX),
+                Ok(crate::store::SourceRead::Ready(meta)) if crate::meta::voice_proved(&meta, slot)
+            );
+        Self { tool, proved }
+    }
+
+    /// Whether the record proves this launch started with ae's hold-mode
+    /// voice settings ([`crate::meta::voice_proved`]).
+    #[must_use]
+    pub const fn proved(self) -> bool {
+        self.proved
     }
 
     /// The hold `capture` shows; `None` lets the key go. Pure.
     #[must_use]
     pub fn held_by(self, capture: Option<&str>) -> Option<Dictation> {
-        if !self.claude {
-            return None;
-        }
-        match capture.map(|frame| crate::harness_state::dictation(frame, ToolKind::Claude)) {
+        let tool = self.tool?;
+        let read = |frame: &str| crate::harness_state::dictation(&printed_rows(frame), tool);
+        match capture.map(read) {
             Some(state) if state.active() => Some(state),
             Some(Dictation::Unread) | None if self.proved => Some(Dictation::Unread),
             _ => None,
@@ -1913,10 +1934,18 @@ impl VoiceGate {
     /// [`Self::held_by`] over a fresh capture of `pane`.
     #[must_use]
     pub fn holds(self, server: &ServerId, pane: &str) -> Option<Dictation> {
-        if !self.claude {
-            return None;
-        }
+        self.tool?;
         self.held_by(transport::capture_screen(server, pane, Styling::Escapes).as_deref())
+    }
+}
+
+/// `frame` as the plain rows `capture-pane -p` prints: a styled capture goes
+/// through [`region::plain_text`], a plain one passes as it is.
+fn printed_rows(frame: &str) -> std::borrow::Cow<'_, str> {
+    if frame.contains('\u{1b}') {
+        std::borrow::Cow::Owned(region::plain_text(frame))
+    } else {
+        std::borrow::Cow::Borrowed(frame)
     }
 }
 

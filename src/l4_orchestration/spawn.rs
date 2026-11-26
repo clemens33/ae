@@ -1579,17 +1579,76 @@ fn deliver_brief(
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
     // in the input box.
     std::thread::sleep(LINGER_SETTLE);
+    linger_enter(
+        dir,
+        facts,
+        (pane, slot, kind),
+        (brief, &body_file),
+        &guard,
+        err,
+    )
+}
+
+/// The Enter a staged brief gets after [`LINGER_SETTLE`]. It is a delivery
+/// effect like any other: under the pane's send lock, taken without waiting,
+/// after the address re-proof, and through a recording gate computed now and
+/// read on the frame the brief's head is sought in.
+fn linger_enter(
+    dir: &Path,
+    facts: &Facts,
+    (pane, slot, kind): (&str, &str, ToolKind),
+    (brief, body_file): (&str, &str),
+    guard: &tracked::AddressGuard<'_>,
+    err: &mut impl Write,
+) -> io::Result<Option<BriefRefusal>> {
+    let Some(_send) = deliver::lock_target(dir, pane, Duration::ZERO) else {
+        writeln!(
+            err,
+            "ae: brief linger check skipped for pane {pane} — another delivery holds the target lock; no Enter was sent"
+        )?;
+        return Ok(None);
+    };
     if !guard.check_at(deliver::Stage::Entered, err)? {
-        return Ok(Some(superseded(deliver::Stage::Entered, &body_file)));
+        return Ok(Some(superseded(deliver::Stage::Entered, body_file)));
     }
+    let gate = deliver::VoiceGate::of(dir, slot, Some(kind));
     let head: String = brief.chars().take(LINGER_PREFIX).collect();
-    if let Some(screen) = transport::capture_pane(&facts.server, pane) {
-        let tail: Vec<&str> = screen.lines().rev().take(6).collect();
-        if tail.iter().any(|line| line.contains(&head)) {
+    let screen = transport::capture_pane(&facts.server, pane);
+    match screen.map(|screen| linger(&screen, &head, gate)) {
+        Some(Linger::Enter) => {
             let _ = transport::send_key(&facts.server, pane, crate::tmux::Key::Enter);
         }
+        Some(Linger::Held(voice)) => {
+            let why = deliver::DeferHeld::of_voice(voice).halves();
+            writeln!(
+                err,
+                "ae: brief linger Enter HELD for pane {pane} — {why}; no Enter was sent, so the brief may be staged unsent. Body preserved at {body_file}"
+            )?;
+        }
+        Some(Linger::Leave) | None => {}
     }
     Ok(None)
+}
+
+/// What the linger read decides on one frame of the spawned pane.
+#[derive(Debug, PartialEq, Eq)]
+enum Linger {
+    /// The brief's head is not in the frame's last rows: nothing to press.
+    Leave,
+    /// The head lingers and no dictation holds the pane: press Enter.
+    Enter,
+    /// The head lingers, and the recording gate holds the pane.
+    Held(crate::harness_state::Dictation),
+}
+
+/// [`Linger`] for `screen`: the head among its last six rows, and the gate's
+/// verdict on the SAME frame. Pure.
+fn linger(screen: &str, head: &str, gate: deliver::VoiceGate) -> Linger {
+    if !screen.lines().rev().take(6).any(|line| line.contains(head)) {
+        return Linger::Leave;
+    }
+    gate.held_by(Some(screen))
+        .map_or(Linger::Enter, Linger::Held)
 }
 
 /// The refusal for a brief whose created seat stopped being current.
@@ -2229,6 +2288,40 @@ mod tests {
     use super::{BriefRecovery, Undelivered, drop_launch_artifacts, record_for_retry};
     use crate::time::Timestamp;
     use std::os::unix::fs::PermissionsExt as _;
+
+    /// The linger Enter at the boundary where Claude's frame turns from idle to
+    /// warming: the same staged brief head presses Enter on the idle frame and
+    /// holds on the warming one, and a frame without the head presses nothing.
+    #[test]
+    fn the_linger_enter_holds_once_the_frame_turns_to_dictation() {
+        use super::{Linger, linger};
+        use crate::harness_state::Dictation;
+        use crate::tool::ToolKind;
+
+        const HEAD: &str = "Brief for w1: read docs/app.md first";
+        let staged = |frame: &str| {
+            let staged = frame.replace("❯\u{a0}", &format!("❯\u{a0}{HEAD}"));
+            assert_ne!(staged, frame, "the fixture's composer row takes the head");
+            staged
+        };
+        let idle = staged(include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-idle-2.1.332-120x40.txt"
+        ));
+        let warming = staged(include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-warming-2.1.332-120x40.txt"
+        ));
+        // No record: a spawned seat, never the voice-proved one.
+        let dir = std::path::Path::new("/nonexistent/ae-d54-linger");
+        let claude = crate::deliver::VoiceGate::of(dir, "w1", Some(ToolKind::Claude));
+        assert_eq!(linger(&idle, HEAD, claude), Linger::Enter);
+        assert_eq!(
+            linger(&warming, HEAD, claude),
+            Linger::Held(Dictation::Warming)
+        );
+        assert_eq!(linger(&warming, "not on screen", claude), Linger::Leave);
+        let codex = crate::deliver::VoiceGate::of(dir, "w1", Some(ToolKind::Codex));
+        assert_eq!(linger(&warming, HEAD, codex), Linger::Enter);
+    }
 
     // #194 I-2: after a Killed pane, a seat-removal failure must say the pane
     // is gone; with no pane there is nothing to say beyond the failure.
