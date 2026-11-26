@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.122] - 2026-11-26
+- Add just guards, the guard tests of just pre on their own
+- Specify lane lock queue behavior
+- Queue lane-lock claims by ticket, first come, first served
+- Name the lane_lock helper in the Mac subset
+
 ## [v2026.11.121] - 2026-11-25
 - Freeze web charter and origin acceptance
 - Teach the orchestrator topics and web owner lines, and label web openings
