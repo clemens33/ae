@@ -597,3 +597,133 @@ fn assert_measured_hold_pre_paste_refusal(tag: &str, frame: &str, has_wave: bool
     assert_ne!(code, Some(0), "the measured hold refuses overview");
     assert!(why.contains("Claude dictation"), "{why}");
 }
+
+const MEASURED_TRANSCRIBING: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-transcribing-2.1.332-120x41.txt");
+const MEASURED_TRANSCRIBING_STYLED: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-transcribing-2.1.332-120x41.esc");
+const MEASURED_TAP: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-tap-2.1.332-120x50.txt");
+const MEASURED_TAP_STYLED: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-tap-2.1.332-120x50.esc");
+
+#[test]
+fn measured_transcribing_reads_busy_before_the_insert() {
+    assert_measured_upper_voice_state(
+        MEASURED_TRANSCRIBING,
+        "Transcribing…",
+        ae::harness_state::Dictation::Transcribing,
+    );
+}
+
+#[test]
+fn measured_tap_reads_busy_from_the_record_symbol_and_send_hint() {
+    assert_measured_upper_voice_state(
+        MEASURED_TAP,
+        "⏺ REC · tap to send",
+        ae::harness_state::Dictation::Tapping,
+    );
+}
+
+fn assert_measured_upper_voice_state(frame: &str, name: &str, want: ae::harness_state::Dictation) {
+    use ae::harness_state::dictation;
+    use ae::tool::ToolKind;
+
+    let (label, box_rows) = frame.split_once('\n').expect("label above the composer");
+    assert!(label.starts_with(' ') && label.trim() == name);
+    let scrollback = format!("{label}\nOlder output\n{box_rows}");
+    let left_aligned = format!("{name}\n{box_rows}");
+    let draft = format!(
+        "Older output\n{}",
+        box_rows.replace("❯\u{a0}", &format!("❯\u{a0}{name} "))
+    );
+    for negative in [&scrollback, &left_aligned, &draft] {
+        assert!(!dictation(negative, ToolKind::Claude).active());
+    }
+    assert!(!dictation(frame, ToolKind::Muse).active());
+    assert_dictation_busy(frame, want);
+}
+
+#[test]
+fn measured_transcribing_blocks_a_pane_with_a_draft() {
+    // SYNTHETIC: the attached label must still hold delivery during insert.
+    let draft = MEASURED_TRANSCRIBING.replacen("❯\u{a0}\n", "❯\u{a0}A draft\n", 1);
+    assert_ne!(draft, MEASURED_TRANSCRIBING);
+    assert_dictation_busy(&draft, ae::harness_state::Dictation::Transcribing);
+}
+
+#[test]
+fn measured_tap_blocks_a_pane_with_a_draft() {
+    // SYNTHETIC: the complete tap label is evidence independent of the box.
+    let draft = MEASURED_TAP.replacen("❯\u{a0}▁\n", "❯\u{a0}A draft\n", 1);
+    assert_ne!(draft, MEASURED_TAP);
+    assert_dictation_busy(&draft, ae::harness_state::Dictation::Tapping);
+}
+
+fn assert_dictation_busy(frame: &str, want: ae::harness_state::Dictation) {
+    use ae::harness_state::{HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    let state = dictation(frame, ToolKind::Claude);
+    assert_eq!(state, want, "measured upper label: {frame:?}");
+    assert!(state.active(), "must block delivery: {frame:?}");
+    assert_eq!(classify(frame, ToolKind::Claude), HarnessState::Busy);
+}
+
+#[test]
+fn measured_transcribing_after_load_blocks_overview_paste() {
+    assert_measured_upper_voice_pre_paste_refusal(
+        "transcribing-paste",
+        MEASURED_TRANSCRIBING_STYLED,
+        "41",
+        "Transcribing…",
+    );
+}
+
+#[test]
+fn measured_tap_after_load_blocks_overview_paste() {
+    assert_measured_upper_voice_pre_paste_refusal(
+        "tap-rec-paste",
+        MEASURED_TAP_STYLED,
+        "50",
+        "⏺ REC · tap to send",
+    );
+}
+
+fn assert_measured_upper_voice_pre_paste_refusal(
+    tag: &str,
+    frame: &str,
+    height: &str,
+    label: &str,
+) {
+    let idle = include_str!("../../../fixtures/harness-state/claude-voice-idle-2.1.332-120x40.txt");
+    let rig = orchestrator(tag, "claude", idle);
+    checked(
+        &rig,
+        &[
+            "resize-window",
+            "-t",
+            "=orchestrator:0",
+            "-x",
+            "120",
+            "-y",
+            height,
+        ],
+    );
+    let mut setup = before_paste_env(&rig.scratch, &rig.sock);
+    fs::write(rig.scratch.join("next-voice-frame"), frame).expect("the next voice frame");
+    setup.push(("D54_LOCK", rig.send_lock_path().display().to_string()));
+    let env: Vec<_> = setup
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let (code, why) = overview(&rig, "owner capture gate marker", &env);
+    let trace = fs::read_to_string(rig.scratch.join("d54-trace"))
+        .expect("the admitted overview reached the staged-buffer boundary");
+    assert!(trace.starts_with("loaded under lock"), "{trace}");
+    assert!(super::pane_frame(&rig, &rig.pane).contains(label));
+    rig.frame_barrier();
+    assert!(rig.wire().is_empty(), "no input: {tag}: {code:?}: {why}");
+    assert_ne!(code, Some(0), "measured dictation refuses overview");
+    assert!(why.contains("Claude dictation"), "{why}");
+}

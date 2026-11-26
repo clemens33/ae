@@ -49,3 +49,8 @@ and omits the waveform under `prefersReducedMotion`. Its hold status renderer
 (`abt`) emits `listening…` independently. The column in the captured frame is
 an observation at 120 cells. The label is alone and preceded by whitespace on
 the row directly above the upper border.
+
+| Fixture | Tool/version | Frame | Terminal | Capture |
+|---|---|---|---|---|
+| `claude-voice-transcribing-2.1.332-120x41.{txt,esc}` | Claude Code 2.1.332 | hold released, `Transcribing…` above the upper composer border, empty composer | 120x41, final 6 rows | attached owner, private tmux, `.local/d54/owner/20261126T162001Z/p1_emulated_hold/0046_002815.{plain,esc}`, rows 36–41 with usage removed from the custom status row. Plain read completed at 2825 ms and styled at 2835 ms. |
+| `claude-voice-tap-2.1.332-120x50.{txt,esc}` | Claude Code 2.1.332 | tap recording, `⏺ REC · tap to send` above the upper composer border and a waveform inside the composer | 120x50, final 6 rows | attached owner, same private tmux, `.local/d54/owner/20261126T162001Z/p3_tap_rec/0020_001555.{plain,esc}`, rows 45–50 unchanged. Plain read completed at 1565 ms and styled at 1577 ms. |
