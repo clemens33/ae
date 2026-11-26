@@ -58,12 +58,13 @@ a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
 A panel on the left lists the topics. **All** comes first and is selected when the page loads.
 Below it come these groups; a topic is in the first one that fits, and an empty group is not shown:
 
-1. **Needs you:** the state `needs`, or an open DECIDE item tags it.
+1. **Needs you:** the state `needs`, or something waits for you on it: an open DECIDE item or your
+   own open ask tags it. The topic leaves the group when the wait ends, unless its state is `needs`.
 2. **Moving:** the state `moving`.
 3. **Pinned:** a pinned topic that fits no group above.
 4. **Other:** a filed topic (one with a title, a state or a review) whose state word cannot be
    read.
-5. **Quiet, parked, closed:** every other topic, also a row that only an open ask tags.
+5. **Quiet, parked, closed:** every other topic.
 
 Inside a group the topic with the newest activity comes first: the later of its last review and the
 newest chat turn that tags it. The last group starts folded. Its heading opens or folds it, and a
@@ -86,10 +87,10 @@ selected, **Topic**). The page opens on Chat, and a row press shows the chat.
   the card says why. Your browser keeps the pins (see [Security](#security)). A pin can outlive its
   topic: when the limit is reached and no pinned topic shows, clearing the site's data in the
   browser frees the pins.
-- **Closed topics.** A closed topic is in the last group unless it is pinned, or a DECIDE item
-  that tags it is open. When the selected topic closes with neither, the page shows All, also when
-  you had opened it from the last group. A topic that is already closed when you open it stays
-  selected until you select another one.
+- **Closed topics.** A closed topic is in the last group unless it is pinned or something waits for
+  you on it (see **Needs you**). When the selected topic closes with neither, the page shows All,
+  also when you had opened it from the last group. A topic that is already closed when you open it
+  stays selected until you select another one.
 - **Unread.** A row shows the number of turns with its tag that arrived since you last had the
   topic selected in this page; selecting it clears the number. Your own turns do not count. A tag
   that a turn gets after it arrived does not count either: a new topic can tag older turns. A turn
@@ -377,10 +378,10 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   and 360x740 dark (`t2-*`): the mouse wheel over the panel, the selected row in view and a
   scrolled panel left alone, unread counts across a new conversation, pins across a reload and
   another tab's write, a closed topic's row, and a damaged or hostile stored pin list.
-- Last, the side panel cases run on a listener of their own (`t4-*`): the groups, their order and
-  the fold, newest activity first, a long hostile title in two lines, the need colour and its
-  contrast in both schemes, a topic opened from the folded group, the columns at 1440, 1000 and
-  760 px, and the three views at 360x740.
+- Last, the side panel cases run on a listener of their own (`t4-*`): the groups (also under open
+  asks and after one closes), their order and the fold, newest activity first, a long hostile title
+  in two lines, the need colour and its contrast in both schemes, a topic opened from the folded
+  group, the columns at 1440, 1000 and 760 px, and the three views at 360x740.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the

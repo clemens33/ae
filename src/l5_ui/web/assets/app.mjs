@@ -324,7 +324,8 @@ const decisionWords = (count) => count + (count === 1 ? " decision" : " decision
 // `has` it meets, so it is listed once. The last group is folded: a topic there
 // shows while the fold is open or while it is the selected one.
 const SIDE_GROUPS = [
-  { id: "needs", label: "Needs you", has: (row) => row.state === "needs" || decides(row) > 0 },
+  // A wait is an open DECIDE item or the owner's own open ask.
+  { id: "needs", label: "Needs you", has: (row) => row.state === "needs" || row.waits.length > 0 },
   { id: "moving", label: "Moving", has: (row) => row.state === "moving" },
   { id: "pinned", label: "Pinned", has: (row, pins) => pins.includes(row.slug) },
   { id: "other", label: "Other", has: (row) => row.state === null && filed(row) },
@@ -332,8 +333,8 @@ const SIDE_GROUPS = [
 ];
 const groupOf = (row, pins) => SIDE_GROUPS.find((group) => group.has(row, pins));
 
-// Whether a topic has a row of its own, outside the fold. Without the pins, only
-// a topic that needs the owner has one.
+// Whether a topic has a row of its own, outside the fold; `keepsUnpinned` asks
+// the same as if the topic were not pinned.
 const keeps = (row, pins) => !groupOf(row, pins).fold;
 const keepsUnpinned = (row) => keeps(row, []);
 

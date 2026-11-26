@@ -20,6 +20,7 @@ const PHONE: Cell = Cell {
 const ALL: &str = "[data-role=tab-all]";
 const FOLD: &str = "[data-group=rest] [data-action=toggle-group]";
 const TOPICS: &str = "[data-role=view-topics]";
+const ASK: &str = "ae-20261124T100000Z-00000001";
 const CONVERSATION: &str = "0199c0de-3144-4890-abcd-ef0123456789";
 const TITLE: &str = "<img data-t4-hostile src=x onerror=alert(1)> Quarterly supplier escalation with outstanding origin declarations and evidence from all regional brokers";
 
@@ -46,6 +47,16 @@ return {ok: saw.all === 'All' && saw.selected === 'true' && saw.orientation === 
   }) &&
   new Set(saw.groups.flatMap(group => group[2])).size === saw.groups.flatMap(group => group[2]).length,
   saw};
+";
+
+const ASK_ONLY: &str = r"
+const rows = ['s2-a', 't4-bare', 't4-waiting'].map(slug => document.querySelector(
+  '[data-group=needs] [data-slug=' + slug + ']'));
+const saw = rows.map(row => ({
+  marker: !!row?.querySelector('.dot.needs_you'),
+  decisions: !!row?.querySelector('[data-role=decisions]')
+}));
+return {ok: saw.every(row => row.marker && !row.decisions), saw};
 ";
 
 const FOLDED: &str = r"
@@ -221,6 +232,7 @@ fn seed(rig: &Rig) -> PathBuf {
         &format!("title: {TITLE} | state: quiet"),
     );
     memo(rig, "00", "t4-priority", "state: moving");
+    memo(rig, "00", "t4-waiting", "state: moving");
     memo(rig, "00", "t4-moving-pin", "state: moving");
     memo(rig, "00", "t4-pinned", "state: quiet");
     memo(
@@ -269,10 +281,10 @@ fn seed(rig: &Rig) -> PathBuf {
         ("target", Value::str("lead")),
         ("target_slot", Value::str("main")),
         ("target_session", Value::str(&rig.session)),
-        ("ref", Value::str("ae-20261124T100000Z-00000001")),
+        ("ref", Value::str(ASK)),
         (
             "summary",
-            Value::str("#t4-bare A topic with only an open ask"),
+            Value::str("#s2-a #t4-bare #t4-waiting Topics with only an open ask"),
         ),
     ]);
     ae::store::open(&rig.dir)
@@ -300,19 +312,20 @@ fn groups(tab: &mut Tab, rig: &Rig) -> Checked {
         CHECK,
         GROUPS,
         r#"[
-      ["needs","Needs you",["smoke","t4-choice","t4-priority"]],
+      ["needs","Needs you",["s2-a","smoke","t4-bare","t4-choice","t4-priority","t4-waiting"]],
       ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z"]],
       ["other","Other",["t4-other","t4-pinned-other"]],
       ["rest","Quiet, parked, closed",[]]
     ]"#,
     )?;
+    tab.holds(CHECK, ASK_ONLY, "")?;
     tab.holds(CHECK, FOLDED, r#"["false","",""]"#)?;
     tab.click_selector(CHECK, FOLD)?;
     wait(
         tab,
         CHECK,
         FOLDED,
-        r#"["true","s2-a s2-closed s2-m s2-parked s2-z t4-bare t4-pinned",""]"#,
+        r#"["true","s2-closed s2-m s2-parked s2-z t4-pinned",""]"#,
     )?;
     tab.click_selector(CHECK, FOLD)?;
     wait(tab, CHECK, FOLDED, r#"["false","",""]"#)?;
@@ -321,7 +334,7 @@ fn groups(tab: &mut Tab, rig: &Rig) -> Checked {
         CHECK,
         r#"
 const key = 'ae-web-pins';
-localStorage.setItem(key, '["t4-choice","t4-priority","t4-moving-pin","t4-pinned","t4-pinned-other"]');
+localStorage.setItem(key, '["t4-choice","t4-priority","t4-moving-pin","t4-pinned","t4-pinned-other","t4-waiting"]');
 dispatchEvent(new StorageEvent('storage', {key, storageArea: localStorage}));
 "#,
     )?;
@@ -330,7 +343,7 @@ dispatchEvent(new StorageEvent('storage', {key, storageArea: localStorage}));
         CHECK,
         GROUPS,
         r#"[
-      ["needs","Needs you",["smoke","t4-choice","t4-priority"]],
+      ["needs","Needs you",["s2-a","smoke","t4-bare","t4-choice","t4-priority","t4-waiting"]],
       ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z"]],
       ["pinned","Pinned",["t4-pinned","t4-pinned-other"]],
       ["other","Other",["t4-other"]],
@@ -343,12 +356,34 @@ dispatchEvent(new StorageEvent('storage', {key, storageArea: localStorage}));
         CHECK,
         GROUPS,
         r#"[
-      ["needs","Needs you",["smoke","t4-choice","t4-priority"]],
+      ["needs","Needs you",["s2-a","smoke","t4-bare","t4-choice","t4-priority","t4-waiting"]],
       ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z","t4-other"]],
       ["pinned","Pinned",["t4-pinned","t4-pinned-other"]],
       ["rest","Quiet, parked, closed",[]]
     ]"#,
     )?;
+    ae::console::close(&rig.dir, &rig.session, Some(ASK))
+        .unwrap_or_else(|error| panic!("close T4 fixture ask: {error}"));
+    wait(
+        tab,
+        CHECK,
+        GROUPS,
+        r#"[
+      ["needs","Needs you",["smoke","t4-choice","t4-priority"]],
+      ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z","t4-other","t4-waiting"]],
+      ["pinned","Pinned",["t4-pinned","t4-pinned-other"]],
+      ["rest","Quiet, parked, closed",[]]
+    ]"#,
+    )?;
+    tab.click_selector(CHECK, FOLD)?;
+    wait(
+        tab,
+        CHECK,
+        FOLDED,
+        r#"["true","s2-a s2-closed s2-m s2-parked s2-z",""]"#,
+    )?;
+    tab.click_selector(CHECK, FOLD)?;
+    wait(tab, CHECK, FOLDED, r#"["false","",""]"#)?;
     ok(CHECK, WIDE);
     Ok(())
 }
@@ -366,7 +401,7 @@ fn opened(tab: &mut Tab) -> Checked {
         tab,
         CHECK,
         FOLDED,
-        r#"["true","s2-a s2-closed s2-m s2-parked s2-z t4-bare",""]"#,
+        r#"["true","s2-a s2-closed s2-m s2-parked s2-z",""]"#,
     )?;
     script(tab, CHECK, "window.__aeStale = 1")?;
     tab.call("Page.reload", Value::Obj(Vec::new()));
@@ -377,7 +412,7 @@ fn opened(tab: &mut Tab) -> Checked {
         tab,
         CHECK,
         FOLDED,
-        r#"["true","s2-a s2-closed s2-m s2-parked s2-z t4-bare",""]"#,
+        r#"["true","s2-a s2-closed s2-m s2-parked s2-z",""]"#,
     )?;
     tab.click_selector(CHECK, "[data-group=rest] [data-slug=s2-parked]")?;
     wait(tab, CHECK, CARD, "s2-parked")?;
