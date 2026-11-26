@@ -12,6 +12,8 @@ use std::mem::ManuallyDrop;
 use super::{PANE_WAIT, Rig, await_evidence};
 use crate::o2guard_p2_spec::{Seat, World, uuid_of};
 
+mod warming;
+
 const ORCH: &str = "orchestrator";
 const IDLE: &str = include_str!("../../fixtures/harness-state/claude-idle-167x40.txt");
 const WARMUP: &str = "keep holding…";
@@ -330,50 +332,31 @@ fn an_idle_frame_without_a_voice_hint_is_unknown() {
 }
 
 #[test]
-fn the_bound_hold_override_allows_only_spaces_after_the_measured_warmup() {
-    let idle = composer_cursor(IDLE, 3);
-    let rig = orchestrator("voice-start", "claude", &idle);
+fn before_measured_recording_states_the_mic_refuses_without_a_key() {
+    let rig = orchestrator("voice-pending", "claude", &composer_cursor(IDLE, 3));
     record_hold_launch(&rig);
     let sibling = active_sibling(&rig);
-    let workspace = rig.scratch.join(".claude");
-    fs::create_dir(&workspace).expect("private project settings");
-    fs::write(
-        workspace.join("settings.local.json"),
-        r#"{"voice":{"enabled":false,"mode":"tap","autoSubmit":true}}"#,
-    )
-    .expect("lower priority settings cannot override a proven CLI hold launch");
     let api = rig_world(&rig).session("api", "tui", "");
     let pane = app(&rig, "api");
-    let shown = until_screen(&rig, &pane, "the start control is visible", |s| {
+    let shown = until_screen(&rig, &pane, "the idle control is visible", |s| {
         status(s, "unknown")
     });
-    // Claude Code 2.1.332, cap2/hold.w120.warm2.plain. Its mode-row
-    // suffix is the only positive frame evidence available before recording.
-    rig.arm_frame("onwarm", &with_footer(WARMUP));
-    rig.arm_frame("onstart", &idle);
     press_mic(&rig, &pane, &shown);
-    let started = await_evidence(PANE_WAIT, || {
-        rig.transitions().contains("onstart\n").then_some(())
-    });
-    assert!(started.is_some(), "the hold start reaches five Spaces");
     until_screen(
         &rig,
         &pane,
-        "the mic reports that recording did not start",
+        "the click explains why recording is disabled",
         |s| {
-            s.lines().skip(1).any(|row| {
-                let row = row.to_lowercase();
-                row.contains("recording") || row.contains("hold")
-            })
+            s.lines()
+                .skip(1)
+                .any(|row| row.contains("dictation needs the measured voice states"))
         },
     );
     rig.frame_barrier();
-    let transition = rig.transitions();
     assert!(
-        transition.contains("onwarm\napp-key\n"),
-        "the measured warmup appeared after two Spaces: {transition}"
+        rig.wire().is_empty(),
+        "the refused click has no key or paste effect"
     );
-    assert_eq!(rig.wire(), b"     ", "only the two-stage start burst");
     untouched(&rig, &sibling);
     untouched(&rig, &api);
 }
@@ -490,34 +473,6 @@ fn an_empty_composer_in_a_busy_frame_does_not_start_hold() {
     });
     rig.frame_barrier();
     assert!(rig.wire().is_empty(), "a busy Claude receives no voice key");
-    untouched(&rig, &api);
-}
-
-#[test]
-fn mic_stops_after_two_spaces_without_a_positive_warmup() {
-    let idle = composer_cursor(IDLE, 3);
-    let rig = orchestrator("voice-no-warmup", "claude", &idle);
-    record_hold_launch(&rig);
-    let api = rig_world(&rig).session("api", "tui", "");
-    let pane = app(&rig, "api");
-    let shown = until_screen(&rig, &pane, "idle has no positive voice hint", |s| {
-        status(s, "unknown")
-    });
-    rig.arm_frame("onwarm", &composer_cursor(&with_draft("  "), 5));
-    rig.arm_frame("onclear", &idle);
-    press_mic(&rig, &pane, &shown);
-    until_screen(&rig, &pane, "the mic explains the failed warmup", |s| {
-        s.lines().skip(1).any(|row| {
-            let row = row.to_lowercase();
-            row.contains("warmup") || row.contains("hold") || row.contains("voice")
-        })
-    });
-    rig.frame_barrier();
-    assert_eq!(rig.wire(), b"  \x15", "only two probe Spaces and cleanup");
-    assert!(
-        rig.transitions().contains("onclear\n"),
-        "the probe Spaces are cleared"
-    );
     untouched(&rig, &api);
 }
 

@@ -88,7 +88,6 @@ my $started = time();
 my $above = "fake tui transcript";
 my $wire;
 my $frame_changed = '';
-my $voice_spaces = 0;
 if ($mode eq 'frame') {
     open($wire, '>>', "$out.wire") or die;
     binmode($wire, ':raw');
@@ -120,6 +119,7 @@ sub transition_frame {
     open(my $history, '>>', "$control.transitions") or die;
     print $history "$when\n";
     close($history);
+    return 1;
 }
 sub draw_claude {
     my ($content) = @_;
@@ -219,13 +219,7 @@ while (1) {
     }
     record_wire($ch);
     transition_frame('onescape') if !$pasting && $ch eq "\e";
-    if (!$pasting && $ch eq ' ' && $mode eq 'frame') {
-        $voice_spaces++;
-        transition_frame('onwarm') if $voice_spaces == 2;
-        transition_frame('onstart') if $voice_spaces == 5;
-    }
     if (!$pasting && $ch eq "\x15") {   # C-u clears the line, and is counted
-        transition_frame('onclear');
         open(my $cu, '>>', "$enters.cu") or die;
         print $cu "cu\n";
         close($cu);
@@ -260,6 +254,7 @@ while (1) {
         # The Enter itself is already IN the buffer: strip it before any
         # question is asked of what the composer holds.
         $buf =~ s/[\r\n]\z//;
+        next if transition_frame('onenter');
         if ($mode eq 'staged' && $buf eq "[Pasted Content 42 chars]") {
             # The harness drains a staged chip on Enter: the box clears, and
             # the earlier paste is not this turn's receipt.
