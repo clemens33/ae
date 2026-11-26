@@ -73,22 +73,23 @@ counts), the unread number and the number of open DECIDE items that tag the topi
 
 Selecting a row shows the topic's chat, tags the draft and shows its card on the right. A topic in
 the last group also opens from All, the Revisit line or the strip, and stays selected until you
-select another one. A selected topic that moves from a group above into the last one is no longer
-selected, and the page shows All. The panel is 260 px wide (220 px below 1100 px) and scrolls on
-its own. A narrow screen (up to 759 px) shows one view at a time, chosen at the bottom:
-**Topics** (the panel), **Chat** or **Overview** (with a topic selected, **Topic**). The page
-opens on Chat, and a row press shows the chat.
+select another one; if it closes meanwhile, see **Closed topics**. A selected topic that moves from
+a group above into the last one is no longer selected, and the page shows All. The panel is 260 px
+wide (220 px below 1100 px) and scrolls on its own. A narrow screen (up to 759 px) shows one view
+at a time, chosen at the bottom: **Topics** (the panel), **Chat** or **Overview** (with a topic
+selected, **Topic**). The page opens on Chat, and a row press shows the chat.
 
 - **Pins.** The button at the top of a topic's card pins or unpins it. A pinned topic is marked
   with a star and stays out of the last group, whatever its state, until you unpin it. When you
-  unpin the selected topic, it stays selected until you select another one. At most 32 topics are
-  pinned: then the button of another topic is disabled and the card says why. Your browser keeps
-  the pins (see [Security](#security)). A pin can outlive its topic: when the limit is reached and
-  no pinned topic shows, clearing the site's data in the browser frees the pins.
+  unpin the selected topic and no group above fits it, it stays selected until you select another
+  one or it closes. At most 32 topics are pinned: then the button of another topic is disabled and
+  the card says why. Your browser keeps the pins (see [Security](#security)). A pin can outlive its
+  topic: when the limit is reached and no pinned topic shows, clearing the site's data in the
+  browser frees the pins.
 - **Closed topics.** A closed topic is in the last group unless it is pinned, or a DECIDE item
-  that tags it is open. When a topic moves into the last group because it closed while selected,
-  the page shows All. A topic that is already closed when you open it stays selected until you
-  select another one.
+  that tags it is open. When the selected topic closes with neither, the page shows All, also when
+  you had opened it from the last group. A topic that is already closed when you open it stays
+  selected until you select another one.
 - **Unread.** A row shows the number of turns with its tag that arrived since you last had the
   topic selected in this page; selecting it clears the number. Your own turns do not count. A tag
   that a turn gets after it arrived does not count either: a new topic can tag older turns. A turn
