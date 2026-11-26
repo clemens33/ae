@@ -480,3 +480,28 @@ pub(crate) fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind
         launched,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ServerId, ToolKind, deliver, ready_under_lock, recorded_launch};
+
+    /// The re-proof needs every fact: the launch the seat still records is
+    /// not enough while no server answers for its pane.
+    #[test]
+    fn the_recorded_launch_alone_does_not_prove_an_unreachable_pane_ready() {
+        let dir = std::env::temp_dir().join(format!("ae-ready-proof-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(dir.join("meta"), "schema=2\nlaunch_id.main=L1\n").expect("meta");
+        assert_eq!(recorded_launch(&dir, "main").as_deref(), Some("L1"), "the token matches");
+        let server = ServerId::Selected(crate::meta::Selector::Socket(dir.join("missing.sock")));
+        let ready = ready_under_lock(
+            &dir,
+            (&server, "%1"),
+            ("main", Some("L1")),
+            (ToolKind::Claude, deliver::VoiceGate::OPEN),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!ready, "no server answers for the pane");
+    }
+}
