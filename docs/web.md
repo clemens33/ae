@@ -59,7 +59,8 @@ A panel on the left lists the topics. **All** comes first and is selected when t
 Below it come these groups; a topic is in the first one that fits, and an empty group is not shown:
 
 1. **Needs you:** the state `needs`, or something waits for you on it: an open DECIDE item or your
-   own open ask tags it. The topic leaves the group when the wait ends, unless its state is `needs`.
+   own open ask tags it. The topic leaves the group when its last wait ends, unless its state is
+   `needs`.
 2. **Moving:** the state `moving`.
 3. **Pinned:** a pinned topic that fits no group above.
 4. **Other:** a filed topic (one with a title, a state or a review) whose state word cannot be
@@ -89,8 +90,8 @@ selected, **Topic**). The page opens on Chat, and a row press shows the chat.
   browser frees the pins.
 - **Closed topics.** A closed topic is in the last group unless it is pinned or something waits for
   you on it (see **Needs you**). When the selected topic closes with neither, the page shows All,
-  also when you had opened it from the last group. A topic that is already closed when you open it
-  stays selected until you select another one.
+  also when you had opened it from the last group. A topic that is already closed and in the last
+  group when you open it stays selected until you select another one.
 - **Unread.** A row shows the number of turns with its tag that arrived since you last had the
   topic selected in this page; selecting it clears the number. Your own turns do not count. A tag
   that a turn gets after it arrived does not count either: a new topic can tag older turns. A turn
