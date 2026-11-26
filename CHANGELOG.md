@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.124] - 2026-11-26
+- Derive the guard module list from one justfile variable
+- Land an OpenCode spawn brief while a tab spinner moves
+- Pin where the OpenCode turn hint is read
+- Keep web topic tabs in view, count unread turns and pin tabs
+- Reopen the console in the unread browser cell
+
 ## [v2026.11.123] - 2026-11-26
 - Restyle ae web to Darcula and IntelliJ Light with AA contrast
 - Add topic tabs to ae web
