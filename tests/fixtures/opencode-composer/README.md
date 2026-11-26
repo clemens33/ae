@@ -16,6 +16,7 @@ half of readiness: one the check must REFUSE, one it must GRANT.
 | `opencode-history-draft-80x24.txt` | opencode 1.18.31 | `half a draft here` typed, unsubmitted, on the placeholder row; the placeholder is gone (a wide draft with sidebar is pinned synthetically) | 2026-09-19, private probe server, scratch cwd | `capture-pane -p -J` bytes, scrubbed |
 | `opencode-palette-80x24.txt` | opencode 1.18.31 | ctrl+p palette open (`Commands … esc`, `Search`, items) over a drawn box, overlaying the box top | 2026-09-19, private probe server, scratch cwd | `capture-pane -p -J` bytes, scrubbed |
 | `opencode-sesslist-200x50.txt` | opencode 1.18.31 | session list open (`Sessions … esc`, `Search`, `Today`, one entry) over a drawn, empty wide box | 2026-09-19, private probe server, scratch cwd | `capture-pane -p -J` bytes, scrubbed |
+| `opencode-tabstrip-start-80x24.txt` | opencode 2.4.1 | the start screen of a spawn that lost its brief: the empty composer, and on row 0 the session tab strip (tabs restored per folder), one tab spinning (`⠙ Three`) although no process ran that session | 2026-11-26 02:41Z, ae session pane | the `peek` text of the failed seat, 23 rows, home path replaced by a same-width synthetic; source sha256 `0e100c6388a2125a8d15458e3d0d95e490aa1b34f9c810e6d367d47b337dab9d` |
 
 The two oldest frames are `capture-pane -e` bytes, the same serialisation
 `tests/fixtures/muse-composer/` uses. The five newer frames are PLAIN

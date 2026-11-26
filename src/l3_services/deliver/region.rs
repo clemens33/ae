@@ -7,6 +7,7 @@
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::harness_state::{CLAUDE_HINTS, Hint};
@@ -710,6 +711,66 @@ pub fn composed_ui(capture: &str, spec: Composed) -> bool {
         }
         ComposerAnchor::RuledPrompt => ruled_prompt(&rows, spec.markers),
     }
+}
+
+/// The glyph every braille spinner cell of a tab strip reads as in a
+/// [`settle_view`].
+const SPINNER_CELL: char = '⣿';
+
+/// The screen a settle compares, read from one plain capture: the capture
+/// itself, byte for byte, except on row 0 of an idle heavy-rail (opencode)
+/// screen.
+///
+/// Row 0 there is the session TAB STRIP, and a tab opencode reads as running
+/// spins a braille glyph, also a tab no process runs (live, 2.4.1,
+/// 2026-11-26: one pane read `⠇ Three`, then `⠏ Three`). opencode restores
+/// the tabs per folder, so one such tab keeps every new seat's screen moving.
+/// Each braille cell of the strip reads as [`SPINNER_CELL`]: a tick is no
+/// change, a spinner that appears, goes or moves still is one.
+///
+/// Only over an [`idle_footer`]: the equality is also what keeps a retried
+/// brief out of a busy opencode seat, which no busy gate reads.
+#[must_use]
+pub fn settle_view(capture: &str, spec: Composed) -> Cow<'_, str> {
+    match capture.split_once('\n') {
+        Some((strip, below))
+            if spec.anchor == ComposerAnchor::HeavyRail
+                && is_tab_strip(strip)
+                && idle_footer(below) =>
+        {
+            let still: String = strip
+                .chars()
+                .map(|cell| match cell {
+                    '\u{2800}'..='\u{28ff}' => SPINNER_CELL,
+                    other => other,
+                })
+                .collect();
+            Cow::Owned(format!("{still}\n{below}"))
+        }
+        _ => Cow::Borrowed(capture),
+    }
+}
+
+/// opencode 2.4.1's tab strip closes with its new-session button: a bare `+`,
+/// or `+ New session` beside the open tab. A `┃` rail row is never the strip:
+/// a box that reaches row 0 would put its own input there.
+fn is_tab_strip(row: &str) -> bool {
+    let row = row.trim_end();
+    !is_box_rail(row, BoxTable::HEAVY) && (row.ends_with(" +") || row.ends_with(" + New session"))
+}
+
+/// Is the heavy-rail box drawn with no row under it saying this seat's own
+/// turn runs? opencode's footer carries `esc` and `interrupt` while one does
+/// (2.4.1: `esc interrupt`). Rows above the box are transcript, never footer.
+fn idle_footer(capture: &str) -> bool {
+    let rows: Vec<&str> = capture.lines().collect();
+    rows.iter()
+        .rposition(|row| is_box_edge(row, BoxTable::HEAVY))
+        .is_some_and(|edge| {
+            !rows[edge + 1..]
+                .iter()
+                .any(|row| bounded_word(row, "esc") && bounded_word(row, "interrupt"))
+        })
 }
 
 /// The capture's rows as TEXT. A capture may be plain or SGR-styled, so each

@@ -86,8 +86,11 @@ while (1) {
 
 /// An opencode-shaped fake agent: it draws the MEASURED composed box (the `┃`
 /// rails, the placeholder inside them, the `╹▀` bottom edge) and, when the
-/// test's switch file appears, leaves it for a plain boot screen. Everything
-/// the pane receives is logged, so an empty receipt proves nothing was pasted.
+/// test's switch file appears, leaves it for a plain boot screen. With a spin
+/// file it keeps repainting row 0 as that line, a new braille cell at its `@`
+/// every tick (256 cells, so no two reads half a second apart match).
+/// Everything the pane receives is logged, so an empty receipt proves nothing
+/// was pasted.
 const FAKE_OPENCODE: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
@@ -133,14 +136,31 @@ sub draw_fixture {
 if (-e "__EXIT__") {
     exit 0;
 }
+my $strip = '';
+if (open(my $line, '<:raw', "__SPIN__")) {
+    $strip = <$line>;
+    chomp($strip);
+    close($line);
+}
+my $tick = 0;
+sub spin {
+    return unless length $strip;
+    my $cell = chr(0x2800 + ($tick++ % 256));
+    utf8::encode($cell);
+    my $row = $strip;
+    $row =~ s/\@/$cell/;
+    print "\e[1;1H$row\e[K";
+}
 mark("__RECEIVED__");
 draw_composed() unless draw_fixture("__START_FRAME__");
+spin();
 mark("__COMPOSED__");
 my $switched = 0;
 while (1) {
     if (-e "__EXIT__") {
         exit 0;
     }
+    spin();
     my $ready = '';
     vec($ready, fileno(STDIN), 1) = 1;
     if (select($ready, undef, undef, 0.05) > 0) {
@@ -161,6 +181,7 @@ while (1) {
 
 /// The files a test drives the opencode-shaped fake with.
 struct OcControl {
+    spin: PathBuf,
     start_frame: PathBuf,
     next_frame: PathBuf,
     composed: PathBuf,
@@ -452,6 +473,7 @@ impl Rig {
         use std::fmt::Write as _;
         use std::os::unix::fs::PermissionsExt;
         let control = OcControl {
+            spin: self.scratch.join("oc-spin"),
             start_frame: self.scratch.join("oc-start-frame"),
             next_frame: self.scratch.join("oc-next-frame"),
             composed: self.scratch.join("oc-composed"),
@@ -462,6 +484,7 @@ impl Rig {
         };
         let bin = self.scratch.join("opencode");
         let body = FAKE_OPENCODE
+            .replace("__SPIN__", &control.spin.display().to_string())
             .replace(
                 "__START_FRAME__",
                 &control.start_frame.display().to_string(),
@@ -1310,6 +1333,15 @@ const OPENCODE_IDLE_SESSION: &str =
 const OPENCODE_PALETTE: &str =
     include_str!("../fixtures/opencode-composer/opencode-palette-80x24.txt");
 
+/// The real start screen of a spawn that lost its brief (opencode 2.4.1),
+/// with one tab of its tab strip spinning.
+const OPENCODE_TABSTRIP: &str =
+    include_str!("../fixtures/opencode-composer/opencode-tabstrip-start-80x24.txt");
+const TABSTRIP_IDLE_FOOTER: &str =
+    "~/projects/ocprobe00/ae:main              shift+tab agents  ctrl+p commands";
+/// The footer opencode 2.4.1 draws while the seat's own turn runs.
+const TABSTRIP_BUSY_FOOTER: &str =
+    "⬝⬝⬝⬝■■■■ esc interrupt                      30.0K (3%)  ctrl+p commands";
 const HIGHLIGHTS_TITLE: &str = "What's new";
 const OPENCODE_MODAL_TASK: &str = "toolready brief receipt canary";
 
@@ -1458,6 +1490,116 @@ fn an_opencode_startup_modal_is_named_and_blocks_retry_until_the_same_seat_is_re
         Some(1),
         "no second retry is armed"
     );
+}
+
+/// Hand the fake the tab-strip fixture to repaint, its spinner moving.
+fn spin_the_tab_strip(control: &OcControl) {
+    let strip = OPENCODE_TABSTRIP.lines().next().unwrap_or_default();
+    assert_eq!(strip.matches('⠙').count(), 1, "one spinning tab: {strip:?}");
+    assert!(
+        std::fs::write(&control.spin, strip.replace('⠙', "@")).is_ok(),
+        "the spinning row"
+    );
+}
+
+/// Prove the pane's row 0 really moves, so a pass cannot come from a still one.
+fn assert_opencode_tab_spins(rig: &Rig, name: &str) {
+    let panes = rig.panes();
+    let Some((pane, _, _)) = panes.iter().find(|(_, _, agent)| agent == name) else {
+        panic!("{name} has no pane: {panes:?}");
+    };
+    let deadline = Instant::now() + SETUP_WAIT;
+    let mut first: Option<String> = None;
+    loop {
+        // Only a good read of the strip counts: a failed capture is no tick.
+        let (ok, screen) = rig.tmux(&["capture-pane", "-p", "-t", pane]);
+        let row = screen.lines().next().unwrap_or_default();
+        if ok && row.contains(" Three") {
+            match &first {
+                Some(seen) if seen != row => return,
+                Some(_) => {}
+                None => first = Some(row.to_owned()),
+            }
+        }
+        assert!(Instant::now() < deadline, "the tab never moved: {first:?}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn an_opencode_spawn_lands_its_brief_once_while_a_tab_strip_spins() {
+    let rig = opencode_startup_rig("ocspin");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_TABSTRIP).expect("ready frame");
+    spin_the_tab_strip(&control);
+
+    let (code, stdout, stderr) = spawn_opencode(&rig, "ocspin");
+    assert_opencode_tab_spins(&rig, "ocspin");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let received = wait_for_opencode_brief(&control);
+    assert_eq!(
+        received.matches(OPENCODE_MODAL_TASK).count(),
+        1,
+        "{received:?}"
+    );
+    assert!(
+        !ae::brief_retry::path(&rig.dir, "spawned.0").exists(),
+        "a delivered brief arms no retry"
+    );
+    assert_eq!(
+        retry_opencode(&rig, "ocspin").0,
+        Some(1),
+        "nothing to retry"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&opencode_input(&control))
+            .matches(OPENCODE_MODAL_TASK)
+            .count(),
+        1,
+        "the ready box got the brief exactly once"
+    );
+}
+
+#[test]
+fn a_busy_opencode_seat_under_a_spinning_tab_gets_the_brief_only_once_idle() {
+    let rig = opencode_startup_rig("ocbusy");
+    let control = rig.enable_opencode_profile();
+    assert_eq!(OPENCODE_TABSTRIP.matches(TABSTRIP_IDLE_FOOTER).count(), 1);
+    std::fs::write(
+        &control.start_frame,
+        OPENCODE_TABSTRIP.replace(TABSTRIP_IDLE_FOOTER, TABSTRIP_BUSY_FOOTER),
+    )
+    .expect("busy frame");
+    std::fs::write(&control.next_frame, OPENCODE_TABSTRIP).expect("idle frame");
+    spin_the_tab_strip(&control);
+
+    let (code, stdout, stderr) = spawn_opencode(&rig, "ocbusy");
+    assert_opencode_screen(&rig, "ocbusy", "esc interrupt");
+    assert_opencode_tab_spins(&rig, "ocbusy");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    let record = ae::brief_retry::path(&rig.dir, "spawned.0");
+    let before = std::fs::read(&record).expect("spawn's durable retry record");
+
+    let (code, stdout, stderr) = retry_opencode(&rig, "ocbusy");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(std::fs::read(&record).expect("the unspent record"), before);
+    switch_opencode_screen(&control);
+    assert!(
+        opencode_input(&control).is_empty(),
+        "a busy seat received nothing"
+    );
+
+    assert_opencode_tab_spins(&rig, "ocbusy");
+    let (code, stdout, stderr) = retry_opencode(&rig, "ocbusy");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let received = wait_for_opencode_brief(&control);
+    assert_eq!(
+        received.matches(OPENCODE_MODAL_TASK).count(),
+        1,
+        "{received:?}"
+    );
+    assert!(!record.exists(), "a landed retry clears its record");
+    assert_eq!(retry_opencode(&rig, "ocbusy").0, Some(1), "no second retry");
 }
 
 #[test]

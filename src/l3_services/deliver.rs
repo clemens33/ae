@@ -1491,7 +1491,7 @@ pub fn tool_initializing(server: &ServerId, pane: &str, model: InputModel) -> bo
 /// This is a ONE-OBSERVATION predicate, so it answers only for a MODELLED
 /// composer. An unmodelled tool has no grammar to recognise readiness from;
 /// for it readiness is COMPOSED *and* SETTLED — positive evidence its box is
-/// drawn, over two byte-identical captures — observed by [`wait_input_ready`].
+/// drawn, over two captures that match — observed by [`wait_input_ready`].
 /// Called with an unmodelled model this fails closed.
 #[must_use]
 pub fn input_ready(server: &ServerId, pane: &str, model: InputModel) -> bool {
@@ -1541,8 +1541,8 @@ pub fn wait_input_ready(
 /// paste into it is silently lost (measured on opencode 1.18.31, 2026-09-15 —
 /// blank until ~+3.0 s, and a paste at +1 s vanished with the tool reporting
 /// success). One capture seeds the comparison; every following [`READY_POLL`]
-/// takes another, and readiness is granted only when that pair is
-/// byte-identical AND the seeded capture carries one of the tool's composed
+/// takes another, and readiness is granted only when that pair matches
+/// AND the seeded capture carries one of the tool's composed
 /// markers ([`unmodelled_ready`]).
 ///
 /// A tool with NO signal ([`Composed::NONE`]) can never be ready here —
@@ -1571,13 +1571,21 @@ fn wait_until_settled(server: &ServerId, pane: &str, composed: Composed, polls: 
 }
 
 /// The whole readiness verdict for one unmodelled capture pair: the seeded
-/// frame carries a COMPOSED marker, and the two frames are byte-identical and
-/// non-empty ([`pane_settled`]). Pure, so both halves are pinnable without
-/// tmux — and the composed half is the one `e737b6b3` dropped, which let a
-/// blank boot frame pass as ready.
+/// frame carries a COMPOSED marker, and the two frames' settle views
+/// ([`region::settle_view`]) are byte-identical and non-empty
+/// ([`pane_settled`]). Pure, so both halves are pinnable without tmux — and
+/// the composed half is the one `e737b6b3` dropped, which let a blank boot
+/// frame pass as ready.
 fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: Composed) -> bool {
     before.is_some_and(|capture| region::composed_ui(capture, composed))
-        && pane_settled(before, after)
+        && pane_settled(
+            before
+                .map(|capture| region::settle_view(capture, composed))
+                .as_deref(),
+            after
+                .map(|capture| region::settle_view(capture, composed))
+                .as_deref(),
+        )
 }
 
 /// Re-read the pane's SCREEN once, under the target lock, and answer whether
@@ -2554,6 +2562,10 @@ mod tests {
     /// The REAL opencode composed frame: the welcome screen with its composer.
     const OPENCODE_COMPOSED: &str =
         include_str!("../../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
+    /// The REAL start screen of a spawn that lost its brief (opencode 2.4.1):
+    /// the empty composer, and on row 0 the tab strip with one spinning tab.
+    const OPENCODE_TABSTRIP: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-tabstrip-start-80x24.txt");
     /// The REAL grok boot/composed frames and the REAL agy boot/composed/
     /// trust-modal frames (provenance beside them).
     const GROK_COMPOSED: &str =
@@ -3472,6 +3484,197 @@ mod tests {
             ),
             "and a frame that keeps changing is not, however composed its seed"
         );
+    }
+
+    /// `frame` with its one `from` replaced by `to`.
+    fn changed(frame: &str, from: &str, to: &str) -> String {
+        assert_eq!(frame.matches(from).count(), 1, "one {from:?} in the frame");
+        frame.replacen(from, to, 1)
+    }
+
+    /// The fixture's idle footer, under the composer box.
+    const IDLE_FOOTER: &str =
+        "~/projects/ocprobe00/ae:main              shift+tab agents  ctrl+p commands";
+    /// The footer opencode 2.4.1 draws while the seat's own turn runs.
+    const BUSY_FOOTER: &str =
+        "⬝⬝⬝⬝■■■■ esc interrupt                      30.0K (3%)  ctrl+p commands";
+
+    /// Whether the pair is ready once `before`'s tab spinner has moved on.
+    fn ready_after_a_tab_tick(before: &str) -> bool {
+        let after = changed(before, "⠙ Three", "⠴ Three");
+        unmodelled_ready(Some(before), Some(&after), opencode_markers())
+    }
+
+    #[test]
+    fn an_opencode_ready_box_is_ready_while_only_the_tab_strip_spinner_moves() {
+        let strip_form_new = OPENCODE_TABSTRIP.to_owned();
+        // The other measured tail: the open tab's title, then a bare `+`.
+        let strip_form_bare = changed(
+            OPENCODE_TABSTRIP,
+            "Lanegu + New session",
+            "⠋ guardsone rule-11 gate +",
+        );
+        for before in [strip_form_new, strip_form_bare] {
+            let after = changed(&before, "⠙ Three", "⠴ Three");
+            assert!(
+                super::region::composed_ui(&before, opencode_markers())
+                    && super::region::composed_ui(&after, opencode_markers()),
+                "calibration: the empty composer is drawn in both frames"
+            );
+            assert!(
+                !pane_settled(Some(&before), Some(&after)),
+                "calibration: the whole screen is not byte-identical"
+            );
+            assert!(
+                unmodelled_ready(Some(&before), Some(&after), opencode_markers()),
+                "another session's spinner must not hold a ready box: {before}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_opencode_busy_seat_stays_unready_under_a_spinning_tab() {
+        // Byte equality is what keeps a retried brief out of a busy opencode
+        // seat, so a footer that says the seat's own turn runs keeps it, even
+        // when the tab spinner is all that moved.
+        for footer in [
+            BUSY_FOOTER,
+            "■⬝⬝⬝ esc again to interrupt      ctrl+p commands",
+        ] {
+            let busy = changed(OPENCODE_TABSTRIP, IDLE_FOOTER, footer);
+            assert!(
+                super::region::composed_ui(&busy, opencode_markers()),
+                "calibration: a busy seat keeps its empty box drawn"
+            );
+            assert!(!ready_after_a_tab_tick(&busy), "{footer}");
+        }
+    }
+
+    #[test]
+    fn a_busy_hint_in_either_frame_or_a_moving_footer_holds_the_box() {
+        let busy = changed(OPENCODE_TABSTRIP, IDLE_FOOTER, BUSY_FOOTER);
+        let ticked = changed(&busy, "⠙ Three", "⠴ Three");
+        let swept = changed(&ticked, "⬝⬝⬝⬝■■■■ esc", "⬝⬝⬝■■■■⬝ esc");
+        for (before, after) in [
+            (busy.as_str(), swept.as_str()),
+            (busy.as_str(), OPENCODE_TABSTRIP),
+            (OPENCODE_TABSTRIP, ticked.as_str()),
+        ] {
+            assert!(
+                !unmodelled_ready(Some(before), Some(after), opencode_markers()),
+                "{before}\n---\n{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_composer_rail_on_row_zero_is_never_the_tab_strip() {
+        // A box that reaches the top: row 0 is its own input row, and it ends
+        // the way the strip does.
+        let top = format!(
+            "  ┃  Ask anything… ⠙ +\n  ┃\n  ┃  Build · model · max\n  ╹{}\n   ~/x:main   tab agents  ctrl+p commands\n",
+            "▀".repeat(40)
+        );
+        let later = changed(&top, "⠙ +", "⠴ +");
+        for frame in [&top, &later] {
+            assert!(
+                super::region::composed_ui(frame, opencode_markers()),
+                "calibration: the box at the top is drawn and empty"
+            );
+        }
+        assert!(!unmodelled_ready(
+            Some(&top),
+            Some(&later),
+            opencode_markers()
+        ));
+    }
+
+    #[test]
+    fn a_tab_strip_without_a_composer_is_never_ready() {
+        let boot = "  • a  ⠙ b +\n\n   opencode is starting\n";
+        let later = changed(boot, "⠙ b", "⠴ b");
+        assert!(!super::region::composed_ui(boot, opencode_markers()));
+        assert!(!unmodelled_ready(
+            Some(boot),
+            Some(&later),
+            opencode_markers()
+        ));
+    }
+
+    #[test]
+    fn the_own_turn_hint_is_both_words_and_only_under_the_box() {
+        for footer in [
+            "~/wt/interrupt:main              shift+tab agents  ctrl+p commands",
+            "~/projects/ocprobe00/ae:main     esc dismiss       ctrl+p commands",
+            "~/wt/esc-interrupted:main        shift+tab agents  ctrl+p commands",
+        ] {
+            let idle = changed(OPENCODE_TABSTRIP, IDLE_FOOTER, footer);
+            assert!(ready_after_a_tab_tick(&idle), "an idle footer: {footer}");
+        }
+        let quoted = changed(
+            OPENCODE_TABSTRIP,
+            "/update to install v2.4.2",
+            "press esc to interrupt it",
+        );
+        assert!(
+            ready_after_a_tab_tick(&quoted),
+            "words above the box are not the footer"
+        );
+    }
+
+    #[test]
+    fn nothing_but_the_tab_strip_spinner_is_forgiven() {
+        let ready = |before: &str, after: &str, composed| {
+            unmodelled_ready(Some(before), Some(after), composed)
+        };
+        let ticked = changed(OPENCODE_TABSTRIP, "⠙ Three", "⠴ Three");
+        // The spinner moved and so did something else.
+        for (from, to) in [
+            ("Fix broken tests", "Fix a TODO"),
+            ("• reseat", "• reseed"),
+            ("0 MCP", "1 MCP"),
+        ] {
+            let after = changed(&ticked, from, to);
+            assert!(
+                !ready(OPENCODE_TABSTRIP, &after, opencode_markers()),
+                "{to}"
+            );
+        }
+        // A spinner that appears, goes or moves is a change, not a tick.
+        for (from, to) in [
+            ("⠴ Three", "• Three"),
+            ("⠴ Three", "  Three"),
+            ("• New se", "⠙ New se"),
+        ] {
+            let after = changed(&ticked, from, to);
+            assert!(
+                !ready(OPENCODE_TABSTRIP, &after, opencode_markers()),
+                "{from} -> {to}"
+            );
+        }
+        let moved = changed(
+            &changed(&ticked, "⠴ Three", "• Three"),
+            "• New se",
+            "⠴ New se",
+        );
+        assert!(
+            !ready(OPENCODE_TABSTRIP, &moved, opencode_markers()),
+            "moved"
+        );
+        // A spinner below row 0 is this seat's own work.
+        let working = changed(OPENCODE_TABSTRIP, "/update to install v2.4.2", "⠙ Thinking");
+        let later = changed(&working, "⠙ Thinking", "⠴ Thinking");
+        assert!(!ready(&working, &later, opencode_markers()), "{later}");
+        // Row 0 without the strip's tail is not the strip.
+        let prose = changed(OPENCODE_TABSTRIP, "Lanegu + New session", "Lanegu");
+        assert!(!ready_after_a_tab_tick(&prose), "no strip tail");
+        let plus = changed(OPENCODE_TABSTRIP, "Lanegu + New session", "Lanegu 2+");
+        assert!(!ready_after_a_tab_tick(&plus), "a glued plus");
+        // Another tool's composer keeps the byte compare.
+        let grok = format!("  • a  ⠙ b +\n{GROK_COMPOSED}");
+        let grok_later = changed(&grok, "⠙ b", "⠴ b");
+        assert!(ready(&grok, &grok, grok_markers()), "calibration");
+        assert!(!ready(&grok, &grok_later, grok_markers()));
     }
 
     #[test]
