@@ -2567,7 +2567,10 @@ fn a_warming_frame_after_the_guarded_first_enter_prevents_a_retry_enter() {
     let staged = idle.replace("❯\u{a0}", "❯\u{a0}/compact");
     assert_ne!(staged, idle, "the fixture prompt row is `❯` NBSP");
     let warming = staged.replace(" · ← for agents", " · keep holding…");
-    assert_ne!(warming, staged, "the fixture mode row ends in the agents hint");
+    assert_ne!(
+        warming, staged,
+        "the fixture mode row ends in the agents hint"
+    );
     let rig = Rig::with_frame("guard-warm", "claude", idle);
     rig.arm_frame("onpaste", &staged);
     rig.arm_frame("onenter", &warming);
@@ -2578,7 +2581,10 @@ fn a_warming_frame_after_the_guarded_first_enter_prevents_a_retry_enter() {
     });
     rig.frame_barrier();
     assert!(
-        matches!(done, Ok(deliver::Outcome::Sent(deliver::SubmitState::StillStaged))),
+        matches!(
+            done,
+            Ok(deliver::Outcome::Sent(deliver::SubmitState::StillStaged))
+        ),
         "{done:?}"
     );
     assert!(
@@ -2586,7 +2592,10 @@ fn a_warming_frame_after_the_guarded_first_enter_prevents_a_retry_enter() {
         "the first Enter really started warming"
     );
     assert_eq!(rig.enter_count(), 1, "no retry Enter while warming");
-    assert!(lock_is_free(&rig.send_lock_path()), "the send-lock releases");
+    assert!(
+        lock_is_free(&rig.send_lock_path()),
+        "the send-lock releases"
+    );
 }
 
 #[test]

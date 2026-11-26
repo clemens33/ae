@@ -493,7 +493,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         std::fs::write(dir.join("meta"), "schema=2\nlaunch_id.main=L1\n").expect("meta");
-        assert_eq!(recorded_launch(&dir, "main").as_deref(), Some("L1"), "the token matches");
+        assert_eq!(
+            recorded_launch(&dir, "main").as_deref(),
+            Some("L1"),
+            "the token matches"
+        );
         let server = ServerId::Selected(crate::meta::Selector::Socket(dir.join("missing.sock")));
         let ready = ready_under_lock(
             &dir,
