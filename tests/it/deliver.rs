@@ -2559,6 +2559,37 @@ fn a_prove_leg_skips_with_the_send_lock_released() {
 }
 
 #[test]
+fn a_warming_frame_after_the_guarded_first_enter_prevents_a_retry_enter() {
+    // D54 pin: the bounded submit of the guarded operation reads the
+    // recording gate on each verification capture. A dictation that starts
+    // after the first Enter ends the submit staged, with no retry Enter.
+    let idle = include_str!("../fixtures/harness-state/claude-idle-167x40.txt");
+    let staged = idle.replace("❯\u{a0}", "❯\u{a0}/compact");
+    assert_ne!(staged, idle, "the fixture prompt row is `❯` NBSP");
+    let warming = staged.replace(" · ← for agents", " · keep holding…");
+    assert_ne!(warming, staged, "the fixture mode row ends in the agents hint");
+    let rig = Rig::with_frame("guard-warm", "claude", idle);
+    rig.arm_frame("onpaste", &staged);
+    rig.arm_frame("onenter", &warming);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::from_secs(5));
+    let done = deliver::deliver_guarded(&request, || {
+        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+    });
+    rig.frame_barrier();
+    assert!(
+        matches!(done, Ok(deliver::Outcome::Sent(deliver::SubmitState::StillStaged))),
+        "{done:?}"
+    );
+    assert!(
+        rig.transitions().contains("onenter\n"),
+        "the first Enter really started warming"
+    );
+    assert_eq!(rig.enter_count(), 1, "no retry Enter while warming");
+    assert!(lock_is_free(&rig.send_lock_path()), "the send-lock releases");
+}
+
+#[test]
 fn the_guarded_operation_is_pinned_against_its_own_source() {
     // R10 pins asked of the source text, doors-style.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
