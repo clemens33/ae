@@ -1311,6 +1311,27 @@ mod tests {
             assert_eq!(dictation(&row, ToolKind::Claude), Dictation::Transcribing);
         }
 
+        /// The provisional tap state is the pair: a lone `REC` is not it, and
+        /// it still fails closed as an unmeasured state.
+        #[test]
+        fn a_lone_rec_without_the_send_hint_is_not_a_tap_recording() {
+            let frame = with_mode_suffix(" · ● REC");
+            assert_eq!(dictation(&frame, ToolKind::Claude), Dictation::Transcribing);
+        }
+
+        /// A draft that wraps inside the box is the human's text, whatever it
+        /// says: the footer starts below the box's bottom border, never at the
+        /// draft's second row.
+        #[test]
+        fn a_wrapped_draft_row_that_names_voice_is_not_the_footer() {
+            let wrapped = IDLE.replace(
+                "❯\u{a0}",
+                "❯\u{a0}please record\n  the voice memo, listening…\n  Transcribing… ● REC ",
+            );
+            assert_ne!(wrapped, IDLE, "the fixture prompt row is `❯` NBSP");
+            assert_eq!(dictation(&wrapped, ToolKind::Claude), Dictation::Clear);
+        }
+
         #[test]
         fn a_footer_it_cannot_classify_is_unread() {
             assert_eq!(dictation("", ToolKind::Claude), Dictation::Unread);
