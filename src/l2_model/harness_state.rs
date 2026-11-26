@@ -243,17 +243,19 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
     }
 }
 
-/// Claude Code's voice dictation, as the rows BELOW its composer draw it: the
+/// Claude Code's voice dictation, as the rows around its composer draw it: the
 /// ONE recording predicate that frame classification ([`classify`] reads an
 /// active dictation as [`HarnessState::Busy`]), every delivery gate and the
 /// app panel's mic share. Transcript and draft rows never count, and neither
 /// does the `🧠` status row, whose words are the user's own status line.
 ///
 /// Claude Code 2.1.332, measured on its hold mode: two Space key events end
-/// the `⏵` mode row with ` · keep holding…` ([`Self::Warming`]). The
-/// recording, tap and transcribing words are PROVISIONAL until a microphone
-/// capture measures them, and any other voice word reads
-/// [`Self::Transcribing`], so an unmeasured state fails closed.
+/// the `⏵` mode row with ` · keep holding…` ([`Self::Warming`]). The owner's
+/// microphone capture measured the recording ([`measured_hold`]): a
+/// right-aligned `listening…` alone on the row directly above the box's upper
+/// border, and one waveform bar after `❯` in the box. The tap and
+/// transcribing words below the box stay PROVISIONAL, and any other voice word
+/// there reads [`Self::Transcribing`], so an unmeasured state fails closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dictation {
     /// A Claude composer whose footer names no voice state. Voice in hold
@@ -261,12 +263,14 @@ pub enum Dictation {
     Clear,
     /// Hold mode counts Space key events toward a recording.
     Warming,
-    /// A hold-mode recording (provisional `listening…`).
+    /// A hold-mode recording, MEASURED: the hold label above the box and the
+    /// waveform bar in it. Only this state is a recording a key could keep.
     Holding,
     /// A tap-mode recording (provisional `● REC` with `tap to send`).
     Tapping,
-    /// Claude finishes a dictation (provisional `Transcribing…`), or the
-    /// footer names voice in words not measured: no key may reach the pane.
+    /// Claude finishes a dictation (provisional `Transcribing…`), the footer
+    /// names voice in words not measured, or a hold shows only one half of its
+    /// measured frame: no key may reach the pane.
     Transcribing,
     /// No Claude composer footer this reading can classify.
     Unread,
@@ -285,8 +289,9 @@ impl Dictation {
 
 /// The measured hold-mode warmup suffix of the mode row.
 const VOICE_WARMING: &str = " · keep holding…";
-/// The provisional suffixes of the other dictation states.
+/// The measured hold label on the row above the box ([`measured_hold`]).
 const VOICE_HOLDING: &str = "listening…";
+/// The provisional suffixes of the other dictation states.
 const VOICE_TRANSCRIBING: &str = "Transcribing…";
 const VOICE_TAPPING: (&str, &str) = ("● REC", "tap to send");
 /// Words that name voice in a footer row in a way no state above measures.
@@ -324,6 +329,9 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     else {
         return Dictation::Unread;
     };
+    if let Some(state) = measured_hold(capture) {
+        return state;
+    }
     let footer: Vec<&str> = lines[bottom + 1..]
         .iter()
         .map(AsRef::as_ref)
@@ -343,6 +351,62 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     }
 }
 
+/// The measured hold frame (Claude Code 2.1.332, the owner's microphone
+/// capture of 2026-11-26; fixtures `claude-voice-holding-*` and
+/// `claude-voice-speaking-*`), read on PHYSICAL rows, because a blank row
+/// between the label and the border breaks the frame and [`clean_lines`] would
+/// drop it. The current box's first row is the last row that starts with `❯`,
+/// and its upper border is the row directly above it. Then:
+///
+/// * the label, `listening…` alone and right-aligned on the row directly
+///   above that border, plus one waveform bar (U+2581-U+2588, the vendor
+///   renderer's alphabet) right after `❯` and its space in a ONE-row box (the
+///   lower border directly below), is the recording, [`Dictation::Holding`]:
+///   a draft of several rows whose first row is a bar is no waveform;
+/// * the label alone (reduced motion draws no bar, or the box holds a draft)
+///   still blocks every key, but it is no proof of a recording:
+///   [`Dictation::Transcribing`];
+/// * a bar with the border on the capture's first row has its label clipped,
+///   so the pane cannot be proved clear: [`Dictation::Transcribing`]. A
+///   one-glyph draft in such a capture is the accepted false positive.
+///
+/// `None` when the rows show neither, so the footer rules decide.
+fn measured_hold(capture: &str) -> Option<Dictation> {
+    let rows: Vec<&str> = capture.lines().collect();
+    let prompt = rows
+        .iter()
+        .rposition(|row| normalized_row(row).starts_with('❯'))?;
+    let top = prompt.checked_sub(1)?;
+    if !claude_border(&normalized_row(rows[top])) {
+        return None;
+    }
+    let one_row = rows
+        .get(prompt + 1)
+        .is_some_and(|row| claude_border(&normalized_row(row)));
+    let wave = one_row
+        && normalized_row(rows[prompt])
+            .strip_prefix("❯ ")
+            .is_some_and(|rest| {
+                let mut bars = rest.chars();
+                matches!(
+                    (bars.next(), bars.next()),
+                    (Some('\u{2581}'..='\u{2588}'), None)
+                )
+            });
+    let Some(above) = top.checked_sub(1) else {
+        return wave.then_some(Dictation::Transcribing);
+    };
+    let row = rows[above].trim_end_matches([' ', '\t', '\r', '\u{a0}']);
+    let label = row
+        .strip_suffix(VOICE_HOLDING)
+        .is_some_and(|lead| !lead.is_empty() && lead.chars().all(|c| matches!(c, ' ' | '\u{a0}')));
+    match (label, wave) {
+        (true, true) => Some(Dictation::Holding),
+        (true, false) => Some(Dictation::Transcribing),
+        (false, _) => None,
+    }
+}
+
 /// The dictation state one footer row names, if it names one.
 fn voice_row(row: &str) -> Option<Dictation> {
     if row.starts_with('⏵') && row.ends_with(VOICE_WARMING) {
@@ -350,9 +414,6 @@ fn voice_row(row: &str) -> Option<Dictation> {
     }
     if row.contains(VOICE_TRANSCRIBING) {
         return Some(Dictation::Transcribing);
-    }
-    if row.contains(VOICE_HOLDING) {
-        return Some(Dictation::Holding);
     }
     if row.contains(VOICE_TAPPING.0) && row.contains(VOICE_TAPPING.1) {
         return Some(Dictation::Tapping);
@@ -1296,7 +1357,7 @@ mod tests {
         #[test]
         fn the_provisional_and_unmeasured_voice_words_fail_closed() {
             for (suffix, want) in [
-                (" · listening…", Dictation::Holding),
+                (" · listening…", Dictation::Transcribing),
                 (" · ● REC · tap to send", Dictation::Tapping),
                 (" · Transcribing…", Dictation::Transcribing),
                 (" · voice ready", Dictation::Transcribing),
@@ -1330,6 +1391,26 @@ mod tests {
             );
             assert_ne!(wrapped, IDLE, "the fixture prompt row is `❯` NBSP");
             assert_eq!(dictation(&wrapped, ToolKind::Claude), Dictation::Clear);
+        }
+
+        /// The measured hold needs its one-row box: a draft of two rows whose
+        /// first row is a bar is the human's text, so the label above it only
+        /// blocks keys and proves no recording.
+        #[test]
+        fn a_bar_on_the_first_row_of_a_longer_draft_is_no_waveform() {
+            const HOLD: &str = include_str!(
+                "../../tests/fixtures/harness-state/claude-voice-holding-2.1.332-120x41.txt"
+            );
+            assert_eq!(dictation(HOLD, ToolKind::Claude), Dictation::Holding);
+            let two_rows = HOLD.replacen("❯\u{a0}▁", "❯\u{a0}▁\n  and a second draft row", 1);
+            assert_ne!(
+                two_rows, HOLD,
+                "the fixture prompt row is `❯` NBSP and a bar"
+            );
+            assert_eq!(
+                dictation(&two_rows, ToolKind::Claude),
+                Dictation::Transcribing
+            );
         }
 
         #[test]
