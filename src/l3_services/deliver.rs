@@ -3623,6 +3623,23 @@ mod tests {
     }
 
     #[test]
+    fn the_own_turn_hint_on_the_boxs_own_rows_is_not_the_footer() {
+        // The status row names the model, and a wide screen can carry text
+        // right of the edge run. Neither is the footer under the box.
+        let status = "Build · DeepSeek V4.1 Flash 1017 OpenCode Go · max";
+        let named = changed(OPENCODE_TABSTRIP, status, "Build · esc interrupt · max");
+        let edge = "▀▀▀▀  \n";
+        let beside = changed(OPENCODE_TABSTRIP, edge, "▀▀▀▀  esc interrupt\n");
+        for frame in [named, beside] {
+            assert!(
+                super::region::composed_ui(&frame, opencode_markers()),
+                "calibration: the box is drawn and empty: {frame}"
+            );
+            assert!(ready_after_a_tab_tick(&frame), "{frame}");
+        }
+    }
+
+    #[test]
     fn nothing_but_the_tab_strip_spinner_is_forgiven() {
         let ready = |before: &str, after: &str, composed| {
             unmodelled_ready(Some(before), Some(after), composed)
