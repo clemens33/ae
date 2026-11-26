@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.125] - 2026-11-26
+- Refuse every build recipe on the MacBook
+- Define orchestrator dictation start acceptance
+- Freeze dictation refusal and delivery gate acceptance
+- Gate deliveries on Claude dictation and draw the panel mic
+- Pin the boundary helpers the dictation acceptance shares
+- Click the outside panel pane button by cell width
+- Hold launch, spawn and readiness keys on a fresh dictation read
+- Pin the tap pair and the wrapped draft in the dictation reader
+- Pin the guarded retry Enter against a warming dictation
+- Pin that a launch token alone does not prove a ready pane
+- Format the two new dictation pins as rustfmt wraps them
+
 ## [v2026.11.124] - 2026-11-26
 - Derive the guard module list from one justfile variable
 - Land an OpenCode spawn brief while a tab spinner moves
