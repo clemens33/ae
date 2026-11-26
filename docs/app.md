@@ -597,27 +597,34 @@ newest fresh read of the seat's pane. `n/a` means the seat's tool has no
 dictation ae drives: only Claude Code has one, and Codex CLI 0.172.0 has
 live voice but no dictation. `?` means the read proved no state; a frame
 without a voice word proves nothing, so the mic never reads as off. `…`
-and `rec` come from Claude's voice footer. ae has measured one voice frame
-of Claude Code 2.1.332, the hold-mode warmup (` · keep holding…` on the mode
-row), which reads `…`. The recording and transcribing words are provisional
-readings that no measured frame backs yet. No key starts the mic: `v` stays
-Peek. A click proves the bound incarnation and its pane exactly as `pane`
-does, then refuses on the hint row, in order: a replaced incarnation, a tool
-without dictation, a launch without ae's hold-mode voice settings (relaunch
-the orchestrator), a dictation that already runs, a draft in Claude's
-composer, a busy Claude, a voice footer ae cannot read. In this release no
-click starts a dictation: one that passes every gate says `dictation needs
-the measured voice states; not enabled yet`. ae never presses Enter for a
-dictation, and the text is meant to land in the panel's draft, never sent
-on its own.
+and `rec` come from Claude's voice frame, which ae measured on Claude Code
+2.1.332 with the owner's microphone. The hold-mode warmup ends the mode row
+with ` · keep holding…` and reads `…`. The other states draw one row directly
+above the composer's upper border, alone and right-aligned. A hold recording
+draws `listening…` there and one waveform bar after `❯` in a one-row
+composer, and reads `rec`. A tap recording draws `⏺ REC · tap to send` and
+reads `rec`. `Transcribing…` there reads `…`. The hold label without its bar
+(reduced motion, or a draft in the composer) and any voice word below the
+composer also read `…`. No key starts the mic: `v` stays Peek. A click
+proves the bound incarnation and its pane exactly as `pane` does, then
+refuses on the hint row, in order: a replaced incarnation, a tool without
+dictation, a launch without ae's hold-mode voice settings (relaunch the
+orchestrator), a dictation that already runs, a draft in Claude's composer, a
+busy Claude, a voice footer ae cannot read. In this release no click starts a
+dictation: one that passes every gate says `dictation needs the measured
+voice states; not enabled yet`. Activation stays off until ae can keep a hold
+recording alive and move its text into the panel's draft. ae never presses
+Enter for a dictation, and the text is meant to land in the panel's draft,
+never sent on its own.
 
 A dictation in a Claude pane holds ae's deliveries to it. Before each paste,
 Enter and Escape, ae reads the pane once more under its send lock. A frame
-that shows the warmup or a provisional voice word refuses that effect with
-`Claude dictation on the pane`. On the orchestrator seat that a hold-mode
-launch proved, a frame whose voice footer ae cannot read refuses as well. A
-dictation the human starts after that last read and before the key lands
-is not seen: the read narrows the window, it does not close it.
+that shows the warmup, a measured recording or transcribing row above the
+composer, the hold label alone, or a voice word below the composer refuses
+that effect with `Claude dictation on the pane`. On the orchestrator seat that
+a hold-mode launch proved, a frame whose voice footer ae cannot read refuses
+as well. A dictation the human starts after that last read and before the key
+lands is not seen: the read narrows the window, it does not close it.
 
 The panel opens on the orchestrator incarnation the last fleet read proved:
 its live `@ae_session_uuid`, its meta, the one `session_id` that meta records

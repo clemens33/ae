@@ -251,11 +251,12 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
 ///
 /// Claude Code 2.1.332, measured on its hold mode: two Space key events end
 /// the `⏵` mode row with ` · keep holding…` ([`Self::Warming`]). The owner's
-/// microphone capture measured the recording ([`measured_hold`]): a
-/// right-aligned `listening…` alone on the row directly above the box's upper
-/// border, and one waveform bar after `❯` in the box. The tap and
-/// transcribing words below the box stay PROVISIONAL, and any other voice word
-/// there reads [`Self::Transcribing`], so an unmeasured state fails closed.
+/// microphone capture measured the other states on the row directly above the
+/// box's upper border ([`measured_upper`]): `listening…` with one waveform bar
+/// in the box, `⏺ REC · tap to send` and `Transcribing…`. Below the box only
+/// the warmup is measured: every other voice word there keeps a conservative
+/// fallback and reads [`Self::Transcribing`], so an unmeasured state fails
+/// closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dictation {
     /// A Claude composer whose footer names no voice state. Voice in hold
@@ -266,11 +267,11 @@ pub enum Dictation {
     /// A hold-mode recording, MEASURED: the hold label above the box and the
     /// waveform bar in it. Only this state is a recording a key could keep.
     Holding,
-    /// A tap-mode recording (provisional `● REC` with `tap to send`).
+    /// A tap-mode recording, MEASURED: `⏺ REC · tap to send` above the box.
     Tapping,
-    /// Claude finishes a dictation (provisional `Transcribing…`), the footer
-    /// names voice in words not measured, or a hold shows only one half of its
-    /// measured frame: no key may reach the pane.
+    /// Claude transcribes a dictation (MEASURED: `Transcribing…` above the
+    /// box), a voice word below the box that no state measures, or a hold that
+    /// shows only one half of its measured frame: no key may reach the pane.
     Transcribing,
     /// No Claude composer footer this reading can classify.
     Unread,
@@ -289,11 +290,11 @@ impl Dictation {
 
 /// The measured hold-mode warmup suffix of the mode row.
 const VOICE_WARMING: &str = " · keep holding…";
-/// The measured hold label on the row above the box ([`measured_hold`]).
+/// The measured labels on the row above the box ([`measured_upper`]). Below
+/// the box `Transcribing…` and the other voice words only fail closed.
 const VOICE_HOLDING: &str = "listening…";
-/// The provisional suffixes of the other dictation states.
+const VOICE_TAPPING: &str = "⏺ REC · tap to send";
 const VOICE_TRANSCRIBING: &str = "Transcribing…";
-const VOICE_TAPPING: (&str, &str) = ("● REC", "tap to send");
 /// Words that name voice in a footer row in a way no state above measures.
 const VOICE_WORDS: [&str; 8] = [
     "listen",
@@ -329,7 +330,7 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     else {
         return Dictation::Unread;
     };
-    if let Some(state) = measured_hold(capture) {
+    if let Some(state) = measured_upper(capture) {
         return state;
     }
     let footer: Vec<&str> = lines[bottom + 1..]
@@ -351,27 +352,30 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     }
 }
 
-/// The measured hold frame (Claude Code 2.1.332, the owner's microphone
-/// capture of 2026-11-26; fixtures `claude-voice-holding-*` and
-/// `claude-voice-speaking-*`), read on PHYSICAL rows, because a blank row
-/// between the label and the border breaks the frame and [`clean_lines`] would
+/// The measured voice states above the box (Claude Code 2.1.332, the owner's
+/// microphone capture of 2026-11-26; fixtures `claude-voice-holding-*`,
+/// `claude-voice-speaking-*`, `claude-voice-tap-*` and
+/// `claude-voice-transcribing-*`), read on PHYSICAL rows, because a blank row
+/// between a label and the border breaks the frame and [`clean_lines`] would
 /// drop it. The current box's first row is the last row that starts with `❯`,
-/// and its upper border is the row directly above it. Then:
+/// and its upper border is the row directly above it. A label stands alone and
+/// right-aligned on the row directly above that border, whatever the box holds:
 ///
-/// * the label, `listening…` alone and right-aligned on the row directly
-///   above that border, plus one waveform bar (U+2581-U+2588, the vendor
+/// * `⏺ REC · tap to send` is a tap recording, [`Dictation::Tapping`];
+/// * `Transcribing…` is the insert on its way, [`Dictation::Transcribing`];
+/// * `listening…` plus one waveform bar (U+2581-U+2588, the vendor
 ///   renderer's alphabet) right after `❯` and its space in a ONE-row box (the
 ///   lower border directly below), is the recording, [`Dictation::Holding`]:
 ///   a draft of several rows whose first row is a bar is no waveform;
-/// * the label alone (reduced motion draws no bar, or the box holds a draft)
-///   still blocks every key, but it is no proof of a recording:
+/// * `listening…` alone (reduced motion draws no bar, or the box holds a
+///   draft) still blocks every key, but it is no proof of a recording:
 ///   [`Dictation::Transcribing`];
 /// * a bar with the border on the capture's first row has its label clipped,
 ///   so the pane cannot be proved clear: [`Dictation::Transcribing`]. A
 ///   one-glyph draft in such a capture is the accepted false positive.
 ///
-/// `None` when the rows show neither, so the footer rules decide.
-fn measured_hold(capture: &str) -> Option<Dictation> {
+/// `None` when the rows show none of these, so the footer rules decide.
+fn measured_upper(capture: &str) -> Option<Dictation> {
     let rows: Vec<&str> = capture.lines().collect();
     let prompt = rows
         .iter()
@@ -397,13 +401,15 @@ fn measured_hold(capture: &str) -> Option<Dictation> {
         return wave.then_some(Dictation::Transcribing);
     };
     let row = rows[above].trim_end_matches([' ', '\t', '\r', '\u{a0}']);
-    let label = row
-        .strip_suffix(VOICE_HOLDING)
-        .is_some_and(|lead| !lead.is_empty() && lead.chars().all(|c| matches!(c, ' ' | '\u{a0}')));
-    match (label, wave) {
-        (true, true) => Some(Dictation::Holding),
-        (true, false) => Some(Dictation::Transcribing),
-        (false, _) => None,
+    let label = row.trim_start_matches([' ', '\u{a0}']);
+    if label.len() == row.len() {
+        return None;
+    }
+    match label {
+        VOICE_HOLDING if wave => Some(Dictation::Holding),
+        VOICE_HOLDING | VOICE_TRANSCRIBING => Some(Dictation::Transcribing),
+        VOICE_TAPPING => Some(Dictation::Tapping),
+        _ => None,
     }
 }
 
@@ -414,9 +420,6 @@ fn voice_row(row: &str) -> Option<Dictation> {
     }
     if row.contains(VOICE_TRANSCRIBING) {
         return Some(Dictation::Transcribing);
-    }
-    if row.contains(VOICE_TAPPING.0) && row.contains(VOICE_TAPPING.1) {
-        return Some(Dictation::Tapping);
     }
     let lower = row.to_lowercase();
     let named = VOICE_WORDS.iter().any(|word| lower.contains(word))
@@ -1358,7 +1361,7 @@ mod tests {
         fn the_provisional_and_unmeasured_voice_words_fail_closed() {
             for (suffix, want) in [
                 (" · listening…", Dictation::Transcribing),
-                (" · ● REC · tap to send", Dictation::Tapping),
+                (" · ● REC · tap to send", Dictation::Transcribing),
                 (" · Transcribing…", Dictation::Transcribing),
                 (" · voice ready", Dictation::Transcribing),
                 (" · REC 0:03", Dictation::Transcribing),
@@ -1372,8 +1375,8 @@ mod tests {
             assert_eq!(dictation(&row, ToolKind::Claude), Dictation::Transcribing);
         }
 
-        /// The provisional tap state is the pair: a lone `REC` is not it, and
-        /// it still fails closed as an unmeasured state.
+        /// The measured tap row sits above the box: below it a lone `REC`, like
+        /// the old provisional pair, fails closed as an unmeasured state.
         #[test]
         fn a_lone_rec_without_the_send_hint_is_not_a_tap_recording() {
             let frame = with_mode_suffix(" · ● REC");
