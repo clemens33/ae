@@ -308,7 +308,8 @@ fn outside_orchestrator_pane_button_uses_its_recorded_server_and_keeps_its_draft
     let screen = rig.screen(&out.app);
     let header = screen.lines().next().expect("drawn header");
     let idx = header.rfind("pane  F ").expect("live pane button");
-    let column = header[..idx].chars().count() + 1;
+    // Cells, not chars: the panel mic left of `pane` draws a two-cell glyph.
+    let column = ratatui_core::text::Span::raw(&header[..idx]).width() + 1;
     for _ in 0..12 {
         rig.raw(&out.app, &format!("\x1b[<64;{column};12M"));
     }
