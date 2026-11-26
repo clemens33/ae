@@ -762,6 +762,13 @@ impl App {
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
+            Answer::Voice { id, mic } => {
+                let changed = self.orch.voice.as_ref() != Some(&(id.clone(), mic));
+                self.orch.voice = Some((id, mic));
+                if changed && self.orch.panel.is_some() {
+                    self.show();
+                }
+            }
             Answer::Orchestrator(proof) => self.proved(proof, Timestamp::now().epoch()),
             Answer::ComposerRole { holder, route } => {
                 (self.orch.holder, self.orch.route) = (holder, route);

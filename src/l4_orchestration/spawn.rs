@@ -1432,7 +1432,11 @@ fn brief_ready(
     server: &ServerId,
     pane: &str,
     slot: &str,
-    (model, composed): (crate::tool::InputModel, crate::tool::Composed),
+    (model, composed, gate): (
+        crate::tool::InputModel,
+        crate::tool::Composed,
+        deliver::VoiceGate,
+    ),
     err: &mut impl Write,
 ) -> bool {
     let mut trying = crate::autotrust::on(dir);
@@ -1443,7 +1447,7 @@ fn brief_ready(
         } else {
             left
         };
-        if deliver::wait_input_ready(server, pane, model, composed, chunk) {
+        if deliver::wait_input_ready(server, pane, (model, composed), gate, chunk) {
             return true;
         }
         left -= chunk;
@@ -1477,7 +1481,8 @@ fn deliver_brief(
     let model = kind.adapter().input.model;
     let composed = kind.adapter().input.composed;
     // DO NOT paste into a state we could not confirm idle.
-    if !brief_ready(dir, &facts.server, pane, slot, (model, composed), err) {
+    let gate = deliver::VoiceGate::of(dir, slot, Some(kind));
+    if !brief_ready(dir, &facts.server, pane, slot, (model, composed, gate), err) {
         // The refusal is decided; one more capture only says what the pane
         // shows now.
         let blocker = deliver::input_blocker(&facts.server, pane, composed);

@@ -317,7 +317,8 @@ impl App {
             | draw::Hit::StatsTab(_)
             | draw::Hit::SettingsClose
             | draw::Hit::PeekClose
-            | draw::Hit::PanelPane => {
+            | draw::Hit::PanelPane
+            | draw::Hit::PanelMic => {
                 return held;
             }
             draw::Hit::Item(_) | draw::Hit::Modal => return held,

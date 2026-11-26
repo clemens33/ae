@@ -15,7 +15,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::harness_state::{CODEX_SERVICE_WAIT_REASON, codex_service_wait};
+use crate::harness_state::{CODEX_SERVICE_WAIT_REASON, Dictation, codex_service_wait};
 use crate::inventory::ServerId;
 use crate::tmux::{Key, Styling};
 use crate::tool::{Composed, InputModel, ToolKind};
@@ -416,6 +416,7 @@ pub(crate) fn deliver_checked(
 ) -> io::Result<Result<Delivered, Failure>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
+    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
@@ -485,19 +486,21 @@ pub(crate) fn deliver_checked(
     // Safe now: cancel, then paste — all by `-t` target, never by selection.
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
     if request.shape == Shape::Interrupt
-        && let Err(failure) = escape_then_reread(request, tool, &body_file, err)?
+        && let Err(failure) = escape_then_reread(request, (tool, gate), &body_file, err)?
     {
         return Ok(Err(failure));
     }
     if !address_check(guard, err)? {
         return Ok(Err(refused(&body_file, Stage::BeforeInput)));
     }
-    match submit(request, input, &mode, &body_file, &framed, guard, err)? {
+    match submit(request, input, &mode, &body_file, &framed, guard, gate, err)? {
         Ok(verification) => Ok(Ok(Delivered {
             body_file,
             framed,
             verification,
         })),
+        // Held before the paste: its line says nothing reached the pane.
+        Err(failure @ Failure::Abandoned { .. }) => Ok(Err(failure)),
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
             // delivery and where its body is.
@@ -563,6 +566,7 @@ pub(crate) fn deliver_composed_checked(
 ) -> io::Result<Option<Result<Delivered, Failure>>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
+    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     if refuses_as_dead(pane_liveness_at(
         &target_meta_dir(request),
         request.pane_slot,
@@ -614,7 +618,9 @@ pub(crate) fn deliver_composed_checked(
         return Ok(Some(Err(refused(&body_file, Stage::BeforeInput))));
     }
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
-    let submitted = submit(&request, input, &mode, &body_file, &framed, guard, err)?;
+    let submitted = submit(
+        &request, input, &mode, &body_file, &framed, guard, gate, err,
+    )?;
     Ok(Some(submitted.map(|verification| Delivered {
         body_file,
         framed,
@@ -626,10 +632,22 @@ pub(crate) fn deliver_composed_checked(
 /// Escape fails like a paste: nothing more is typed.
 fn escape_then_reread(
     request: &Request<'_>,
-    tool: Option<ToolKind>,
+    (tool, gate): (Option<ToolKind>, VoiceGate),
     body_file: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
+    // Escape would end a dictation: a fresh read holds it first.
+    if let Some(state) = gate.holds(request.server, request.pane) {
+        let held = DeferHeld::of_voice(state);
+        writeln!(
+            err,
+            "ae: {} to {} ABANDONED — {}; no Escape was sent and nothing was pasted. Body preserved at {body_file}. Re-send.",
+            request.action,
+            request.logged_target,
+            held.describe()
+        )?;
+        return Ok(Err(Failure::Abandoned { held }));
+    }
     if !transport::send_key(request.server, request.pane, Key::Escape) {
         writeln!(
             err,
@@ -720,17 +738,39 @@ struct TargetInput {
 /// another tool's prompt policy; the live command only where none is.
 fn target_input(request: &Request<'_>, command: &str) -> (TargetInput, Option<ToolKind>) {
     let recorded = recorded_binary(&target_meta_dir(request), request.pane_slot);
-    let tool = match recorded.as_str() {
+    let tool = tool_named(&recorded, command);
+    (choose_input(&recorded, command), tool)
+}
+
+/// The tool a delivery names: the recorded binary, else the live command.
+fn tool_named(recorded: &str, command: &str) -> Option<ToolKind> {
+    match recorded {
         "" => ToolKind::from_known_binary_name(command),
         named => ToolKind::from_known_binary_name(named),
-    };
-    (choose_input(&recorded, command), tool)
+    }
+}
+
+/// The tool a delivery to `slot`'s `pane` in the session `meta_dir` records
+/// would read, the pane probed now.
+pub(crate) fn seat_tool(
+    server: &ServerId,
+    meta_dir: &Path,
+    pane: &str,
+    slot: &str,
+) -> Option<ToolKind> {
+    let probe = transport::observe_pane_probe(server, pane).unwrap_or_default();
+    tool_named(&recorded_binary(meta_dir, slot), &probe.command)
 }
 
 /// The prompt tool of the pane `request` names, read fresh.
 pub(crate) fn prompt_tool(request: &Request<'_>) -> Option<ToolKind> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     target_input(request, &probe.command).1
+}
+
+/// The recording gate of `request`'s target pane, run by `tool`.
+pub(crate) fn voice_gate(request: &Request<'_>, tool: Option<ToolKind>) -> VoiceGate {
+    VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool)
 }
 
 fn choose_input(recorded: &str, command: &str) -> TargetInput {
@@ -914,6 +954,12 @@ pub enum DeferHeld {
     /// A message interrupt's Escape was SENT, then the pane could not be read:
     /// the message was withheld.
     EscapedUnreadable,
+    /// Claude Code's voice dictation is warming, recording or transcribing in
+    /// the pane ([`Dictation::active`]): no paste, Enter or Escape may land.
+    Dictating,
+    /// The pane is the voice-proved orchestrator seat and its voice footer
+    /// could not be read, so a dictation cannot be ruled out.
+    VoiceUnreadable,
 }
 
 impl DeferHeld {
@@ -944,7 +990,9 @@ impl DeferHeld {
             | Self::CodexServiceWait
             | Self::EscapedPrompt
             | Self::EscapedServiceWait
-            | Self::EscapedUnreadable => false,
+            | Self::EscapedUnreadable
+            | Self::Dictating
+            | Self::VoiceUnreadable => false,
         }
     }
 
@@ -959,7 +1007,9 @@ impl DeferHeld {
             | Self::CodexServiceWait
             | Self::EscapedPrompt
             | Self::EscapedServiceWait
-            | Self::EscapedUnreadable => false,
+            | Self::EscapedUnreadable
+            | Self::Dictating
+            | Self::VoiceUnreadable => false,
         }
     }
 
@@ -976,6 +1026,21 @@ impl DeferHeld {
             }
             Self::HumanPrompt | Self::EscapedPrompt => "human-only prompt on the pane",
             Self::CodexServiceWait | Self::EscapedServiceWait => CODEX_SERVICE_WAIT_REASON,
+            Self::Dictating => "Claude dictation on the pane",
+            Self::VoiceUnreadable => "dictation seat's voice footer unreadable",
+        }
+    }
+
+    /// The hold a dictation reading names: an unread footer is the voice
+    /// seat's unreadable one, every other state a dictation.
+    #[must_use]
+    pub const fn of_voice(state: Dictation) -> Self {
+        match state {
+            Dictation::Clear | Dictation::Unread => Self::VoiceUnreadable,
+            Dictation::Warming
+            | Dictation::Holding
+            | Dictation::Tapping
+            | Dictation::Transcribing => Self::Dictating,
         }
     }
 
@@ -1032,7 +1097,10 @@ impl Snapshot {
         if let Some(prompt) = &self.prompt {
             halves.push(prompt_clause(prompt));
         }
-        if self.held == DeferHeld::CodexServiceWait {
+        if matches!(
+            self.held,
+            DeferHeld::CodexServiceWait | DeferHeld::Dictating | DeferHeld::VoiceUnreadable
+        ) {
             halves.push(self.held.halves().to_owned());
         }
         if self.held.composer_held() {
@@ -1098,11 +1166,12 @@ fn wait_for_quiet_paced(
 ) -> io::Result<Option<Snapshot>> {
     let mut flushed = false;
     let mut reads: u32 = 0;
+    let gate = VoiceGate::of(&target_meta_dir(request), request.pane_slot, tool);
     loop {
         if !address_check(guard, err)? {
             return Ok(None);
         }
-        let Some(snapshot) = quiet_held(request.server, request.pane, model, tool) else {
+        let Some(snapshot) = quiet_held(request.server, request.pane, (model, tool), gate) else {
             return Ok(None);
         };
         let held = snapshot.held;
@@ -1117,7 +1186,8 @@ fn wait_for_quiet_paced(
             flushed = true;
             let budget = request.defer.saturating_sub(pace.waited());
             let chip = (model, budget, Stage::BeforeInput);
-            let _ = flush_staged_chip(request.server, request.pane, chip, guard, pace, err)?;
+            let held = (guard, gate);
+            let _ = flush_staged_chip(request.server, request.pane, chip, held, pace, err)?;
         }
         let waited = pace.waited();
         if waited >= request.defer {
@@ -1138,14 +1208,18 @@ fn wait_for_quiet_paced(
 fn quiet_held(
     server: &ServerId,
     pane: &str,
-    model: InputModel,
-    tool: Option<ToolKind>,
+    (model, tool): (InputModel, Option<ToolKind>),
+    gate: VoiceGate,
 ) -> Option<Snapshot> {
     let (capture, read) = prompt_hold(server, pane, model, tool);
     let panel_hold = match read {
         PromptRead::Drawn(prompt) => Some((DeferHeld::HumanPrompt, Some(prompt))),
         PromptRead::CodexServiceWait => Some((DeferHeld::CodexServiceWait, None)),
-        _ => None,
+        // A dictation in the footer holds before either half: its box reads
+        // empty while Claude records into it.
+        _ => gate
+            .held_by(capture.as_deref())
+            .map(|state| (DeferHeld::of_voice(state), None)),
     };
     if let Some((held, prompt)) = panel_hold {
         return Some(Snapshot {
@@ -1365,7 +1439,7 @@ fn flush_staged_chip(
     server: &ServerId,
     pane: &str,
     (model, budget, stage): (InputModel, Duration, Stage),
-    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    (guard, gate): (Option<&crate::tracked::AddressGuard<'_>>, VoiceGate),
     clock: &mut impl Pace,
     err: &mut impl Write,
 ) -> io::Result<Option<SubmitState>> {
@@ -1394,7 +1468,9 @@ fn flush_staged_chip(
     Ok(match still_staged(server, pane, model) {
         // Re-read the SHAPE, not just the verdict: a draft typed under the chip
         // is not ours to submit, and the chip may have drained on its own.
-        SubmitState::StillStaged if staged_chip_present(server, pane, model) => {
+        SubmitState::StillStaged
+            if staged_chip_present(server, pane, model) && gate.holds(server, pane).is_none() =>
+        {
             let _ = transport::send_key(server, pane, Key::Enter);
             clock.pause(VERIFY_POLL);
             Some(still_staged(server, pane, model))
@@ -1416,13 +1492,17 @@ pub fn input_busy(server: &ServerId, pane: &str, model: InputModel) -> bool {
 /// `_paste_still_staged`.
 #[must_use]
 pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
+    staged_read(server, pane, model).0
+}
+
+/// [`still_staged`] with the capture its verdict read, for the gate before a
+/// retry Enter. An unmodelled pane is not captured.
+fn staged_read(server: &ServerId, pane: &str, model: InputModel) -> (SubmitState, Option<String>) {
     if !model.is_modelled() {
-        return SubmitState::Unknown(Unverifiable::Unmodelled);
+        return (SubmitState::Unknown(Unverifiable::Unmodelled), None);
     }
-    staged_verdict(
-        transport::capture_screen(server, pane, Styling::Escapes).as_deref(),
-        model,
-    )
+    let capture = transport::capture_screen(server, pane, Styling::Escapes);
+    (staged_verdict(capture.as_deref(), model), capture)
 }
 
 /// [`still_staged`]'s verdict on ONE capture of a modelled pane, pure.
@@ -1495,13 +1575,23 @@ pub fn tool_initializing(server: &ServerId, pane: &str, model: InputModel) -> bo
 /// Called with an unmodelled model this fails closed.
 #[must_use]
 pub fn input_ready(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    input_ready_gated(server, pane, model, VoiceGate::OPEN)
+}
+
+/// [`input_ready`] that also asks `gate`, all three from ONE styled capture:
+/// the initializing check reads its plain rows, the gate its voice footer,
+/// and the occupancy its box. A box Claude dictates into reads empty, and is
+/// no ready box; one frame keeps the three verdicts from different moments.
+fn input_ready_gated(server: &ServerId, pane: &str, model: InputModel, gate: VoiceGate) -> bool {
     if !model.is_modelled() {
         return false;
     }
-    if tool_initializing(server, pane, model) {
+    let Some(capture) = transport::capture_screen(server, pane, Styling::Escapes) else {
         return false;
-    }
-    !input_busy(server, pane, model)
+    };
+    !region::initializing(&region::plain_text(&capture), model)
+        && gate.held_by(Some(&capture)).is_none()
+        && region::read(&capture, model).occupancy == Occupancy::Idle
 }
 
 /// How often the launch readiness wait re-reads the pane.
@@ -1510,7 +1600,8 @@ const READY_POLL: Duration = Duration::from_millis(500);
 /// Wait, bounded, until `pane` will accept a paste; `polls` counts
 /// [`READY_POLL`] periods.
 ///
-/// A modelled pane is asked [`input_ready`] on each poll. An UNMODELLED one is
+/// A modelled pane is asked [`input_ready`] on each poll, and `gate` reads the
+/// same capture: an active dictation is never ready. An UNMODELLED one is
 /// asked whether it is composed *and* settled ([`wait_until_settled`]) against
 /// the tool's own composed markers; with no markers it can never be ready and
 /// the caller REFUSES visibly, as it did before the markers were withdrawn.
@@ -1518,15 +1609,15 @@ const READY_POLL: Duration = Duration::from_millis(500);
 pub fn wait_input_ready(
     server: &ServerId,
     pane: &str,
-    model: InputModel,
-    composed: Composed,
+    (model, composed): (InputModel, Composed),
+    gate: VoiceGate,
     polls: u32,
 ) -> bool {
     if !model.is_modelled() {
         return wait_until_settled(server, pane, composed, polls);
     }
     for _ in 0..polls {
-        if input_ready(server, pane, model) {
+        if input_ready_gated(server, pane, model, gate) {
             return true;
         }
         std::thread::sleep(READY_POLL);
@@ -1749,7 +1840,15 @@ pub fn submit_shell_text(server: &ServerId, pane: &str, text: &str) -> bool {
     // Through the same door the message path uses, so a paste that fails after
     // the load does not leave the staged bytes readable by `save-buffer` from
     // any client on the server.
-    if stage_and_paste(server, &buffer_name(pane), text.as_bytes(), pane).is_err() {
+    if stage_and_paste(
+        server,
+        &buffer_name(pane),
+        text.as_bytes(),
+        pane,
+        VoiceGate::OPEN,
+    )
+    .is_err()
+    {
         return false;
     }
     std::thread::sleep(SETTLE_SHELL_TEXT);
@@ -1763,6 +1862,62 @@ pub enum StageFailure {
     Load,
     /// `paste-buffer` refused after the load: the staged buffer has been deleted.
     Paste,
+    /// The read between the load and the paste held ([`VoiceGate`]): nothing
+    /// was pasted, and the staged buffer has been deleted.
+    Held(Dictation),
+}
+
+/// The recording gate: ONE fresh read of a Claude pane right before each
+/// paste, Enter and Escape ae sends it. An active dictation holds every Claude
+/// pane, whoever started it; on the voice-proved orchestrator seat
+/// ([`crate::meta::voice_proved`]) a footer the read cannot classify, or no
+/// capture at all, holds too. Every other tool passes unread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceGate {
+    claude: bool,
+    proved: bool,
+}
+
+impl VoiceGate {
+    /// No read: the pane is no Claude pane, or no agent at all.
+    pub const OPEN: Self = Self {
+        claude: false,
+        proved: false,
+    };
+
+    /// The gate for `slot`'s pane in the session `meta_dir` records, run by
+    /// `tool`.
+    #[must_use]
+    pub fn of(meta_dir: &Path, slot: &str, tool: Option<ToolKind>) -> Self {
+        let claude = tool == Some(ToolKind::Claude);
+        let proved = claude
+            && !slot.is_empty()
+            && crate::meta::read_bytes(meta_dir)
+                .is_ok_and(|meta| crate::meta::voice_proved(&meta, slot));
+        Self { claude, proved }
+    }
+
+    /// The hold `capture` shows; `None` lets the key go. Pure.
+    #[must_use]
+    pub fn held_by(self, capture: Option<&str>) -> Option<Dictation> {
+        if !self.claude {
+            return None;
+        }
+        match capture.map(|frame| crate::harness_state::dictation(frame, ToolKind::Claude)) {
+            Some(state) if state.active() => Some(state),
+            Some(Dictation::Unread) | None if self.proved => Some(Dictation::Unread),
+            _ => None,
+        }
+    }
+
+    /// [`Self::held_by`] over a fresh capture of `pane`.
+    #[must_use]
+    pub fn holds(self, server: &ServerId, pane: &str) -> Option<Dictation> {
+        if !self.claude {
+            return None;
+        }
+        self.held_by(transport::capture_screen(server, pane, Styling::Escapes).as_deref())
+    }
 }
 
 /// Stage `bytes` and paste them into `pane`, and NEVER leave the bytes behind.
@@ -1771,15 +1926,23 @@ pub enum StageFailure {
 ///
 /// [`StageFailure::Load`] when the bytes could not be staged (nothing to clean
 /// up); [`StageFailure::Paste`] when the paste refused after the load — the
-/// staged buffer has already been deleted.
+/// staged buffer has already been deleted; [`StageFailure::Held`] when
+/// `gate`'s read between the load and the paste held, the buffer deleted too.
 pub fn stage_and_paste(
     server: &ServerId,
     buffer: &str,
     bytes: &[u8],
     pane: &str,
+    gate: VoiceGate,
 ) -> Result<(), StageFailure> {
     if !transport::load_buffer(server, buffer, bytes) {
         return Err(StageFailure::Load);
+    }
+    // The last read before the paste: a dictation that started after every
+    // earlier read stops it here.
+    if let Some(state) = gate.holds(server, pane) {
+        let _ = transport::delete_buffer(server, buffer);
+        return Err(StageFailure::Held(state));
     }
     if transport::paste_buffer(server, buffer, pane) {
         return Ok(());
@@ -1788,6 +1951,10 @@ pub fn stage_and_paste(
     Err(StageFailure::Paste)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one delivery's facts and its two re-proofs, spelled out"
+)]
 fn submit(
     request: &Request<'_>,
     input: TargetInput,
@@ -1795,6 +1962,7 @@ fn submit(
     body_file: &str,
     framed: &str,
     guard: Option<&crate::tracked::AddressGuard<'_>>,
+    gate: VoiceGate,
     err: &mut impl Write,
 ) -> io::Result<Result<DeliveryVerification, Failure>> {
     let payload = match mode {
@@ -1803,30 +1971,10 @@ fn submit(
     };
     let model = input.model;
     let diagnostic = input.diagnostic;
-    let buffer = buffer_name(request.pane);
     let server = request.server;
     let pane = request.pane;
-    match stage_and_paste(server, &buffer, payload.as_bytes(), pane) {
-        Ok(()) => {}
-        Err(StageFailure::Load) => {
-            writeln!(
-                err,
-                "ae: paste transport FAILED for pane {pane} ({diagnostic}) — could not stage {} bytes. Nothing was sent.",
-                payload.chars().count()
-            )?;
-            return Ok(Err(Failure::Paste {
-                body_file: body_file.to_owned(),
-            }));
-        }
-        Err(StageFailure::Paste) => {
-            writeln!(
-                err,
-                "ae: paste FAILED into pane {pane} ({diagnostic}) — nothing was sent."
-            )?;
-            return Ok(Err(Failure::Paste {
-                body_file: body_file.to_owned(),
-            }));
-        }
+    if let Err(failure) = staged(request, (payload, diagnostic), gate, body_file, err)? {
+        return Ok(Err(failure));
     }
     if let notice::Mode::Notice(pointer) = mode {
         let budget = notice_budget(request.defer);
@@ -1847,14 +1995,36 @@ fn submit(
             }));
         }
     }
-    let may_press = |stage| guard.is_none_or(|guard| guard.check_at(stage, err).unwrap_or(false));
-    match submit_staged_with(server, pane, model, may_press) {
+    let voiced = std::cell::Cell::new(None);
+    let may_press = |stage, capture: Option<&str>| {
+        if !guard.is_none_or(|guard| guard.check_at(stage, err).unwrap_or(false)) {
+            return false;
+        }
+        voiced.set(gate.held_by(capture));
+        voiced.get().is_none()
+    };
+    match submit_staged_with(server, pane, (model, gate), may_press) {
         Ok(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
         Ok(SubmitState::Unknown(reason)) => {
             return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
         }
         Ok(SubmitState::StillStaged) => {}
-        Err(stage) => return Ok(Err(refused(body_file, stage))),
+        Err(stage) => {
+            let Some(voice) = voiced.get() else {
+                return Ok(Err(refused(body_file, stage)));
+            };
+            let held = DeferHeld::of_voice(voice).halves();
+            let clause = stage.clause();
+            writeln!(
+                err,
+                "ae: submit HELD for pane {pane} ({diagnostic}) — {held}; {clause}."
+            )?;
+            return Ok(Err(Failure::Unconfirmed {
+                body_file: body_file.to_owned(),
+                framed: framed.to_owned(),
+                notice: false,
+            }));
+        }
     }
     // The box took the paste. If it still holds exactly an ae-staged chip, the
     // harness refused the TURN (Muse's "turn-submit backlog full"): the same
@@ -1863,7 +2033,7 @@ fn submit(
     if staged_chip_present(server, pane, model) {
         let chip = (model, request.defer, Stage::Entered);
         let clock = &mut WallClock(Instant::now());
-        match flush_staged_chip(server, pane, chip, guard, clock, err)? {
+        match flush_staged_chip(server, pane, chip, (guard, gate), clock, err)? {
             Some(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
             Some(SubmitState::Unknown(reason)) => {
                 return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
@@ -1892,6 +2062,50 @@ fn submit(
     }))
 }
 
+/// [`submit`]'s paste: `Err` is the failure its line was written for.
+fn staged(
+    request: &Request<'_>,
+    (payload, diagnostic): (&str, &str),
+    gate: VoiceGate,
+    body_file: &str,
+    err: &mut impl Write,
+) -> io::Result<Result<(), Failure>> {
+    let pane = request.pane;
+    let buffer = buffer_name(pane);
+    let paste = || Failure::Paste {
+        body_file: body_file.to_owned(),
+    };
+    match stage_and_paste(request.server, &buffer, payload.as_bytes(), pane, gate) {
+        Ok(()) => Ok(Ok(())),
+        Err(StageFailure::Held(voice)) => {
+            let held = DeferHeld::of_voice(voice);
+            writeln!(
+                err,
+                "ae: {} to {} ABANDONED — {}; nothing was pasted. Body preserved at {body_file}. Re-send.",
+                request.action,
+                request.logged_target,
+                held.describe()
+            )?;
+            Ok(Err(Failure::Abandoned { held }))
+        }
+        Err(StageFailure::Load) => {
+            writeln!(
+                err,
+                "ae: paste transport FAILED for pane {pane} ({diagnostic}) — could not stage {} bytes. Nothing was sent.",
+                payload.chars().count()
+            )?;
+            Ok(Err(paste()))
+        }
+        Err(StageFailure::Paste) => {
+            writeln!(
+                err,
+                "ae: paste FAILED into pane {pane} ({diagnostic}) — nothing was sent."
+            )?;
+            Ok(Err(paste()))
+        }
+    }
+}
+
 /// The settle an input model takes between the paste and the Enter.
 fn settle_for(model: InputModel) -> Duration {
     if model == InputModel::StyleDelimited {
@@ -1910,10 +2124,29 @@ fn settle_for(model: InputModel) -> Duration {
 /// verdict have ONE owner.
 #[must_use]
 pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
-    submit_staged_with(server, pane, model, |_| true).unwrap_or(SubmitState::StillStaged)
+    submit_staged_gated(server, pane, model, VoiceGate::OPEN)
+}
+
+/// [`submit_staged`] with `gate`'s fresh read before every Enter: a hold ends
+/// the submit as [`SubmitState::StillStaged`], with no Enter sent.
+#[must_use]
+pub fn submit_staged_gated(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    gate: VoiceGate,
+) -> SubmitState {
+    submit_staged_with(server, pane, (model, gate), |_, capture| {
+        gate.held_by(capture).is_none()
+    })
+    .unwrap_or(SubmitState::StillStaged)
 }
 
 /// [`submit_staged`] asking `may_press` before EVERY Enter; `Err` names the stage refused.
+///
+/// `may_press` also gets the newest capture of the pane: a fresh one taken for
+/// the first Enter when `gate` reads Claude, then each verification read's
+/// own, so the recording gate costs one capture per submit.
 ///
 /// A refused FIRST Enter ends the submit as [`SubmitState::StillStaged`]: with
 /// no Enter delivered, a box that reads empty may only not have drawn the
@@ -1921,11 +2154,14 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> Submit
 fn submit_staged_with(
     server: &ServerId,
     pane: &str,
-    model: InputModel,
-    mut may_press: impl FnMut(Stage) -> bool,
+    (model, gate): (InputModel, VoiceGate),
+    mut may_press: impl FnMut(Stage, Option<&str>) -> bool,
 ) -> Result<SubmitState, Stage> {
     std::thread::sleep(settle_for(model));
-    if !may_press(Stage::Pasted) {
+    let first = (gate != VoiceGate::OPEN)
+        .then(|| transport::capture_screen(server, pane, Styling::Escapes))
+        .flatten();
+    if !may_press(Stage::Pasted, first.as_deref()) {
         return Err(Stage::Pasted);
     }
     if !transport::send_key(server, pane, Key::Enter) {
@@ -1933,9 +2169,10 @@ fn submit_staged_with(
     }
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        match verified(still_staged(server, pane, model), retry) {
+        let (state, capture) = staged_read(server, pane, model);
+        match verified(state, retry) {
             Verified::Done(state) => return Ok(state),
-            Verified::PressAgain if may_press(Stage::Entered) => {
+            Verified::PressAgain if may_press(Stage::Entered, capture.as_deref()) => {
                 let _ = transport::send_key(server, pane, Key::Enter);
             }
             Verified::PressAgain => return Err(Stage::Entered),
@@ -2140,7 +2377,8 @@ pub fn deliver_guarded(
     };
     // (3)+(4) under the held lock; (5) the lifecycle lock drops first, (6)
     // then the send-lock.
-    let outcome = under_lock(request, tool, &guard);
+    let gate = VoiceGate::of(&target_meta_dir(&view), request.pane_slot, tool);
+    let outcome = under_lock(request, (tool, gate), &guard);
     drop(lifecycle_lock);
     drop(send_lock);
     outcome
@@ -2219,7 +2457,7 @@ fn staged_after_settle(
 /// and the paste with its bounded submit.
 fn under_lock(
     request: &GuardedRequest<'_>,
-    tool: Option<ToolKind>,
+    (tool, gate): (Option<ToolKind>, VoiceGate),
     guard: &crate::tracked::AddressGuard<'_>,
 ) -> Result<Outcome, EnterFailed> {
     // (3) One probe: a shell in the foreground — or no readable probe at all,
@@ -2233,7 +2471,7 @@ fn under_lock(
     }
     // (3) One busy snapshot, no loop — the same `quiet_held` owner as the
     // pre-lock wait, so the reported halves are one observation.
-    if let Some(snapshot) = quiet_held(request.server, request.pane, request.model, tool) {
+    if let Some(snapshot) = quiet_held(request.server, request.pane, (request.model, tool), gate) {
         return Ok(Outcome::Skipped(Leg::Busy {
             held: snapshot.held,
         }));
@@ -2242,17 +2480,24 @@ fn under_lock(
         return Ok(Outcome::Skipped(Leg::Mismatch));
     }
     // (4) The paste, then the bounded submit under the same lock.
-    if stage_and_paste(
+    match stage_and_paste(
         request.server,
         &buffer_name(request.pane),
         request.text.as_bytes(),
         request.pane,
-    )
-    .is_err()
-    {
-        return Ok(Outcome::Skipped(Leg::PasteFailed));
+        gate,
+    ) {
+        Ok(()) => {}
+        Err(StageFailure::Held(state)) => {
+            return Ok(Outcome::Skipped(Leg::Busy {
+                held: DeferHeld::of_voice(state),
+            }));
+        }
+        Err(StageFailure::Load | StageFailure::Paste) => {
+            return Ok(Outcome::Skipped(Leg::PasteFailed));
+        }
     }
-    submit_bounded(request.server, request.pane, request.model).map(Outcome::Sent)
+    submit_bounded(request.server, request.pane, (request.model, gate)).map(Outcome::Sent)
 }
 
 /// The under-lock liveness verdict, PURE: only a NAMED pid with a non-shell
@@ -2270,21 +2515,32 @@ const fn instant_alive(pid: Option<u32>, shell_in_foreground: bool) -> bool {
 /// verification reads — ≤ 1.2 s. Wall time past that is tmux responsiveness,
 /// unbounded by ae like every lifecycle-lock holder.
 ///
+/// `gate` reads a Claude pane once more before the first Enter, and reads each
+/// verification capture before a retry Enter: a hold ends the submit as
+/// [`SubmitState::StillStaged`] with no further Enter.
+///
 /// # Errors
 /// Returns `Err(EnterFailed)` when `send_key` refuses any Enter.
 pub fn submit_bounded(
     server: &ServerId,
     pane: &str,
-    model: InputModel,
+    (model, gate): (InputModel, VoiceGate),
 ) -> Result<SubmitState, EnterFailed> {
     std::thread::sleep(settle_for(model));
+    if gate.holds(server, pane).is_some() {
+        return Ok(SubmitState::StillStaged);
+    }
     if !transport::send_key(server, pane, Key::Enter) {
         return Err(EnterFailed);
     }
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        match verified(still_staged(server, pane, model), retry) {
+        let (state, capture) = staged_read(server, pane, model);
+        match verified(state, retry) {
             Verified::Done(state) => return Ok(state),
+            Verified::PressAgain if gate.held_by(capture.as_deref()).is_some() => {
+                return Ok(SubmitState::StillStaged);
+            }
             Verified::PressAgain => {
                 if !transport::send_key(server, pane, Key::Enter) {
                     return Err(EnterFailed);
@@ -2835,7 +3091,14 @@ mod tests {
             super::Stage::BeforeInput,
         );
         let (flushed, spawns) = crate::transport::spawns_during(|| {
-            super::flush_staged_chip(&server, "%3", chip, None, &mut clock, &mut std::io::sink())
+            super::flush_staged_chip(
+                &server,
+                "%3",
+                chip,
+                (None, super::VoiceGate::OPEN),
+                &mut clock,
+                &mut std::io::sink(),
+            )
         });
         assert_eq!(
             flushed.unwrap(),
@@ -2960,7 +3223,14 @@ mod tests {
             super::Stage::BeforeInput,
         );
         let (flushed, spawns) = crate::transport::spawns_during(|| {
-            super::flush_staged_chip(&server, "%3", chip, None, &mut clock, &mut std::io::sink())
+            super::flush_staged_chip(
+                &server,
+                "%3",
+                chip,
+                (None, super::VoiceGate::OPEN),
+                &mut clock,
+                &mut std::io::sink(),
+            )
         });
         assert_eq!(flushed.unwrap(), None);
         assert_eq!(clock.0, VERIFY_POLL, "one first gap, no more");

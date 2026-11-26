@@ -2267,6 +2267,17 @@ at an idle input box. See
 `ae orchestrator` resumes or reattaches it. `ae end orchestrator -f
 --keep-history` retires it. The seat never stops or ends itself.
 
+**Voice.** When the seat's main slot runs Claude Code, every start of it appends
+`--settings '{"voice":{"enabled":true,"mode":"hold","autoSubmit":false}}'` to the
+argv: voice on, hold mode, and no send on release. A command that already
+passes `--settings` gets nothing added, because two CLI layers would compete.
+Managed settings still outrank this layer. Just before the exec, ae records the
+meta row `voice.main=<launch id>` when the argv carries exactly ae's settings
+word and no other `--settings`; any other start, and a start whose exec
+fails, clears it. The panel's mic ([docs/app.md](../app.md#orchestrator-panel))
+refuses until a launch recorded that row, and the deliveries to that seat
+refuse a frame whose voice footer they cannot read.
+
 **Starting it.** Run it from anywhere:
 
 ```bash

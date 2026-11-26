@@ -299,6 +299,12 @@ pub(super) enum Answer {
         id: String,
         pressure: Pressure,
     },
+    /// The panel's orchestrator seat, bound to `id`, as one fresh read of its
+    /// pane saw its dictation.
+    Voice {
+        id: String,
+        mic: super::draw::Mic,
+    },
 }
 
 /// Whether the orchestrator a fleet read found is one incarnation, proven by
@@ -1490,7 +1496,34 @@ impl Reader {
                 pressure,
             });
         }
+        // The panel's seat: its pane proven NOW, as `/open` proves it, then
+        // one capture read for the mic.
+        let shown = match answers.first() {
+            Some(Answer::View(view)) if self.panel.as_deref() == Some(name) => {
+                Some((view.id.clone(), view.roster.clone()))
+            }
+            _ => None,
+        };
+        if let Some((id, Some(roster))) = shown
+            && let Some(mic) = self.voice_read(name, &id, &roster)
+        {
+            answers.push(Answer::Voice { id, mic });
+        }
         answers
+    }
+
+    /// One read of session `name`'s main seat for the panel's mic: `None`
+    /// when the reader knows no server, record or main seat to read.
+    fn voice_read(&self, name: &str, id: &str, roster: &[SeatRef]) -> Option<super::draw::Mic> {
+        let dir = self.dirs.get(name)?;
+        // The server the session records, as the look read and the outside
+        // pane view take it: the proof below refuses any other.
+        let server = &crate::session_launch::recorded_server_resolved(dir)?;
+        let seat = roster.iter().find(|seat| seat.slot == "main")?;
+        Some(match proven_pane(server, name, id, dir, Ok(seat)) {
+            Ok(target) => super::panel::mic_read(server, dir, &target.pane),
+            Err(_) => super::draw::Mic::Unknown,
+        })
     }
 
     /// How pressed each lead-pair seat of session `name` is, by seat name: its

@@ -2007,7 +2007,13 @@ fn interrupt_refuses_exactly_and_records_nothing_for_a_refusal() {
 fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
     let rig = Rig::new("leak", "claude", 0);
     let server = rig.server();
-    let live = deliver::stage_and_paste(&server, "ae-send-probe", b"LIVE-BODY", &rig.pane);
+    let live = deliver::stage_and_paste(
+        &server,
+        "ae-send-probe",
+        b"LIVE-BODY",
+        &rig.pane,
+        deliver::VoiceGate::OPEN,
+    );
     assert_eq!(live, Ok(()), "a live pane takes the paste");
     let (_, buffers) = rig.tmux(&["list-buffers", "-F", "#{buffer_name}"]);
     assert!(
@@ -2031,6 +2037,7 @@ fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
         "ae-send-probe",
         b"SENSITIVE-BODY-MARKER",
         &rig.pane,
+        deliver::VoiceGate::OPEN,
     );
     assert_eq!(
         dead,
@@ -2456,7 +2463,9 @@ fn the_critical_section_bills_two_calls_per_enter() {
     // R10 pin: over a live seat steps 3+4 are ONE pane probe, ONE busy
     // capture, ONE client list, the address guard's reproof — the target
     // viewer read, the pane's session identity and its session-name lookup —
-    // load, paste, then one send plus one capture PER Enter — COUNTED as
+    // load, the recording gate's capture, paste, the gate's capture before the
+    // first Enter, then one send plus one capture PER Enter (the gate reads
+    // that same capture before a retry Enter) — COUNTED as
     // the clients the verbose server accepted after `prove` checkpoints the
     // log offset, never wall time. Verdict is any Sent; the count relation
     // is the claim. Both locks release.
@@ -2477,7 +2486,7 @@ fn the_critical_section_bills_two_calls_per_enter() {
         prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
     });
     assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
-    // Eight calls are fixed; every Enter bills exactly one send plus one
+    // Ten calls are fixed; every Enter bills exactly one send plus one
     // submit capture — judged on `born` itself.
     // BIRTHS, not frees: tmux logs `new client` on accept, before the client
     // can finish, so a call made before `prove` is always logged before the
@@ -2496,18 +2505,18 @@ fn the_critical_section_bills_two_calls_per_enter() {
             .count();
         steady = if now == born { steady + 1 } else { 0 };
         born = now;
-        if matches!(born, 10 | 12 | 14) && steady >= 5 && rig.enter_count() >= 1 {
+        if matches!(born, 12 | 14 | 16) && steady >= 5 && rig.enter_count() >= 1 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let enters = rig.enter_count();
     assert!(
-        matches!(born, 10 | 12 | 14),
-        "eight fixed, then send + capture per Enter: born={born} enters={enters}"
+        matches!(born, 12 | 14 | 16),
+        "ten fixed, then send + capture per Enter: born={born} enters={enters}"
     );
     assert!(
-        (1..=(born - 8) / 2).contains(&enters),
+        (1..=(born - 10) / 2).contains(&enters),
         "TUI receipt lags, never exceeds: born={born} enters={enters}"
     );
     let free_send = lock_is_free(&rig.send_lock_path());
@@ -2523,7 +2532,11 @@ fn a_refused_enter_is_enter_failed_never_unknown() {
     // on the FIRST Enter, deterministically. No TUI needed.
     let sock = PathBuf::from("/tmp/aedl.dead-server-guard/sock");
     let server = ServerId::Selected(Selector::Socket(sock));
-    let done = deliver::submit_bounded(&server, "%9", InputModel::BorderDelimited);
+    let done = deliver::submit_bounded(
+        &server,
+        "%9",
+        (InputModel::BorderDelimited, deliver::VoiceGate::OPEN),
+    );
     assert!(matches!(done, Err(deliver::EnterFailed)), "{done:?}");
 }
 

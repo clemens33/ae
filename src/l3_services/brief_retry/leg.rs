@@ -139,14 +139,12 @@ fn run_with_wait(
     let live_pane = (resolved.slot == record.slot).then(|| resolved.pane.clone());
     let liveness =
         crate::deliver::observe_pane_liveness(&server, dir, &resolved.pane, &resolved.slot);
-    let ready = liveness == crate::deliver::PaneLiveness::Alive
-        && crate::deliver::wait_input_ready(
-            &server,
-            &resolved.pane,
-            input.model,
-            input.composed,
-            RETRY_READY_POLLS,
-        );
+    let alive = liveness == crate::deliver::PaneLiveness::Alive;
+    let at = (&server, resolved.pane.as_str(), resolved.slot.as_str());
+    let ready = match retry_ready(dir, at, &seat, (alive, target)) {
+        Ok(ready) => ready,
+        Err(clause) => return refuse(err, &clause),
+    };
     // CHANNEL ONE of two. The daemon knows its own latch, but that memory does
     // not cross into this helper process, and a forged trigger does not come
     // through the daemon at all — so the leg asks the pane itself, once, right
@@ -194,6 +192,27 @@ fn run_with_wait(
             err,
         ),
     }
+}
+
+/// Whether the live pane is ready for this flight, read through the recording
+/// gate. A dictation the pane shows NOW is `Err`, the skip's clause, decided
+/// before the flight mark so it spends no attempt; the delivery's own reads
+/// catch one that starts later.
+fn retry_ready(
+    dir: &Path,
+    (server, pane, slot): (&crate::inventory::ServerId, &str, &str),
+    seat: &Seat,
+    (alive, target): (bool, &str),
+) -> Result<bool, String> {
+    let gate = crate::deliver::VoiceGate::of(dir, slot, Some(seat.tool));
+    if let Some(voice) = alive.then(|| gate.holds(server, pane)).flatten() {
+        let name = seat.name.as_deref().unwrap_or(target);
+        let held = crate::deliver::DeferHeld::of_voice(voice).halves();
+        return Err(format!("skipped for {name} — {held}; NOTHING was pasted"));
+    }
+    let input = seat.tool.adapter().input;
+    let model = (input.model, input.composed);
+    Ok(alive && crate::deliver::wait_input_ready(server, pane, model, gate, RETRY_READY_POLLS))
 }
 
 /// The clause of a decided skip. For an unready box, one more capture only

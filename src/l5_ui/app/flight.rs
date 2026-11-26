@@ -30,6 +30,9 @@ pub(super) struct Flight {
     about: String,
     /// The origin to tell about a redirected ask.
     source: Option<OriginDraft>,
+    /// The line as the human wrote it, back in its composer when ae gave up
+    /// delivering a plain ask.
+    own: OriginDraft,
     /// The quiet lane note for a line routed away from the lead.
     note: Option<String>,
     /// Its outcome, once the delivery has ended.
@@ -545,6 +548,12 @@ impl App {
                 format!("{} · {said}", flight.about)
             };
             self.notice(&key.0, said);
+        } else if matches!(outcome, submit::Outcome::NotDelivered(_))
+            && let Some(input) = self.inputs.get_mut(&flight.own.key)
+        {
+            // Nothing reached the seat: the line goes back ahead of anything
+            // typed since, as a refused redirect's does.
+            input.put_back(&flight.own.raw);
         }
         let mut lines = self.settle(flight.id, &flight.seat, &flight.about, outcome);
         lines.splice(0..0, flight.note);
@@ -606,10 +615,15 @@ impl App {
                 };
                 match begun {
                     Ok((id, done, lease)) => {
+                        let own = OriginDraft {
+                            key: q.key.clone(),
+                            raw: q.raw.clone(),
+                        };
                         self.flight = Some(Flight {
                             id,
                             seat: q.seat,
                             about: destination.clone(),
+                            own,
                             source: q.redirect.as_ref().map(|_| OriginDraft {
                                 key: q.key,
                                 raw: q.raw,

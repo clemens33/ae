@@ -181,7 +181,18 @@ pub fn classify(capture: &str, tool: ToolKind) -> HarnessState {
 #[must_use]
 pub fn read_frame(capture: &str, tool: ToolKind) -> Option<FrameReading> {
     match tool.input_model() {
-        InputModel::BorderDelimited => read_claude(capture),
+        // A dictation runs in the composer, so a frame that shows one is no
+        // idle frame, whatever the row above the box says.
+        InputModel::BorderDelimited => read_claude(capture).map(|frame| {
+            if dictation(capture, tool).active() {
+                FrameReading {
+                    state: HarnessState::Busy,
+                    ..frame
+                }
+            } else {
+                frame
+            }
+        }),
         InputModel::StyleDelimited => read_codex(capture),
         InputModel::Unmodelled => None,
     }
@@ -228,6 +239,127 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
         }
         InputModel::Unmodelled => false,
     }
+}
+
+/// Claude Code's voice dictation, as the rows BELOW its composer draw it: the
+/// ONE recording predicate that frame classification ([`classify`] reads an
+/// active dictation as [`HarnessState::Busy`]), every delivery gate and the
+/// app panel's mic share. Transcript and draft rows never count, and neither
+/// does the `🧠` status row, whose words are the user's own status line.
+///
+/// Claude Code 2.1.332, measured on its hold mode: two Space key events end
+/// the `⏵` mode row with ` · keep holding…` ([`Self::Warming`]). The
+/// recording, tap and transcribing words are PROVISIONAL until a microphone
+/// capture measures them, and any other voice word reads
+/// [`Self::Transcribing`], so an unmeasured state fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dictation {
+    /// A Claude composer whose footer names no voice state. Voice in hold
+    /// mode, in tap mode and off draw this same frame: it proves no setting.
+    Clear,
+    /// Hold mode counts Space key events toward a recording.
+    Warming,
+    /// A hold-mode recording (provisional `listening…`).
+    Holding,
+    /// A tap-mode recording (provisional `● REC` with `tap to send`).
+    Tapping,
+    /// Claude finishes a dictation (provisional `Transcribing…`), or the
+    /// footer names voice in words not measured: no key may reach the pane.
+    Transcribing,
+    /// No Claude composer footer this reading can classify.
+    Unread,
+}
+
+impl Dictation {
+    /// Whether a dictation may be running, so no delivery may paste or press.
+    #[must_use]
+    pub const fn active(self) -> bool {
+        matches!(
+            self,
+            Self::Warming | Self::Holding | Self::Tapping | Self::Transcribing
+        )
+    }
+}
+
+/// The measured hold-mode warmup suffix of the mode row.
+const VOICE_WARMING: &str = " · keep holding…";
+/// The provisional suffixes of the other dictation states.
+const VOICE_HOLDING: &str = "listening…";
+const VOICE_TRANSCRIBING: &str = "Transcribing…";
+const VOICE_TAPPING: (&str, &str) = ("● REC", "tap to send");
+/// Words that name voice in a footer row in a way no state above measures.
+const VOICE_WORDS: [&str; 8] = [
+    "listen",
+    "record",
+    "transcrib",
+    "holding",
+    "dictat",
+    "voice",
+    "microphone",
+    "speak",
+];
+
+/// The dictation state of the Claude Code frame `capture`, plain or styled.
+/// Every other tool reads [`Dictation::Unread`]: Muse draws the same box with
+/// no voice, so the tool's identity decides, never its input model.
+#[must_use]
+pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
+    if tool != ToolKind::Claude {
+        return Dictation::Unread;
+    }
+    let plain = if capture.contains('\u{1b}') {
+        Cow::Owned(crate::deliver::region::plain_text(capture))
+    } else {
+        Cow::Borrowed(capture)
+    };
+    let lines = clean_lines(&plain);
+    let Some(prompt) = lines.iter().rposition(|line| line.starts_with('❯')) else {
+        return Dictation::Unread;
+    };
+    let Some(bottom) = lines[prompt + 1..]
+        .iter()
+        .position(|line| claude_border(line))
+        .map(|at| prompt + 1 + at)
+    else {
+        return Dictation::Unread;
+    };
+    let footer: Vec<&str> = lines[bottom + 1..]
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|row: &&str| !row.starts_with('🧠'))
+        .collect();
+    if let Some(state) = footer.iter().find_map(|row| voice_row(row)) {
+        return state;
+    }
+    let readable = footer.iter().any(|row| row.starts_with('⏵'))
+        && footer
+            .iter()
+            .all(|row| claude_chrome(row) || claude_limit_footer(row));
+    if readable {
+        Dictation::Clear
+    } else {
+        Dictation::Unread
+    }
+}
+
+/// The dictation state one footer row names, if it names one.
+fn voice_row(row: &str) -> Option<Dictation> {
+    if row.starts_with('⏵') && row.ends_with(VOICE_WARMING) {
+        return Some(Dictation::Warming);
+    }
+    if row.contains(VOICE_TRANSCRIBING) {
+        return Some(Dictation::Transcribing);
+    }
+    if row.contains(VOICE_HOLDING) {
+        return Some(Dictation::Holding);
+    }
+    if row.contains(VOICE_TAPPING.0) && row.contains(VOICE_TAPPING.1) {
+        return Some(Dictation::Tapping);
+    }
+    let lower = row.to_lowercase();
+    let named = VOICE_WORDS.iter().any(|word| lower.contains(word))
+        || row.split_whitespace().any(|word| word == "REC");
+    named.then_some(Dictation::Transcribing)
 }
 
 /// A placeholder claude draws in the input row of an EMPTY box.
@@ -1085,6 +1217,91 @@ mod tests {
         ToolKind::OpenCode,
         ToolKind::Unknown,
     ];
+
+    mod dictation {
+        use super::super::{Dictation, HarnessState, classify, dictation};
+        use crate::tool::ToolKind;
+
+        const IDLE: &str =
+            include_str!("../../tests/fixtures/harness-state/claude-voice-idle-2.1.332-120x40.txt");
+        const WARMING: &str = include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-warming-2.1.332-120x40.txt"
+        );
+        const WARMING_ESC: &str = include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-warming-2.1.332-120x40.esc"
+        );
+        const BUSY: &str =
+            include_str!("../../tests/fixtures/harness-state/claude-busy-167x40.txt");
+        const MODE_ROW: &str = "  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+
+        fn with_mode_suffix(suffix: &str) -> String {
+            IDLE.replace(" · ← for agents", suffix)
+        }
+
+        #[test]
+        fn the_measured_warmup_reads_warming_and_the_idle_frame_proves_nothing() {
+            assert_eq!(dictation(IDLE, ToolKind::Claude), Dictation::Clear);
+            assert_eq!(dictation(BUSY, ToolKind::Claude), Dictation::Clear);
+            for frame in [WARMING, WARMING_ESC] {
+                assert_eq!(dictation(frame, ToolKind::Claude), Dictation::Warming);
+            }
+            // `classify` reads plain captures; the redacted row above the box
+            // reads Unknown, and a dictation in the footer still reads Busy.
+            assert_eq!(classify(IDLE, ToolKind::Claude), HarnessState::Unknown);
+            assert_eq!(classify(WARMING, ToolKind::Claude), HarnessState::Busy);
+            assert!(!Dictation::Clear.active() && !Dictation::Unread.active());
+        }
+
+        #[test]
+        fn only_claude_footer_rows_count() {
+            for tool in [ToolKind::Muse, ToolKind::Codex, ToolKind::OpenCode] {
+                assert_eq!(dictation(WARMING, tool), Dictation::Unread, "{tool:?}");
+            }
+            assert_ne!(classify(WARMING, ToolKind::Muse), HarnessState::Busy);
+            let quoted =
+                format!("listening… keep holding… Transcribing… ● REC tap to send\n{IDLE}");
+            assert_eq!(dictation(&quoted, ToolKind::Claude), Dictation::Clear);
+            let status = IDLE.replace("📁 cwd", "📁 voice-recording 🌿 listening");
+            assert_ne!(status, IDLE);
+            assert_eq!(
+                dictation(&status, ToolKind::Claude),
+                Dictation::Clear,
+                "the status line is the user's text"
+            );
+            let draft = IDLE.replace("❯\u{a0}", "❯\u{a0}keep holding… listening…");
+            assert_ne!(draft, IDLE, "the fixture prompt row is `❯` NBSP");
+            assert_eq!(dictation(&draft, ToolKind::Claude), Dictation::Clear);
+        }
+
+        #[test]
+        fn the_provisional_and_unmeasured_voice_words_fail_closed() {
+            for (suffix, want) in [
+                (" · listening…", Dictation::Holding),
+                (" · ● REC · tap to send", Dictation::Tapping),
+                (" · Transcribing…", Dictation::Transcribing),
+                (" · voice ready", Dictation::Transcribing),
+                (" · REC 0:03", Dictation::Transcribing),
+                (" · keep holding… more", Dictation::Transcribing),
+            ] {
+                let frame = with_mode_suffix(suffix);
+                assert_eq!(dictation(&frame, ToolKind::Claude), want, "{suffix}");
+                assert!(want.active());
+            }
+            let row = format!("{IDLE}  ◉ recording\n");
+            assert_eq!(dictation(&row, ToolKind::Claude), Dictation::Transcribing);
+        }
+
+        #[test]
+        fn a_footer_it_cannot_classify_is_unread() {
+            assert_eq!(dictation("", ToolKind::Claude), Dictation::Unread);
+            let no_border = IDLE.replace(MODE_ROW, "").replace('─', "");
+            assert_eq!(dictation(&no_border, ToolKind::Claude), Dictation::Unread);
+            let unknown_row = format!("{IDLE}  ⧉ In notes.md\n");
+            assert_eq!(dictation(&unknown_row, ToolKind::Claude), Dictation::Unread);
+            let no_mode_row = IDLE.replace(MODE_ROW, "  ? for shortcuts");
+            assert_eq!(dictation(&no_mode_row, ToolKind::Claude), Dictation::Unread);
+        }
+    }
 
     /// PARITY: the two return paths no other pin reaches — claude's grammar
     /// with no bare prompt, codex's with fewer than two rows — for every tool.

@@ -2171,8 +2171,8 @@ fn watch_trust(
                 if deliver::wait_input_ready(
                     at.server,
                     &agent.pane,
-                    input.model,
-                    input.composed,
+                    (input.model, input.composed),
+                    deliver::VoiceGate::of(at.dir, &agent.slot, Some(agent.tool)),
                     chunk_polls(input.model),
                 ) {
                     return WatchRead::Ready;

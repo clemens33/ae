@@ -662,15 +662,20 @@ fn exec_between_facts(
     err: &mut impl Write,
 ) -> std::io::Result<std::io::Error> {
     record_start(dir, slot, plan, start, FactKind::StartAttempted, err)?;
-    let why = match stamp_context(dir, slot, &plan.context_stamp, err)? {
-        Some(refusal) => std::io::Error::other(refusal),
-        None => exec(plan),
+    let why = if let Some(refusal) = stamp_context(dir, slot, &plan.context_stamp, err)? {
+        std::io::Error::other(refusal)
+    } else {
+        stamp_voice(dir, slot, plan, err)?;
+        exec(plan)
     };
     if plan.mode == Mode::Create {
         let _ = std::fs::remove_file(marker);
     }
     // The exec returned: this launch handed no context to anyone.
     let _ = crate::meta::set_context(dir, slot, &plan.context_stamp.launch_id, None);
+    if plan.context_stamp.voice {
+        let _ = crate::meta::set_voice(dir, slot, &plan.context_stamp.launch_id, false);
+    }
     record_start(dir, slot, plan, start, FactKind::StartFailed, err)?;
     Ok(why)
 }
@@ -963,6 +968,8 @@ fn build_with_snapshot(
     } else {
         reconcile_config_home(&mut prefix, seat.tool, &current, &identity);
     }
+    let voice = seat_main(dir, slot);
+    add_voice_settings(&mut argv, voice && seat.tool == ToolKind::Claude);
     let plan = Plan {
         mode,
         tool: seat.tool,
@@ -987,6 +994,7 @@ fn build_with_snapshot(
             launch_id: seat.launch_id.clone(),
             proof: context_proof(dir, slot, seat.tool, exact),
             charter,
+            voice,
         },
     };
     Ok((plan, choice))
@@ -1003,6 +1011,9 @@ struct ContextStart {
     /// The charter version the context of this start teaches, for the
     /// orchestrator seat's main slot only: recorded beside the stamp.
     charter: Option<u32>,
+    /// This start is the orchestrator seat's main slot, so it records or drops
+    /// the `voice.<slot>` proof ([`stamp_voice`]).
+    voice: bool,
 }
 
 /// What a start of one seat proves of the relay context turn.
@@ -1042,10 +1053,83 @@ fn context_proof(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> Context
 /// every other seat. No other context text counts: a marker in the spend
 /// policy teaches nothing.
 fn seat_charter(dir: &Path, slot: &str, instructions: Option<&str>) -> Option<u32> {
-    let root = crate::doors::state_root(crate::shape::current())?;
-    let seat = slot == "main"
-        && crate::meta::read_bytes(dir).is_ok_and(|bytes| crate::meta::is_seat(&bytes, &root));
-    seat.then(|| crate::config::charter_version(instructions.unwrap_or_default()))
+    seat_main(dir, slot).then(|| crate::config::charter_version(instructions.unwrap_or_default()))
+}
+
+/// Whether `slot` of the session at `dir` is the proved orchestrator seat's
+/// main slot: the session records the role and its state root's seat overlay.
+fn seat_main(dir: &Path, slot: &str) -> bool {
+    slot == "main"
+        && crate::doors::state_root(crate::shape::current()).is_some_and(|root| {
+            crate::meta::read_bytes(dir).is_ok_and(|bytes| crate::meta::is_seat(&bytes, &root))
+        })
+}
+
+/// The one settings word ae passes the orchestrator seat's main slot on Claude
+/// Code (D54 dictation): voice on, HOLD mode, and never a send on release. In
+/// tap mode a stop tap submits a transcript of three or more words, and Claude
+/// reads the user file of `$HOME/.claude` as project settings when the seat
+/// runs in `$HOME`, so only the CLI layer, which outranks every file but a
+/// managed one, says what the seat does.
+pub(crate) const VOICE_SETTINGS: &str =
+    r#"{"voice":{"enabled":true,"mode":"hold","autoSubmit":false}}"#;
+
+/// Claude Code's flag for a settings layer given on the command line.
+const SETTINGS_FLAG: &str = "--settings";
+
+/// Whether `word` is a `--settings` flag, alone or with its value attached.
+fn settings_flag(word: &str) -> bool {
+    word == SETTINGS_FLAG
+        || word
+            .strip_prefix(SETTINGS_FLAG)
+            .is_some_and(|rest| rest.starts_with('='))
+}
+
+/// Append ae's voice settings to the seat's `argv` when `wanted`, unless the
+/// command already passes a `--settings` of its own: two CLI layers would
+/// compete, so ae adds none and leaves the user's settings as they are. The
+/// end of the argv, not the word after the binary, because a launcher command
+/// (`npx claude`) puts the tool after its own first word.
+fn add_voice_settings(argv: &mut Vec<String>, wanted: bool) {
+    if !wanted || argv.iter().any(|word| settings_flag(word)) {
+        return;
+    }
+    argv.push(SETTINGS_FLAG.to_owned());
+    argv.push(VOICE_SETTINGS.to_owned());
+}
+
+/// Whether the argv a start executes carries ae's voice settings and no other
+/// settings layer: exactly one `--settings`, followed by ae's word.
+fn voice_settings_held(argv: &[String]) -> bool {
+    let mut flags = argv
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| settings_flag(word));
+    match (flags.next(), flags.next()) {
+        (Some((at, _)), None) => argv.get(at + 1).is_some_and(|word| word == VOICE_SETTINGS),
+        _ => false,
+    }
+}
+
+/// Record the orchestrator main slot's voice proof for the argv this start
+/// executes, just before the exec: `voice.<slot>` names this launch only when
+/// that argv holds ae's voice settings, and an earlier launch's row goes.
+/// Every other seat writes nothing. A miss is said and the start goes on: the
+/// mic then refuses until a later start records the row.
+fn stamp_voice(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> std::io::Result<()> {
+    let start = &plan.context_stamp;
+    if !start.voice || start.launch_id.is_empty() {
+        return Ok(());
+    }
+    let proved = plan.tool == ToolKind::Claude && voice_settings_held(&plan.argv);
+    if let Err(why) = crate::meta::set_voice(dir, slot, &start.launch_id, proved) {
+        writeln!(
+            err,
+            "ae: could not record voice.{slot} ({}) — launching anyway; the panel mic refuses until a later start records it",
+            why.cause()
+        )?;
+    }
+    Ok(())
 }
 
 /// What a resume that keeps its old conversation without a new context turn
@@ -3617,6 +3701,7 @@ mod tests {
             launch_id: launch_id.to_owned(),
             proof,
             charter: None,
+            voice: false,
         };
         let go = |start: ContextStart| {
             let mut err = Vec::new();
@@ -3675,6 +3760,7 @@ mod tests {
             launch_id: "L1".to_owned(),
             proof,
             charter: None,
+            voice: false,
         };
         // The meta lock is a directory, so opening it fails for any user: the
         // clear cannot happen while the meta stays readable.
@@ -4640,5 +4726,42 @@ mod tests {
         for r in [&r0, &r1, &r2] {
             let _ = std::fs::remove_dir_all(r);
         }
+    }
+
+    #[test]
+    fn the_voice_settings_ride_only_an_argv_without_its_own_settings_layer() {
+        let words = |list: &[&str]| {
+            list.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let mut plain = words(&["claude", "--model", "m"]);
+        add_voice_settings(&mut plain, true);
+        assert_eq!(
+            plain,
+            words(&["claude", "--model", "m", "--settings", VOICE_SETTINGS])
+        );
+        assert!(voice_settings_held(&plain));
+        for own in [
+            words(&["claude", "--settings", "/u/s.json"]),
+            words(&["claude", "--settings=/u/s.json"]),
+        ] {
+            let mut argv = own.clone();
+            add_voice_settings(&mut argv, true);
+            assert_eq!(argv, own, "the user's settings layer stays alone");
+            assert!(!voice_settings_held(&argv), "and proves no voice launch");
+        }
+        let twice = words(&["claude", "--settings", VOICE_SETTINGS, "--settings", "{}"]);
+        assert!(!voice_settings_held(&twice), "a later layer would win");
+        assert!(!voice_settings_held(&words(&["claude", "--settings"])));
+        assert!(!voice_settings_held(&words(&[
+            "claude",
+            "--settings",
+            "{}"
+        ])));
+        assert!(
+            !settings_flag("--settingsx") && settings_flag("--settings=x"),
+            "only the flag itself counts"
+        );
     }
 }

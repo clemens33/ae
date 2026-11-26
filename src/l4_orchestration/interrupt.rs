@@ -247,6 +247,16 @@ fn bare_cancel(
     if !guard.check(err)? {
         return Ok(EXIT_FAILED);
     }
+    // Escape would end a dictation: the recording gate's fresh read first.
+    if let Some(state) = deliver::voice_gate(request, tool).holds(server, pane) {
+        let held = DeferHeld::of_voice(state);
+        writeln!(
+            err,
+            "ae: interrupt of {target} ABANDONED — {}; no Escape was sent.",
+            held.describe()
+        )?;
+        return record(dir, target, Some(held), now, actor, cross, err);
+    }
     let _ = transport::send_key(server, pane, crate::tmux::Key::CancelCopyMode);
     let _ = transport::send_key(server, pane, crate::tmux::Key::Escape);
     record(dir, target, None, now, actor, cross, err)

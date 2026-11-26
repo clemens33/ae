@@ -3188,6 +3188,44 @@ pub(crate) fn release_charter(
     })
 }
 
+/// The orchestrator dictation's launch proof: `voice.<slot>` holds the launch
+/// id of the start whose executed argv carried ae's own voice `--settings`
+/// word (`run::voice_settings`). The parse records the row as an unknown key
+/// and interprets nothing; [`voice_proved`] reads it raw, as [`claim_charter`]
+/// reads `charter_launch.<slot>`.
+pub(crate) const VOICE_PREFIX: &str = "voice.";
+
+/// Record (`proved`) or drop the voice proof of launch `launch_id` in `slot`.
+/// Guarded like [`set_charter`]: nothing is written unless `launch_id.<slot>`
+/// is still `launch_id`, which the return says; an unchanged row writes
+/// nothing.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn set_voice(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    proved: bool,
+) -> Result<bool, RewriteError> {
+    let key = format!("{VOICE_PREFIX}{slot}");
+    charter_rewrite(dir, slot, launch_id, |current| {
+        rewritten(current, &key, proved.then_some(launch_id))
+    })
+}
+
+/// Whether `meta` proves that the current launch of `slot` started with ae's
+/// voice settings: one non-empty `launch_id.<slot>` and one `voice.<slot>`
+/// row equal to it. A repeated, stale or missing row proves nothing.
+#[must_use]
+pub(crate) fn voice_proved(meta: &[u8], slot: &str) -> bool {
+    let launch = sole_value(meta, &format!("launch_id.{slot}"));
+    launch.is_some_and(|id| !id.is_empty())
+        && sole_value(meta, &format!("{VOICE_PREFIX}{slot}")) == launch
+}
+
 /// One guarded charter write: `edit` runs only while `launch_id.<slot>` is
 /// still `launch_id`, and an unchanged text writes nothing.
 fn charter_rewrite(
@@ -7302,6 +7340,62 @@ agent_bin.main=claude
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_voice_proof_belongs_to_the_current_launch_only() {
+        use super::voice_proved;
+        assert!(voice_proved(
+            b"launch_id.main=tok\nvoice.main=tok\n",
+            "main"
+        ));
+        for (meta, why) in [
+            ("launch_id.main=tok\n", "no row"),
+            ("launch_id.main=new\nvoice.main=old\n", "a stale launch"),
+            (
+                "launch_id.main=tok\nvoice.main=tok\nvoice.main=tok\n",
+                "a repeated row",
+            ),
+            ("voice.main=\nlaunch_id.main=\n", "an empty launch id"),
+            (
+                "launch_id.main=tok\nvoice.worker.0=tok\n",
+                "another slot's row",
+            ),
+            (
+                "launch_id.main=tok\nlaunch_id.main=tok\nvoice.main=tok\n",
+                "a repeated launch id",
+            ),
+        ] {
+            assert!(!voice_proved(meta.as_bytes(), "main"), "{why}");
+        }
+    }
+
+    #[test]
+    fn set_voice_writes_and_drops_the_row_only_for_the_current_launch() {
+        use super::set_voice;
+        let scratch = Scratch::new("voice-row");
+        let path = scratch.0.join("meta");
+        let read = || std::fs::read_to_string(&path).expect("meta");
+        std::fs::write(
+            &path,
+            "seat.main=lead\nlaunch_id.main=tok\nvoice.main=old\n",
+        )
+        .expect("fixture meta");
+        assert!(set_voice(&scratch.0, "main", "tok", true).expect("written"));
+        assert_eq!(
+            read(),
+            "seat.main=lead\nlaunch_id.main=tok\nvoice.main=tok\n"
+        );
+        assert!(
+            !set_voice(&scratch.0, "main", "older", true).expect("refused"),
+            "a start the seat no longer runs writes nothing"
+        );
+        assert_eq!(
+            read(),
+            "seat.main=lead\nlaunch_id.main=tok\nvoice.main=tok\n"
+        );
+        assert!(set_voice(&scratch.0, "main", "tok", false).expect("dropped"));
+        assert_eq!(read(), "seat.main=lead\nlaunch_id.main=tok\n");
     }
 
     #[test]

@@ -213,6 +213,7 @@ impl App {
                 .is_some_and(console::input::Input::confirming),
             md: Some(&self.md),
             work: None,
+            mic: None,
         };
         draw::draw_with_layout(&screen, wait, buf)
     }

@@ -591,6 +591,30 @@ orchestrator seat`, `orchestrator unproven: …`, `orchestrator stopped; O start
 it`, `orchestrator replaced; O reopens`) draws no `pane`, and `oo` there
 refuses on the hint row with its line, never starting or resuming the seat.
 
+The panel's mic. A panel bound to a running orchestrator draws a mic left of
+`pane`: `🎤` (the word `mic` with `icons = off`) and one state word from the
+newest fresh read of the seat's pane. `n/a` means the seat's tool has no
+dictation ae drives: only Claude Code has one, and Codex CLI 0.172.0 has
+live voice but no dictation. `?` means the read proved no state; a frame
+without a voice word proves nothing, so the mic never reads as off. `…`
+means Claude's voice input is warming up or transcribing, and `rec` that it
+records. No key starts it: `v` stays Peek. A click proves the bound
+incarnation and its pane exactly as `pane` does, then refuses on the hint
+row, in order: a replaced incarnation, a tool without dictation, a launch
+without ae's hold-mode voice settings (relaunch the orchestrator), a
+dictation that already runs, a draft in Claude's composer, a busy Claude, a
+voice footer ae cannot read. Until ae has measured Claude's recording
+frames, a click that passes every gate still starts nothing and says
+`dictation needs the measured voice states; not enabled yet`. ae never
+presses Enter for a dictation, and the text is meant to land in the panel's
+draft, never sent on its own.
+
+While Claude dictates in any pane, every ae delivery holds: each paste,
+Enter and Escape is preceded by a fresh read of the pane under its send
+lock, and a recording, warming or transcribing frame refuses the effect with
+`Claude dictation on the pane`. On the orchestrator seat that a hold-mode
+launch proved, a frame whose voice footer ae cannot read refuses as well.
+
 The panel opens on the orchestrator incarnation the last fleet read proved:
 its live `@ae_session_uuid`, its meta, the one `session_id` that meta records
 and its seat overlay `orchestrator.config`. It shows and writes that

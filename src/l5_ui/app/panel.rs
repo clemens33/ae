@@ -115,6 +115,8 @@ pub(super) struct Orch {
     /// When the panel raised the hint row's flash: its own line, which
     /// hiding the panel drops.
     flash: Option<Instant>,
+    /// The newest voice read of the seat's pane, with the incarnation it read.
+    pub(super) voice: Option<(String, draw::Mic)>,
 }
 
 impl Orch {
@@ -728,6 +730,86 @@ impl App {
         self.in_panel(|app| app.pane_open(&drawn)).is_some()
     }
 
+    /// The panel header's mic: the same incarnation and seat proof the `pane`
+    /// word makes, then the refusal chain. Until the recording states are
+    /// measured, a click that passes every gate starts nothing either.
+    pub(super) fn mic_click(&mut self) -> bool {
+        let target = (self.orch.panel.as_ref()).and_then(|panel| panel.column.layout.pane.clone());
+        let drawn = pane_drawn(target.unwrap_or_default());
+        self.in_panel(|app| {
+            let label = drawn.focused.as_deref().unwrap_or(ORCH).to_owned();
+            let line = app.mic_refusal(&drawn, &label);
+            app.pane_said(line);
+        })
+        .is_some()
+    }
+
+    /// Why the mic starts no dictation now, each gate in its order: the bound
+    /// incarnation and its proven pane, the tool, this launch's hold-mode
+    /// proof, then one fresh capture: no dictation running, an empty
+    /// composer, an idle Claude, a footer it reads.
+    fn mic_refusal(&self, drawn: &Drawn, label: &str) -> String {
+        use crate::harness_state::{Dictation, HarnessState, classify, dictation};
+        use crate::tool::{InputModel, ToolKind};
+
+        if let Some(why) = self.pane_refusal() {
+            return why.line(label);
+        }
+        let Some(dir) = self.dirs.get(ORCH) else {
+            let why = format!("{ORCH} has no record directory ae can read");
+            return Refusal::NoSeat(why).line(label);
+        };
+        // Inside tmux the app's own server, as `pane` opens it; outside it,
+        // the server the session records, as the pane view proves it.
+        let server =
+            (self.server.clone()).or_else(|| crate::session_launch::recorded_server_resolved(dir));
+        let Some(server) = server.as_ref() else {
+            return Refusal::NoTmux.line(label);
+        };
+        let target = match super::proven_pane(server, ORCH, &drawn.uuid, dir, drawn.seat()) {
+            Ok(target) => target,
+            Err(why) => return why.line(label),
+        };
+        let slot = target.seat.slot.as_str();
+        match crate::deliver::seat_tool(server, dir, &target.pane, slot) {
+            Some(ToolKind::Claude) => {}
+            Some(tool) => {
+                return format!(
+                    "refused: dictation is unsupported in {}; only Claude Code has a dictation ae drives",
+                    tool.as_str()
+                );
+            }
+            None => return "refused: dictation unavailable: the seat's tool is unknown".to_owned(),
+        }
+        let meta = crate::meta::read_bytes(dir).unwrap_or_default();
+        if !crate::meta::voice_proved(&meta, slot) {
+            return "refused: this launch has no proven hold-mode dictation; relaunch the orchestrator to enable it"
+                .to_owned();
+        }
+        let Some(frame) =
+            crate::transport::capture_screen(server, &target.pane, crate::tmux::Styling::Escapes)
+        else {
+            return "refused: dictation could not read the orchestrator's pane".to_owned();
+        };
+        let state = dictation(&frame, ToolKind::Claude);
+        if state.active() {
+            return "refused: a dictation already runs in the orchestrator's pane".to_owned();
+        }
+        let box_read = crate::deliver::region::read(&frame, InputModel::BorderDelimited);
+        if box_read.occupancy != crate::deliver::region::Occupancy::Idle {
+            return "refused: dictation starts only on an empty composer; the orchestrator's draft stays as it is"
+                .to_owned();
+        }
+        let plain = crate::deliver::region::plain_text(&frame);
+        if classify(&plain, ToolKind::Claude) != HarnessState::Idle {
+            return "refused: dictation waits until Claude is idle; it is busy now".to_owned();
+        }
+        if state == Dictation::Unread {
+            return "refused: dictation cannot read Claude's voice footer".to_owned();
+        }
+        "refused: dictation needs the measured voice states; not enabled yet".to_owned()
+    }
+
     /// Why the panel cannot open a pane now, or `None` while it is bound to
     /// the running orchestrator. The seat proof knows seats, not the panel's
     /// standing: a role census that failed leaves the pinned incarnation's
@@ -882,6 +964,7 @@ impl App {
             }
             Some(draw::Hit::PanelMode) => return self.flip_panel(),
             Some(draw::Hit::PanelPane) => return self.pane_click(),
+            Some(draw::Hit::PanelMic) => return self.mic_click(),
             Some(draw::Hit::Settings) => {
                 self.open_settings();
                 return true;
@@ -909,6 +992,15 @@ impl App {
         // orchestrator is no listed session, so its own column reads none.
         let (look, zone) = self.dressed();
         let zone = zone.map(str::to_owned);
+        let pin = self
+            .orch
+            .panel
+            .as_ref()
+            .and_then(Panel::pin)
+            .map(str::to_owned);
+        let mic = (self.orch.voice.as_ref())
+            .filter(|(id, _)| pin.as_deref() == Some(id.as_str()))
+            .map(|(_, mic)| *mic);
         let cursor = self.in_panel(|app| {
             app.show();
             app.model.set_columns(columns);
@@ -952,6 +1044,7 @@ impl App {
                 confirming: false,
                 md: Some(&app.md),
                 work: Some(fleet::Work::of(&app.world)),
+                mic: mic.filter(|_| bound),
             };
             let drawn = draw::draw_panel(&screen, wait, buf);
             let replaced = std::mem::replace(&mut app.layout, drawn);
@@ -991,5 +1084,28 @@ impl App {
         }
         self.layout.links.extend(links);
         self.layout.panel_border(buf, self.model.split(), columns);
+    }
+}
+
+/// The panel mic's word for `pane`, the main seat of the session `dir`
+/// records: from the seat's tool and one fresh capture.
+pub(super) fn mic_read(
+    server: &crate::inventory::ServerId,
+    dir: &std::path::Path,
+    pane: &str,
+) -> draw::Mic {
+    use crate::harness_state::{Dictation, dictation};
+    use crate::tool::ToolKind;
+
+    match crate::deliver::seat_tool(server, dir, pane, "main") {
+        Some(ToolKind::Claude) => {}
+        Some(_) => return draw::Mic::Unsupported,
+        None => return draw::Mic::Unknown,
+    }
+    let frame = crate::transport::capture_screen(server, pane, crate::tmux::Styling::Escapes);
+    match frame.map(|frame| dictation(&frame, ToolKind::Claude)) {
+        Some(Dictation::Holding | Dictation::Tapping) => draw::Mic::Recording,
+        Some(Dictation::Warming | Dictation::Transcribing) => draw::Mic::Pending,
+        Some(Dictation::Clear | Dictation::Unread) | None => draw::Mic::Unknown,
     }
 }

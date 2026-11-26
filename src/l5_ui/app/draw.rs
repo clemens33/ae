@@ -153,6 +153,8 @@ pub(crate) enum Hit {
     Orchestrator,
     /// The panel header's `pane` word: opens the orchestrator's pane.
     PanelPane,
+    /// The panel header's mic beside `pane`: asks the seat to dictate.
+    PanelMic,
     /// The panel header's mode label: side or full.
     PanelMode,
     /// The main column header's zoom label: zoom the column or leave the zoom.
@@ -692,6 +694,37 @@ pub(crate) struct Wait<'a> {
     /// The work of the whole fleet, drawn in the header of the orchestrator's
     /// column in place of the open ask; with none the header names the ask.
     pub(crate) work: Option<super::fleet::Work>,
+    /// The panel header's mic, as the last voice read of the bound seat saw
+    /// it; with none, no read has answered and no mic is drawn.
+    pub(crate) mic: Option<Mic>,
+}
+
+/// What the panel header's mic says about the orchestrator seat's dictation,
+/// from the newest fresh read of its pane. No state reads as off: a frame
+/// without a voice word proves nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mic {
+    /// The seat's tool has no dictation ae can drive.
+    Unsupported,
+    /// No voice word in the footer, or no footer the read could classify.
+    Unknown,
+    /// Claude counts Space key events toward a recording, or transcribes.
+    Pending,
+    /// Claude records.
+    Recording,
+}
+
+impl Mic {
+    /// The word drawn after the mic.
+    #[must_use]
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Self::Unsupported => "n/a",
+            Self::Unknown => "?",
+            Self::Pending => "…",
+            Self::Recording => "rec",
+        }
+    }
 }
 
 /// Where the composer's line would land: the seat the router picked, or the
@@ -2787,6 +2820,10 @@ fn zoom_head(
 
 /// The word of the panel header's pane target, plain whatever the icons.
 const PANE_WORD: &str = "pane";
+/// The panel header's mic, drawn with icons on.
+const MIC_ICON: &str = "🎤";
+/// The panel header's mic, drawn with icons off.
+const MIC_WORD: &str = "mic";
 
 /// The panel header's right end: the mode label, `F full` or `F side`, a
 /// click target, before it `pane` while the panel is bound to a running seat,
@@ -2826,6 +2863,18 @@ fn panel_head(
         put(buf, at, 0, PANE_WORD, pane, ctx.paint.fg(|p| p.title));
         layout.record(buf, Rect::new(at, 0, pane, 1), Hit::PanelPane);
         stop = at.saturating_sub(2);
+        // The mic beside it, once a voice read of that seat has answered.
+        if let Some(mic) = ctx.wait.mic {
+            let glyph = if ctx.icons { MIC_ICON } else { MIC_WORD };
+            let text = format!("{glyph} {}", mic.word());
+            let need = cells(Span::raw(text.as_str()).width());
+            if stop >= left + need {
+                let at = stop - need;
+                put(buf, at, 0, &text, need, ctx.paint.fg(|p| p.title));
+                layout.record(buf, Rect::new(at, 0, need, 1), Hit::PanelMic);
+                stop = at.saturating_sub(2);
+            }
+        }
     }
     if let Stand::Full { note: Some(note) } = stand {
         let need = cells(note.chars().count());
@@ -4132,8 +4181,9 @@ const HELD_KEYS: [(&str, &str); 4] = [
     ("^C", "quit; a kept draft clears first"),
     ("any other", "swallowed; a paste too"),
 ];
-const MOUSE_KEYS: [(&str, &str); 4] = [
+const MOUSE_KEYS: [(&str, &str); 5] = [
     ("click", "select a session, tab, seat or turn"),
+    ("click mic", "panel: Claude dictation; not enabled yet"),
     ("wheel", "scroll 3 rows (the list: 1 session)"),
     ("drag", "a border resizes a column or the list"),
     (
@@ -7944,6 +7994,7 @@ mod tests {
         };
         row("oo", &["open seat", "panel", "orchestrator pane"]);
         row("O F", &["orchestrator panel", "click pane"]);
+        row("click mic", &["panel", "dictation", "not enabled yet"]);
     }
 
     /// With a seat viewed the keys row says `viewing` and `Esc chat`,
