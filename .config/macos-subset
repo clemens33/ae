@@ -189,6 +189,7 @@ helper tests/it/deliver/d54_voice.rs::app = deliver::d54_voice::before_measured_
 helper tests/it/deliver/d54_voice.rs::checked = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
 helper tests/it/deliver/d54_voice.rs::input = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
 helper tests/it/deliver/d54_voice.rs::orchestrator = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
+helper tests/it/deliver/d54_voice.rs::pane_frame = deliver::d54_voice::warming::measured_hold_after_buffer_load_refuses_overview_before_paste
 helper tests/it/deliver/d54_voice.rs::rig_world = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
 helper tests/it/deliver/d54_voice.rs::until_screen = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
 helper tests/it/deliver/d54_voice.rs::untouched = deliver::d54_voice::before_measured_recording_states_the_mic_refuses_without_a_key
