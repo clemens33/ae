@@ -63,6 +63,14 @@ fn at_panel(tab: &mut Tab, check: &'static str, which: &str) -> Checked {
         "topic" => ("[data-role=tab-all]", "[data-panel=all]"),
         _ => unreachable!("unknown form location"),
     };
+    let topics_visible = tab
+        .eval(
+            "(document.querySelector('[data-role=view-topics]')?.getClientRects().length ?? 0) > 0",
+        )
+        .map_err(|why| Failed::new(check, why))?;
+    if topics_visible == Value::Bool(true) {
+        tab.click_selector(check, "[data-role=view-topics]")?;
+    }
     tab.click_selector(check, select)?;
     wait(
         tab,

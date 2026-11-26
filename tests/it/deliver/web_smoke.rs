@@ -33,8 +33,9 @@
 //! `web_signedout_browser`): a page whose session is gone asks the listener
 //! once and then stops until a code is redeemed in its tab. The compose cases
 //! (`web_compose_browser_spec`), the topic tab cases
-//! (`web_topic_tabs_browser_spec`) and then the tab lifecycle cases
-//! (`web_topic_lifecycle_browser_spec`) follow, each on listeners of their own.
+//! (`web_topic_tabs_browser_spec`), the tab lifecycle cases
+//! (`web_topic_lifecycle_browser_spec`) and then the side panel cases
+//! (`web_side_panel_browser_spec`) follow, each on listeners of their own.
 //!
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
@@ -46,8 +47,8 @@
 //! line hiding the line but leaving its countdown to send it one second after
 //! its deadline. That run must fail at `s3a-undo (1440x900 dark)`: `just
 //! web-smoke plant-undo` passes only when it fails there and nowhere else.
-//! `AE_WEB_SMOKE_PLANT=tab` serves `app.mjs` without the topic tab's mousedown
-//! `preventDefault`. That run must fail at `tab-focus-kept (1440x900 dark)`:
+//! `AE_WEB_SMOKE_PLANT=tab` serves `app.mjs` without the side panel row's
+//! mousedown `preventDefault`. That run must fail at `tab-focus-kept (1440x900 dark)`:
 //! `just web-smoke plant-tab` passes only when it fails there and nowhere else.
 
 use std::collections::BTreeMap;
@@ -114,8 +115,8 @@ const WALK_PLANTED: &str = "onClick=${() => act(\"ask\")}";
 const UNDO_GUARD: &str = "clearTimeout(r.timer);\n      r.phase = \"idle\";";
 const UNDO_PLANTED: &str = "r.phase = \"idle\";\n      setTimeout(() => {\n        r.phase = \"count\";\n        api.fire(key);\n      }, Math.max(0, r.deadline - Date.now()) + 1000);";
 
-/// A topic tab's focus guard as `app.mjs` serves it, and what the tab plant
-/// serves instead: the same tab without its mousedown `preventDefault`.
+/// A side panel row's focus guard as `app.mjs` serves it, and what the tab plant
+/// serves instead: the same row without its mousedown `preventDefault`.
 const TAB_GUARD: &str =
     "onMouseDown=${(press) => press.preventDefault()}\n    onClick=${() => select(slug)}";
 const TAB_PLANTED: &str = "onClick=${() => select(slug)}";
@@ -551,9 +552,9 @@ fn live_web_smoke() {
             ));
         }
     }
-    // The S3a compose cases follow on the same tab, then the topic tab cases and
-    // the tab lifecycle cases, each only when every earlier check passed, so a
-    // plant that fails an earlier check never reaches them.
+    // The S3a compose cases follow on the same tab, then the topic tab cases, the
+    // tab lifecycle cases and the side panel cases, each only when every earlier
+    // check passed, so a plant that fails an earlier check never reaches them.
     if failure.is_none() {
         let ran = web_compose_browser_spec::check_s3a(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
@@ -566,6 +567,10 @@ fn live_web_smoke() {
         let ran = web_topic_lifecycle_browser_spec::check_t2(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
     }
+    if failure.is_none() {
+        let ran = web_side_panel_browser_spec::check_t4(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
+    }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
     tab.close();
@@ -576,7 +581,7 @@ fn live_web_smoke() {
     }
     println!(
         "web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage, the \
-         compose cases, the topic tab cases and the tab lifecycle cases"
+         compose cases, the topic tab cases, the tab lifecycle cases and the side panel cases"
     );
 }
 
@@ -1087,8 +1092,8 @@ impl Tab {
         }
     }
 
-    /// The planted fault: `app.mjs` served with its topic row's or topic tab's
-    /// focus guard removed, with the walk's Keep sending the Ask line, or with
+    /// The planted fault: `app.mjs` served with its topic row's or side panel
+    /// row's focus guard removed, with the walk's Keep sending the Ask line, or with
     /// an owner line's Undo leaving its countdown running; every other byte and
     /// header as the listener sent them.
     fn plant(&mut self, params: &Value) {
@@ -1107,7 +1112,7 @@ impl Tab {
         let (guard, planted, what) = match self.fault {
             Some("walk") => (WALK_GUARD, WALK_PLANTED, "walk Keep buttons"),
             Some("undo") => (UNDO_GUARD, UNDO_PLANTED, "owner line Undo cancels"),
-            Some("tab") => (TAB_GUARD, TAB_PLANTED, "topic tab focus guards"),
+            Some("tab") => (TAB_GUARD, TAB_PLANTED, "side panel row focus guards"),
             _ => (ROW_GUARD, ROW_PLANTED, "topic row focus guards"),
         };
         let sites = text.matches(guard).count();
@@ -1152,8 +1157,8 @@ impl Tab {
             );
         } else if self.fault == Some("tab") {
             println!(
-                "web-smoke plant: /assets/app.mjs served without the topic tab's mousedown \
-                 preventDefault (1 site); tab-focus-kept must fail"
+                "web-smoke plant: /assets/app.mjs served without the side panel row's \
+                 mousedown preventDefault (1 site); tab-focus-kept must fail"
             );
         } else if self.fault == Some("walk") {
             println!(
@@ -1434,3 +1439,6 @@ mod web_topic_lifecycle_browser_spec;
 
 #[path = "web_signedout_browser.rs"]
 mod web_signedout_browser;
+
+#[path = "web_side_panel_browser_spec.rs"]
+mod web_side_panel_browser_spec;

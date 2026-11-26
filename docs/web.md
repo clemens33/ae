@@ -53,42 +53,62 @@ a `304` and costs no render.
 Every text from an agent is shown as plain text, never as markup: control characters are removed,
 a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
 
-## Topic tabs
+## Topic side panel
 
-A tab bar sits under the header. **All** comes first and is open when the page loads. A topic has a
-tab while it needs you: an open DECIDE item, the state `needs` or `moving`, or a filed topic (one
-with a title, a state or a review) whose state word cannot be read. The tabs follow the desk's
-order. A topic without a tab opens from the All tab, from the Revisit line or from the strip, and
-gets a tab that lasts only while it is open. A tab whose topic no longer needs you leaves the bar,
-unless you pinned it, and when it was open the page shows All. A narrow screen shows the chat or
-the panel, with **Chat** and **Overview** (or **Topic**) at the bottom; a tab press shows the
-chat.
+A panel on the left lists the topics. **All** comes first and is selected when the page loads.
+Below it come these groups; a topic is in the first one that fits, and an empty group is not shown:
 
-- **Pins.** The button at the top of a topic's card pins its tab or unpins it. A pinned tab is
-  marked with a star and stays, whatever its topic's state, until you unpin it. When you unpin the
-  open tab, it stays until you open another one. At most 32 tabs are pinned: then the button of
-  another topic is disabled and the card says why. Your browser keeps the pins (see
-  [Security](#security)). A pin can outlive its topic: when the limit is reached and no pinned tab
-  shows, clearing the site's data in the browser frees the pins.
-- **Closed topics.** A topic in state `closed` leaves the bar unless it is pinned, and when it was
-  open the page shows All. While a DECIDE item that tags it is open, it keeps its tab. When you
-  open a topic that is already closed, its tab lasts while it is open.
-- **Unread.** A tab shows the number of turns with its tag that arrived since you last had it open
-  in this page; opening it clears the number. Your own turns do not count. A tag that a turn gets
-  after it arrived does not count either: a new topic can tag older turns. A turn that first shows
-  up more than 120 s older than the newest one already seen is taken for an old one that came back
-  and does not count, even when it is new. The counts live in the page: after a reload every tab
-  starts at zero, and the turns the page reads first are not unread.
-- **The bar** is one line that scrolls sideways, by touch, with a trackpad or with the mouse
-  wheel. The tab you select scrolls into view, and stays in view when the bar changes around it.
-  When you scroll away from it, the bar does not pull you back. With many topics, **All topics**
-  and its search reach every one.
+1. **Needs you:** the state `needs`, or an open DECIDE item tags it.
+2. **Moving:** the state `moving`.
+3. **Pinned:** a pinned topic that fits no group above.
+4. **Other:** a filed topic (one with a title, a state or a review) whose state word cannot be
+   read.
+5. **Quiet, parked, closed:** every other topic, also a row that only an open ask tags.
+
+Inside a group the topic with the newest activity comes first: the later of its last review and the
+newest chat turn that tags it. The last group starts folded. Its heading opens or folds it, and a
+reload folds it again; while folded, it still shows the selected topic. A row shows the state dot,
+the title in at most two lines (the row's tooltip has the whole title, the slug, the state and the
+counts), the unread number and the number of open DECIDE items that tag the topic.
+
+Selecting a row shows the topic's chat, tags the draft and shows its card on the right. A topic in
+the last group also opens from All, the Revisit line or the strip, and stays selected until you
+select another one. A selected topic that moves from a group above into the last one is no longer
+selected, and the page shows All. The panel is 260 px wide (220 px below 1100 px) and scrolls on
+its own. A narrow screen (up to 759 px) shows one view at a time, chosen at the bottom:
+**Topics** (the panel), **Chat** or **Overview** (with a topic selected, **Topic**). The page
+opens on Chat, and a row press shows the chat.
+
+- **Pins.** The button at the top of a topic's card pins or unpins it. A pinned topic is marked
+  with a star and stays out of the last group, whatever its state, until you unpin it. When you
+  unpin the selected topic, it stays selected until you select another one. At most 32 topics are
+  pinned: then the button of another topic is disabled and the card says why. Your browser keeps
+  the pins (see [Security](#security)). A pin can outlive its topic: when the limit is reached and
+  no pinned topic shows, clearing the site's data in the browser frees the pins.
+- **Closed topics.** A closed topic is in the last group unless it is pinned, or a DECIDE item
+  that tags it is open. When a topic moves into the last group because it closed while selected,
+  the page shows All. A topic that is already closed when you open it stays selected until you
+  select another one.
+- **Unread.** A row shows the number of turns with its tag that arrived since you last had the
+  topic selected in this page; selecting it clears the number. Your own turns do not count. A tag
+  that a turn gets after it arrived does not count either: a new topic can tag older turns. A turn
+  that first shows up more than 120 s older than the newest one already seen is taken for an old
+  one that came back and does not count, even when it is new. The counts live in the page: after a
+  reload every topic starts at zero, and the turns the page reads first are not unread. The folded
+  group shows no total.
+- **Scrolling.** The panel scrolls by touch, with a trackpad or with the mouse wheel. The row you
+  select scrolls into view, and stays in view when rows move around it. When you scroll away from
+  it, the panel does not pull you back. With many topics, **All topics** and its search reach
+  every one.
+- **Known limit.** The rows keep the `tab` role inside a vertical `tablist`, which WAI-ARIA gives
+  only tabs to own. The group headings and the fold button sit inside it too, so a screen reader
+  may not announce the groups well.
 
 - **All** shows the whole chat. Its panel holds the new-topic line first, then the Revisit line,
   every DECIDE item under **Decisions**, **All topics** with a search over slug and title, and the
   desk's gaps. A decision that tags no topic is answered there; a tagged one is listed with a link
-  to each tag's tab.
-- A topic tab shows the chat turns tagged with it, and its panel the topic's card with the
+  to each tag's topic.
+- A selected topic shows the chat turns tagged with it, and the right panel its card with the
   decisions that wait on it. A turn is tagged with each `#<slug>` of a desk topic in the first 512
   bytes of its text, read as the board reads tags; a tag cut off by that limit does not count.
   `GET /api/state` names them in each row's `tags`. A topic with no tagged turn says so.
@@ -112,15 +132,15 @@ chat.
   Archives that are being written, damaged or not proven to come from the seat are counted, not
   read.
 
-Clicking a row opens the topic's tab. `GET /api/topic/<slug>` serves its card from the same
-snapshot as the chat.
+Clicking a row in **All topics** selects the topic. `GET /api/topic/<slug>` serves its card from
+the same snapshot as the chat.
 
 ## Revisit and the walk
 
-The All tab holds the Revisit line: one quiet topic by name, with its next step (else its last
+All holds the Revisit line: one quiet topic by name, with its next step (else its last
 state, else what it is), its last review time, **Open topic**, **Next** and **Walk the quiet
-topics (n)**. On a narrow screen the same line also sits above the All tab's chat. The shown topic
-lives only in the browser tab, and one that stops being quiet falls back to the first.
+topics (n)**. On a narrow screen the same line also sits above the chat while All is selected. The
+shown topic lives only in the browser tab, and one that stops being quiet falls back to the first.
 
 - Quiet topics are ordered by last review, the oldest first. A review time that is no
   `YYYY-MM-DDTHH:MM:SSZ` (empty or hand-edited) counts as the oldest, and equal times go by slug.
@@ -176,9 +196,9 @@ refusal shows verbatim. Its opening also records `origin` as `web:local`, and th
 `requests --verify` prints it, as its `origin:` line
 ([origin on an event](internals/events.md)).
 
-On a topic tab a chip names the tag, and the draft is sent as `#<slug>: <draft>`; the chip's **×**
-sends that one draft without it. While an attempt is open the chip shows the tag that attempt
-carries. Ctrl+Enter or **Send** sends; opening a tab keeps the draft and the focus.
+With a topic selected, a chip names the tag, and the draft is sent as `#<slug>: <draft>`; the
+chip's **×** sends that one draft without it. While an attempt is open the chip shows the tag that
+attempt carries. Ctrl+Enter or **Send** sends; selecting a topic keeps the draft and the focus.
 
 - Every draft gets one draft id from `GET /api/nonce`. The page posts the text, the draft id and
   the route it shows (`POST /api/send`) and repeats that same post until it gets a receipt, so a
@@ -214,7 +234,7 @@ Two more lines go to the orchestrator's main seat through the same send path, th
 the same admission as the composer, so the cap of five open asks holds and a cap refusal shows
 verbatim.
 
-- **Answer a decision.** A DECIDE item is answered on the tab of each topic it tags, or on All
+- **Answer a decision.** A DECIDE item is answered on the card of each topic it tags, or on All
   when it tags none. The page sends one chat line, `D<n> <answer>`: for example the item `D67` and
   the answer `1` send `D67 1`.
   - A text `Question? 1) a 2) b (recommend 2) #slug` offers the options as one choice. The options
@@ -231,7 +251,7 @@ verbatim.
     It does not answer the item.
 - **Reserved items.** An item tagged `#reserved` is shown and cannot be answered here: confirm it
   in the orchestrator pane or on Telegram. This is the page's rule, not a server one.
-- **Ask for a new topic.** The box at the top of the All tab takes a title of 1 to 80 scalar values
+- **Ask for a new topic.** The box at the top of All's panel takes a title of 1 to 80 scalar values
   and suggests a slug: umlauts folded, lowercase, every other run of characters one hyphen, at most
   48 characters. **Edit slug** turns the slug into a field of its own, and it stays one. The line is
   `#<slug> new <title>`, shown before it is sent. A slug that does not fit `[a-z0-9][a-z0-9-]*` or
@@ -317,7 +337,7 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
 - Every cell checks the Revisit line: the oldest quiet topic shows, Next cycles through the
   fixture's three quiet topics and wraps (`revisit`), and on a narrow screen the walk dialog fits
   the viewport with the focus on Keep (`walk-fits`).
-- The 1440x900 dark cell opens the All tab, clicks Send and waits for the `sent to …` receipt with its request id;
+- The 1440x900 dark cell selects All, clicks Send and waits for the `sent to …` receipt with its request id;
   the fake TUI must have received the draft once (`sent`). It then walks the three quiet topics,
   each verdict reaching the fake TUI once as the exact line (`walk-keep`, `walk-ask`,
   `walk-close`), and runs the edge cases against a held send endpoint: no dismissal while a
@@ -347,15 +367,19 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   page, a card that is behind the board, a board that changes during the countdown, a route that
   changes, a lost receipt and Check again, the chip of a new topic and a cap refusal. While the
   new topic waits, the rows its open ask adds appear without moving its form or **Check again**.
-- After the compose cell, the topic tab cases run on listeners of their own in 1440x900 dark
-  (`t1-*` and `tab-focus-kept`): which topics have a tab, the chat each tab shows, a tab press
-  that keeps the draft and its focus, choices with and without a recommendation, reserved items,
-  an answer by choice with Undo beside a discussion, a board that changes under a choice, and
-  tagged, untagged and verdict-like drafts as the fake TUI receives them.
-- After the topic tab cases, the tab lifecycle cases run on a listener of their own, in 1440x900
-  dark and 360x740 dark (`t2-*`): the mouse wheel over the bar, the selected tab in view and a
-  scrolled bar left alone, unread counts across a new conversation, pins across a reload and
-  another tab's write, a closed topic's tab, and a damaged or hostile stored pin list.
+- After the compose cell, the topic selection cases run on listeners of their own in 1440x900
+  dark (`t1-*` and `tab-focus-kept`): which topics have a row, the chat each one shows, a row
+  press that keeps the draft and its focus, choices with and without a recommendation, reserved
+  items, an answer by choice with Undo beside a discussion, a board that changes under a choice,
+  and tagged, untagged and verdict-like drafts as the fake TUI receives them.
+- After the selection cases, the lifecycle cases run on a listener of their own, in 1440x900 dark
+  and 360x740 dark (`t2-*`): the mouse wheel over the panel, the selected row in view and a
+  scrolled panel left alone, unread counts across a new conversation, pins across a reload and
+  another tab's write, a closed topic's row, and a damaged or hostile stored pin list.
+- Last, the side panel cases run on a listener of their own (`t4-*`): the groups, their order and
+  the fold, newest activity first, a long hostile title in two lines, the need colour and its
+  contrast in both schemes, a topic opened from the folded group, the columns at 1440, 1000 and
+  760 px, and the three views at 360x740.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
@@ -365,5 +389,5 @@ with the walk's Keep sending the Ask line and passes only when the run fails at 
 (1440x900 dark)` and at no other check. `just web-smoke plant-undo` serves `app.mjs` with the Undo
 of an owner line hiding the line while its countdown still sends it one second late, and passes
 only when the run fails at `s3a-undo (1440x900 dark)` and at no other check. `just web-smoke
-plant-tab` serves `app.mjs` without the topic tab's mousedown `preventDefault` and passes only
-when the run fails at `tab-focus-kept (1440x900 dark)` and at no other check.
+plant-tab` serves `app.mjs` without the side panel row's mousedown `preventDefault` and passes
+only when the run fails at `tab-focus-kept (1440x900 dark)` and at no other check.

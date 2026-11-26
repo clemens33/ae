@@ -16,7 +16,7 @@ const NO_SESSION = "open the newest link from ae web";
 const SEND_AGAIN_MS = 1000;
 const SEND_TRIES = 120;
 const UNREACHABLE = "ae web is not reachable";
-// The one thing the browser keeps beyond the session: the slugs of the pinned tabs, nothing else.
+// The one thing the browser keeps beyond the session: the slugs of the pinned topics, nothing else.
 const PINS_KEY = "ae-web-pins";
 const PINS_MAX = 32;
 // A turn that first shows up this much older than the newest turn already seen is
@@ -49,7 +49,7 @@ function readPins() {
   return pins;
 }
 
-// The pinned tabs, and a press that pins or unpins one. Every tab of this address
+// The pinned topics, and a press that pins or unpins one. Every tab of this address
 // shares the store, so a press reads it again before it writes, and a change made
 // in another tab is read back at once. Once the store refuses a write, the pins
 // live in this page only until it is reloaded: the page neither writes nor reads
@@ -85,12 +85,12 @@ function usePins() {
   return [pins, press];
 }
 
-// What each tab has not shown yet, kept in this page only. A turn is known by
+// What each topic has not shown yet, kept in this page only. A turn is known by
 // whether it is the owner's, its time, its speaker and its text. For each one the
 // book holds an entry per copy: the round that first showed it and the tags it
 // carried then. It follows the turns of the newest snapshot, and those that went
-// missing but could still come back as new. For each tab it holds the round the tab
-// was last open in.
+// missing but could still come back as new. For each topic it holds the round the
+// topic was last open in.
 function newBook() {
   return { state: null, started: false, round: 0, high: 0, turns: new Map(), shown: [], opened: new Map() };
 }
@@ -139,7 +139,7 @@ function admit(book, state) {
   book.started = true;
 }
 
-// How many turns of each tag arrived since its tab was last open. The owner's own
+// How many turns of each tag arrived since its topic was last open. The owner's own
 // lines never count, and neither does a tag a turn got after it arrived.
 function unreadCounts(book, rows) {
   const counts = new Map();
@@ -242,7 +242,7 @@ function Row({ row }) {
   </article>`;
 }
 
-// The shared chat; on a topic's tab, the turns the server tagged with it.
+// The shared chat; with a topic selected, the turns the server tagged with it.
 function Stream({ chat, tag }) {
   const end = useRef(null);
   const pinned = useRef(true);
@@ -316,17 +316,26 @@ function TopicRow({ row, group, choose }) {
   </button>`;
 }
 
-// A topic keeps a tab while it needs the owner: an open DECIDE item, the state
-// needs or moving, or a filed topic whose state word cannot be read. Any other
-// topic has a tab only while the owner has opened it.
-const keepsTab = (row) =>
-  row.waits.some((wait) => wait.kind === "decide") ||
-  row.state === "needs" ||
-  row.state === "moving" ||
-  (row.state === null && filed(row));
+// How many open DECIDE items name a topic, and the words for them.
+const decides = (row) => row.waits.filter((wait) => wait.kind === "decide").length;
+const decisionWords = (count) => count + (count === 1 ? " decision" : " decisions");
 
-// A pinned topic keeps its tab whatever the desk says about it.
-const keeps = (row, pins) => pins.includes(row.slug) || keepsTab(row);
+// The side panel's groups, top to bottom. A topic sits in the first group whose
+// `has` it meets, so it is listed once. The last group is folded: a topic there
+// shows while the fold is open or while it is the selected one.
+const SIDE_GROUPS = [
+  { id: "needs", label: "Needs you", has: (row) => row.state === "needs" || decides(row) > 0 },
+  { id: "moving", label: "Moving", has: (row) => row.state === "moving" },
+  { id: "pinned", label: "Pinned", has: (row, pins) => pins.includes(row.slug) },
+  { id: "other", label: "Other", has: (row) => row.state === null && filed(row) },
+  { id: "rest", label: "Quiet, parked, closed", fold: true, has: () => true },
+];
+const groupOf = (row, pins) => SIDE_GROUPS.find((group) => group.has(row, pins));
+
+// Whether a topic has a row of its own, outside the fold. Without the pins, only
+// a topic that needs the owner has one.
+const keeps = (row, pins) => !groupOf(row, pins).fold;
+const keepsUnpinned = (row) => keeps(row, []);
 
 function deskRow(desk, slug) {
   for (const group of desk ? desk.groups : []) {
@@ -338,32 +347,44 @@ function deskRow(desk, slug) {
   return null;
 }
 
-// What the page remembers of a topic the owner opened that keeps no tab: its
-// slug, and whether it was closed then.
+// What the page remembers of a topic the owner opened that has no row of its
+// own: its slug, and whether it was closed then.
 const opening = (row) => ({ slug: row.slug, closed: row.state === "closed" });
 
-// The tabs after All: the topics that keep one, in the desk's order, then
-// `temp`, the topic the owner opened that keeps none. It lives in this page only
-// and goes when its topic closes, unless it was closed when it was opened.
-function topicTabs(desk, pins, temp) {
-  const tabs = [];
-  let opened = null;
-  for (const group of desk.groups) {
-    for (const row of group.rows) {
-      const one = { row, group: group.group, pinned: pins.includes(row.slug) };
-      if (keeps(row, pins)) {
-        tabs.push(one);
-      } else if (temp && row.slug === temp.slug && (temp.closed || row.state !== "closed")) {
-        opened = one;
-      }
+// Whether a topic may stay selected: it has a row of its own, or it is `temp`,
+// the one the owner opened, and has not closed since, unless it was closed when
+// it was opened. `temp` lives in this page only.
+const selectable = (row, pins, temp) =>
+  keeps(row, pins) || (!!temp && row.slug === temp.slug && (temp.closed || row.state !== "closed"));
+
+// The desk's topics in the side panel's groups, each newest activity first: the
+// later of the last review and the newest chat turn that names the topic. The
+// sort is stable, so a tie keeps the desk's order. An empty group is left out.
+function sideGroups(desk, pins, turns) {
+  const spoken = new Map();
+  for (const turn of turns) {
+    for (const tag of turn.tags || []) {
+      spoken.set(tag, Math.max(spoken.get(tag) || 0, turn.micros));
     }
   }
-  return opened ? tabs.concat(opened) : tabs;
+  const lists = SIDE_GROUPS.map((group) => ({ group, topics: [] }));
+  for (const { group: server, rows } of desk.groups) {
+    for (const row of rows) {
+      // In microseconds, as a turn's time is; an unreadable review counts as 0.
+      const at = Math.max(Date.parse(row.reviewed) * 1000 || 0, spoken.get(row.slug) || 0);
+      const list = lists[SIDE_GROUPS.indexOf(groupOf(row, pins))];
+      list.topics.push({ row, server, pinned: pins.includes(row.slug), at });
+    }
+  }
+  for (const list of lists) {
+    list.topics.sort((one, other) => other.at - one.at);
+  }
+  return lists.filter((list) => list.topics.length);
 }
 
-// One tab. A press keeps the focus where it was, so a draft being typed stays
-// focused.
-function Tab({ role, slug, label, title, group, pinned, unread, active, select }) {
+// One row of the side panel. A press keeps the focus where it was, so a draft
+// being typed stays focused.
+function Tab({ role, slug, label, title, group, pinned, unread, decisions, active, select }) {
   return html`<button
     type="button"
     role="tab"
@@ -379,34 +400,37 @@ function Tab({ role, slug, label, title, group, pinned, unread, active, select }
     ${group ? html`<span class=${"dot " + group}></span>` : null}
     <span class="tl">${label}</span>
     ${unread ? html`<span class="n" data-role="unread">${unread}</span>` : null}
+    ${decisions ? html`<span class="dc" data-role="decisions">${decisionWords(decisions)}</span>` : null}
   </button>`;
 }
 
-// How far the bar has to move to show its selected tab whole: below zero to the
-// left, above zero to the right, zero when the tab is in view.
-function cutOff(bar) {
-  const tab = bar.querySelector("[aria-selected=true]");
-  if (!tab) {
+// How far the panel has to scroll to show its selected row whole: below zero up,
+// above zero down, zero when the row is in view.
+function cutOff(panel) {
+  const row = panel.querySelector("[aria-selected=true]");
+  if (!row) {
     return 0;
   }
-  const box = bar.getBoundingClientRect();
-  const own = tab.getBoundingClientRect();
-  const left = own.left - box.left;
-  const right = own.right - box.right;
-  return left < 0 ? left : Math.max(0, Math.min(right, left));
+  const box = panel.getBoundingClientRect();
+  const own = row.getBoundingClientRect();
+  const top = own.top - box.top;
+  const bottom = own.bottom - box.bottom;
+  return top < 0 ? top : Math.max(0, Math.min(bottom, top));
 }
 
-// All first, then one tab per topic of `tabs`; `active` is "" for All. The bar
-// moves to show the selected tab when the selection changes, and when a change
-// would push a tab it showed whole out of view. A tab the owner scrolled away
-// from stays away.
-function TabBar({ tabs, unread, active, select }) {
-  const bar = useRef(null);
+// All first, then the groups; `active` is "" for All. The panel scrolls to show
+// the selected row when the selection changes, and when a change would push a row
+// it showed whole out of view. A row the owner scrolled away from stays away.
+// While a narrow screen hides the panel, it neither scrolls nor reads a scroll.
+// Whether the last group is open lives in this page only.
+function SidePanel({ lists, unread, active, select }) {
+  const panel = useRef(null);
   const follow = useRef(true);
   const last = useRef(active);
+  const [unfolded, setUnfolded] = useState(false);
   const show = useCallback(() => {
-    if (follow.current && bar.current) {
-      bar.current.scrollLeft += cutOff(bar.current);
+    if (follow.current && panel.current && panel.current.clientHeight) {
+      panel.current.scrollTop += cutOff(panel.current);
     }
   }, []);
   useLayoutEffect(() => {
@@ -421,9 +445,11 @@ function TabBar({ tabs, unread, active, select }) {
     return () => window.removeEventListener("resize", show);
   }, []);
   const scrolled = (event) => {
-    follow.current = Math.abs(cutOff(event.currentTarget)) <= 1;
+    if (event.currentTarget.clientHeight) {
+      follow.current = Math.abs(cutOff(event.currentTarget)) <= 1;
+    }
   };
-  // A press on the open tab shows it whole again, also after a scroll away.
+  // A press on the selected row shows it whole again, also after a scroll away.
   const pick = (slug) => {
     if (slug === active) {
       follow.current = true;
@@ -431,36 +457,63 @@ function TabBar({ tabs, unread, active, select }) {
     }
     select(slug);
   };
-  // A mouse wheel turns up and down; over the bar that moves the bar sideways.
-  const wheel = ({ deltaX, deltaY, deltaMode, currentTarget }) => {
-    if (Math.abs(deltaY) > Math.abs(deltaX)) {
-      const step = deltaMode === 1 ? 16 : deltaMode === 2 ? currentTarget.clientWidth : 1;
-      currentTarget.scrollLeft += deltaY * step;
-    }
+  const topic = ({ row, server, pinned }) => {
+    const title = row.title || row.slug;
+    const count = unread.get(row.slug) || 0;
+    const open = decides(row);
+    const words = [
+      title,
+      "#" + row.slug,
+      GROUPS[server] || server,
+      pinned && "pinned",
+      open && decisionWords(open),
+      count && count + " unread",
+    ];
+    return html`<${Tab}
+      key=${"t" + row.slug}
+      role="tab"
+      slug=${row.slug}
+      label=${title}
+      title=${words.filter(Boolean).join(" · ")}
+      group=${server}
+      pinned=${pinned}
+      unread=${count}
+      decisions=${open}
+      active=${active === row.slug}
+      select=${pick}
+    />`;
   };
-  return html`<nav class="tabbar" role="tablist" aria-label="Topics" ref=${bar} onScroll=${scrolled} onWheel=${wheel}>
+  return html`<nav
+    class="side"
+    role="tablist"
+    aria-orientation="vertical"
+    aria-label="Topics"
+    ref=${panel}
+    onScroll=${scrolled}
+  >
     <${Tab} key="all" role="tab-all" slug="" label="All" active=${!active} select=${pick} />
-    ${tabs.map(({ row, group, pinned }) => {
-      const count = unread.get(row.slug) || 0;
-      return html`<${Tab}
-        key=${"t" + row.slug}
-        role="tab"
-        slug=${row.slug}
-        label=${row.title || row.slug}
-        title=${"#" + row.slug + " · " + (GROUPS[group] || group) + (pinned ? " · pinned" : "") + (count ? " · " + count + " unread" : "")}
-        group=${group}
-        pinned=${pinned}
-        unread=${count}
-        active=${active === row.slug}
-        select=${pick}
-      />`;
+    ${lists.map(({ group, topics }) => {
+      const rows = group.fold && !unfolded ? topics.filter(({ row }) => row.slug === active) : topics;
+      return html`<div class="sgroup" data-group=${group.id} key=${group.id}>
+        ${group.fold
+          ? html`<button
+              type="button"
+              class="sg fold"
+              data-action="toggle-group"
+              aria-expanded=${unfolded ? "true" : "false"}
+              onMouseDown=${(down) => down.preventDefault()}
+              onClick=${() => setUnfolded(!unfolded)}
+            >${group.label} <span>${topics.length}</span></button>`
+          : html`<div class="sg" role="presentation">${group.label} <span>${topics.length}</span></div>`}
+        ${rows.map(topic)}
+      </div>`;
     })}
   </nav>`;
 }
 
 // The All tab's panel. The new-topic line comes first, above every list that
 // grows on its own, so no control moves under the pointer. Every decision is
-// listed; one that tags no topic is answered here, a tagged one on its tab.
+// listed; one that tags no topic is answered here, a tagged one on its topic's card.
 function AllPanel({ desk, open, revisit, lines, route }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
@@ -566,7 +619,7 @@ function Source({ origin }) {
   </span>`;
 }
 
-// A topic tab's panel: the topic's card and the decisions that wait on it.
+// The selected topic's panel: its card and the decisions that wait on it.
 function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned, full, pin }) {
   const fields = card.fields;
   // Only Quiet, Moving and Parked cards can be closed from here; a card with a
@@ -585,9 +638,9 @@ function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned,
         disabled=${full}
         onMouseDown=${(down) => down.preventDefault()}
         onClick=${() => pin(card.slug, !pinned)}
-      >${pinned ? "Unpin tab" : "Pin tab"}</button>
+      >${pinned ? "Unpin topic" : "Pin topic"}</button>
     </div>
-    ${full ? html`<p class="note">${PINS_MAX} tabs are pinned; unpin one first.</p>` : null}
+    ${full ? html`<p class="note">${PINS_MAX} topics are pinned; unpin one first.</p>` : null}
     <p class="sub">#${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
     ${WAITS.map(([kind, name]) => {
       const waits = card.waits.filter((wait) => wait.kind === kind);
@@ -849,9 +902,9 @@ const TALK_MAX = 500;
 // send (drafting or carrying), open (no receipt: the same body is asked again)
 // or sent (a decision already answered). The decision's text is part of its
 // key, so a board that changed the text starts a new record: an answer, a
-// receipt or a Check again never lands on text it was not made for. Every tab
+// receipt or a Check again never lands on text it was not made for. Every view
 // that shows one decision shares one record, and its talk, so an open attempt
-// outlives a tab change.
+// outlives a change of the selected topic.
 function makeLines(live, redraw) {
   const rec = (key, item, bind) => {
     if (!live.recs.has(key)) {
@@ -1275,7 +1328,7 @@ function LineActions({ lines, id, r, pasted, said, focus }) {
 // card that is behind the board shows its text with Answer off. A reserved
 // decision is shown and never answered here. A text that reads as numbered
 // options is answered by one of them, as `D67 2`; any other by one line. `tag`
-// is the topic whose tab shows it, for talk about it.
+// is the topic whose card shows it, for talk about it.
 function DecisionAnswer({ lines, route, item, text, decision, compose, mark, tag }) {
   const aligned = Boolean(decision) && decision.text === text;
   const reserved = aligned && decision.reserved;
@@ -1533,7 +1586,7 @@ function NewTopic({ lines, route, desk }) {
 // so the server carries a draft at most once and a check always finds its
 // receipt. While an attempt is open the draft cannot change.
 //
-// On a topic's tab, `slug`, a draft is sent as `#<slug>: <text>` and the chip
+// With the topic `slug` selected, a draft is sent as `#<slug>: <text>` and the chip
 // shows the tag. Removing it sends this one draft untagged. While an attempt is
 // made or open, the chip shows the tag that attempt carries.
 function Composer({ route, slug, untagged, setUntagged }) {
@@ -2074,8 +2127,8 @@ function App() {
   const lines = useLines(state);
   const [problem, setProblem] = useState("");
   const tag = useRef("");
-  // The open tab's topic, "" for All; the topic the owner opened that keeps no
-  // tab; whether this tab's draft goes untagged; the open topic's card, that
+  // The selected topic, "" for All; the topic the owner opened that has no row
+  // of its own; whether its draft goes untagged; the selected topic's card, that
   // answer's tag; and what a narrow screen shows, the chat or the panel.
   const [chosen, setChosen] = useState("");
   const [temp, setTemp] = useState(null);
@@ -2086,15 +2139,16 @@ function App() {
   const [cardProblem, setCardProblem] = useState("");
   const cardTag = useRef("");
   const desk = state && state.desk ? state.desk : null;
-  const tabs = desk ? topicTabs(desk, pins, temp) : [];
-  // A tab that left the bar shows All at once.
-  const active = tabs.some((one) => one.row.slug === chosen) ? chosen : "";
+  const chosenRow = chosen ? deskRow(desk, chosen) : null;
+  // A selected topic that lost its place shows All at once.
+  const active = chosenRow && selectable(chosenRow, pins, temp) ? chosen : "";
+  const lists = desk ? sideGroups(desk, pins, state.chat.rows) : [];
   const book = useRef(null);
   book.current = book.current || newBook();
   if (state && book.current.state !== state) {
     admit(book.current, state);
   }
-  // The open tab has shown every turn there is.
+  // The selected topic has shown every turn there is.
   if (active) {
     book.current.opened.set(active, book.current.round);
   }
@@ -2151,9 +2205,9 @@ function App() {
     setTemp(null);
     setUntagged(false);
   };
-  // Opens a tab, "" for All, and shows the chat or the panel on a narrow
-  // screen. A topic that keeps no tab gets one until another tab is opened.
-  // Choosing the open tab again keeps its card and its draft's tag: no new
+  // Selects a topic, "" for All, and shows the chat or the panel on a narrow
+  // screen. A topic with no row of its own has one while it is selected.
+  // Choosing the selected topic again keeps its card and its draft's tag: no new
   // snapshot would bring the card back.
   const open = (slug, shows) => {
     setCardProblem("");
@@ -2170,22 +2224,22 @@ function App() {
   const selectTab = (slug) => open(slug, "chat");
   const openTopic = (slug) => open(slug, "panel");
 
-  // Unpinning the open tab leaves it open until another one is chosen, also when
-  // nothing else keeps it.
+  // Unpinning the selected topic leaves it open until another one is chosen, also
+  // when nothing else keeps it.
   const pinTab = (slug, pin) => {
     const next = writePin(slug, pin);
     const row = deskRow(desk, slug);
     if (next.includes(slug)) {
       setTemp((before) => (before && before.slug === slug ? null : before));
-    } else if (slug === active && row && !keepsTab(row)) {
+    } else if (slug === active && row && !keepsUnpinned(row)) {
       setTemp(opening(row));
     }
   };
 
-  // A tab that left the bar is closed for good, so it does not open again by
-  // itself when it comes back. An opened tab the board or a pin now keeps is one
-  // of its own from then on, and one that was closed when opened and no longer
-  // is goes when it closes again.
+  // A selected topic that lost its place is closed for good, so it does not open
+  // again by itself when it gets one back. An opened topic the board or a pin now
+  // keeps is one of its own from then on, and one that was closed when opened and
+  // no longer is goes when it closes again.
   useEffect(() => {
     if (!desk) {
       return;
@@ -2399,10 +2453,10 @@ function App() {
   }
   return html`<div class=${"app view-" + view}>
     <${Head} state=${state} />
-    <${TabBar} tabs=${tabs} unread=${unread} active=${active} select=${selectTab} />
     ${problem ? html`<p class="problem" role="status">${problem}</p>` : null}
     ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>
+      <${SidePanel} lists=${lists} unread=${unread} active=${active} select=${selectTab} />
       <section class="chat" aria-label="Chat">
         ${current && !active && !walk
           ? html`<${Strip} entry=${current} count=${quiet.length} next=${nextRevisit} open=${openTopic} />`
@@ -2418,6 +2472,14 @@ function App() {
       ${panel}
     </main>
     <nav class="views" aria-label="Views">
+      <button
+        type="button"
+        data-role="view-topics"
+        class=${view === "topics" ? "on" : ""}
+        onClick=${() => setView("topics")}
+      >
+        Topics
+      </button>
       <button type="button" data-role="view-chat" class=${view === "chat" ? "on" : ""} onClick=${() => setView("chat")}>
         Chat
       </button>

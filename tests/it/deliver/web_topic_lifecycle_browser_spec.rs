@@ -19,6 +19,7 @@ const NARROW: Cell = Cell {
 };
 const ALL: &str = "[data-role=tab-all]";
 const PIN: &str = "button[data-action=pin]";
+const TOPICS_VIEW: &str = "[data-role=view-topics]";
 const TARGET: &str = "t2-99";
 const CURRENT: &str = "0199c0de-3122-4890-abcd-ef0123456789";
 const NEXT: &str = "0199c0de-3123-4890-abcd-ef0123456789";
@@ -27,10 +28,12 @@ const CLIPPED: &str = r#"
 const bar = document.querySelector('[role=tablist]');
 const all = bar.querySelector('[data-role=tab-all][aria-selected=true]');
 const target = bar.querySelector('[role=tab][data-slug="' + want + '"]');
-const edge = bar.getBoundingClientRect().right;
-const saw = {all: !!all, right: target?.getBoundingClientRect().right, edge,
-  left: bar.scrollLeft, width: document.documentElement.scrollWidth};
-return {ok: saw.all && saw.right > edge + 1 && saw.left < 1 && saw.width <= innerWidth, saw};
+const edge = bar.getBoundingClientRect().bottom;
+const saw = {all: !!all, allVisible: all?.getBoundingClientRect().bottom <= edge,
+  bottom: target?.getBoundingClientRect().bottom, edge, offset: bar.scrollTop,
+  width: document.documentElement.scrollWidth};
+return {ok: bar.clientHeight > 0 && saw.all && saw.allVisible && saw.bottom > edge + 1 &&
+  saw.offset < 1 && saw.width <= innerWidth, saw};
 "#;
 
 const VISIBLE: &str = r"
@@ -38,10 +41,10 @@ const bar = document.querySelector('[role=tablist]');
 const selected = bar.querySelector('[role=tab][aria-selected=true]');
 const outer = bar.getBoundingClientRect();
 const inner = selected?.getBoundingClientRect();
-const saw = {slug: selected?.dataset.slug, left: inner?.left, right: inner?.right,
-  barLeft: outer.left, barRight: outer.right, offset: bar.scrollLeft};
-return {ok: saw.slug === want && saw.offset > 0 &&
-  saw.left >= saw.barLeft - 1 && saw.right <= saw.barRight + 1, saw};
+const saw = {slug: selected?.dataset.slug, top: inner?.top, bottom: inner?.bottom,
+  panelTop: outer.top, panelBottom: outer.bottom, offset: bar.scrollTop};
+return {ok: inner?.height > 0 && saw.slug === want && saw.offset > 0 &&
+  saw.top >= saw.panelTop - 1 && saw.bottom <= saw.panelBottom + 1, saw};
 ";
 
 const WHEEL_POINT: &str = r"
@@ -49,22 +52,23 @@ const bar = document.querySelector('[role=tablist]');
 const r = bar.getBoundingClientRect();
 const x = Math.floor(r.left + r.width / 2);
 const y = Math.floor(r.top + r.height / 2);
-const saw = {x, y, canScroll: bar.scrollWidth > bar.clientWidth};
+const saw = {x, y, canScroll: bar.scrollHeight > bar.clientHeight};
 return {ok: saw.canScroll && bar.contains(document.elementFromPoint(x, y)), x, y, saw};
 ";
 
 const WHEEL_MOVED: &str = r"
 const bar = document.querySelector('[role=tablist]');
-const saw = bar.scrollLeft;
-return {ok: saw > 0, saw};
+const saw = {offset: bar.scrollTop, page: scrollY};
+return {ok: saw.offset > 0 && saw.page === 0, saw};
 ";
 
 const SCROLL_STAYS: &str = r"
 const bar = document.querySelector('[role=tablist]');
 const selected = bar.querySelector('[role=tab][aria-selected=true]');
 const marker = bar.querySelector('[data-slug=t2-00]');
-const saw = {left: bar.scrollLeft, slug: selected?.dataset.slug, marker: !!marker};
-return {ok: saw.marker && saw.slug === want && saw.left < 1, saw};
+const clipped = selected?.getBoundingClientRect().bottom > bar.getBoundingClientRect().bottom + 1;
+const saw = {offset: bar.scrollTop, slug: selected?.dataset.slug, marker: !!marker, clipped};
+return {ok: saw.marker && saw.slug === want && saw.offset < 1 && saw.clipped, saw};
 ";
 
 const KNOWN_LATE: &str = r"
@@ -297,20 +301,22 @@ fn overflow(tab: &mut Tab, rig: &Rig) -> Checked {
     ok(WHEEL, WIDE);
 
     tab.view(NARROW);
+    tab.click_selector(SCROLL, TOPICS_VIEW)?;
     script(
         tab,
         SCROLL,
-        "document.querySelector('[role=tablist]').scrollLeft = 0",
+        "document.querySelector('[role=tablist]').scrollTop = 0",
     )?;
     wait(tab, SCROLL, CLIPPED, TARGET)?;
     tab.click(SCROLL, "panel")?;
-    // A tab click would scroll the bar inside the harness before the product acted.
+    // A side row click would scroll that row inside the harness before the product acted.
     open_row(tab, SCROLL, TARGET)?;
+    tab.click_selector(SCROLL, TOPICS_VIEW)?;
     wait(tab, SCROLL, VISIBLE, TARGET)?;
     script(
         tab,
         SCROLL,
-        "document.querySelector('[role=tablist]').scrollLeft = 0",
+        "document.querySelector('[role=tablist]').scrollTop = 0",
     )?;
     memo(rig, "t2-00", "title: Newly inserted | state: needs");
     wait(tab, SCROLL, SCROLL_STAYS, TARGET)?;

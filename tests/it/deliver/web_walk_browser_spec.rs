@@ -67,6 +67,7 @@ pub(super) fn check_revisit(tab: &mut Tab, cell: Cell) -> Checked {
             "Input.insertText",
             Value::obj([("text", Value::str(draft))]),
         );
+        tab.click_selector("revisit", "[data-role=view-topics]")?;
         tab.click_selector("revisit", "[data-role=tab][data-slug=smoke]")?;
         tab.holds(
             "revisit",
@@ -74,6 +75,7 @@ pub(super) fn check_revisit(tab: &mut Tab, cell: Cell) -> Checked {
              return {ok: saw === 'true', saw};",
             "",
         )?;
+        tab.click_selector("revisit", "[data-role=view-topics]")?;
         tab.click_selector("revisit", "[data-role=tab-all]")?;
         shown(tab, ".pq", "s2-a")?;
         tab.holds(
