@@ -443,3 +443,157 @@ fn a_warming_frame_after_the_first_enter_prevents_a_retry_enter() {
         "no retry Enter while warming: {code:?}: {why}"
     );
 }
+
+const MEASURED_HOLD: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-holding-2.1.332-120x41.txt");
+const MEASURED_HOLD_STYLED: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-holding-2.1.332-120x41.esc");
+const MEASURED_SPEECH: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-speaking-2.1.332-120x41.txt");
+
+#[test]
+fn measured_hold_is_the_right_aligned_label_and_waveform_at_the_current_box() {
+    use ae::harness_state::{Dictation, HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    let label = MEASURED_HOLD.lines().next().expect("the measured label");
+    let wave = "❯\u{a0}▁";
+    assert!(label.starts_with(' ') && label.ends_with("listening…"));
+    assert!(MEASURED_HOLD.contains(wave));
+
+    let no_wave = MEASURED_HOLD.replacen(wave, "❯\u{a0}", 1);
+    let no_label = MEASURED_HOLD.replacen(label, "", 1);
+    let left_aligned = MEASURED_HOLD.replacen(label, label.trim_start(), 1);
+    let separated = MEASURED_HOLD.replacen(label, &format!("{label}\nOlder output"), 1);
+    let blank_gap = MEASURED_HOLD.replacen(label, &format!("{label}\n"), 1);
+    let quoted = format!("{label}\nOlder output\n{IDLE}");
+    let draft = no_label.replacen(wave, "❯\u{a0}A draft quotes listening…", 1);
+    for frame in [
+        &no_label,
+        &left_aligned,
+        &separated,
+        &blank_gap,
+        &quoted,
+        &draft,
+    ] {
+        assert!(
+            !dictation(frame, ToolKind::Claude).active(),
+            "a draft or old output cannot supply the active label: {frame:?}"
+        );
+    }
+    let reduced_motion = dictation(&no_wave, ToolKind::Claude);
+    assert_ne!(reduced_motion, Dictation::Holding);
+    assert_eq!(classify(&quoted, ToolKind::Claude), HarnessState::Idle);
+    assert_ne!(dictation(MEASURED_HOLD, ToolKind::Muse), Dictation::Holding);
+
+    assert_eq!(
+        dictation(MEASURED_HOLD, ToolKind::Claude),
+        Dictation::Holding
+    );
+    assert_eq!(
+        classify(MEASURED_HOLD, ToolKind::Claude),
+        HarnessState::Busy
+    );
+    assert!(MEASURED_SPEECH.contains("❯\u{a0}▇"));
+    assert_eq!(
+        dictation(MEASURED_SPEECH, ToolKind::Claude),
+        Dictation::Holding
+    );
+
+    // SYNTHETIC, from the vendor renderer's audio-level alphabet in 2.1.332.
+    // The real frame above supplies the position, shape and lowest bar.
+    for glyph in '▂'..='█' {
+        let spoken = MEASURED_HOLD.replacen('▁', &glyph.to_string(), 1);
+        assert_eq!(dictation(&spoken, ToolKind::Claude), Dictation::Holding);
+    }
+}
+
+#[test]
+fn measured_hold_label_alone_blocks_delivery_without_proving_a_waveform() {
+    use ae::harness_state::{Dictation, HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    // SYNTHETIC: 2.1.332 disables the waveform under prefersReducedMotion,
+    // and its recording-label renderer still emits listening… independently.
+    let reduced_motion = MEASURED_HOLD.replacen('▁', "", 1);
+    let state = dictation(&reduced_motion, ToolKind::Claude);
+    assert_ne!(state, Dictation::Holding, "no waveform proof for a key");
+    assert!(state.active(), "label alone must stop delivery: {state:?}");
+    assert_eq!(
+        classify(&reduced_motion, ToolKind::Claude),
+        HarnessState::Busy
+    );
+}
+
+#[test]
+fn measured_hold_label_blocks_delivery_when_the_composer_is_occupied() {
+    use ae::harness_state::{Dictation, HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    // SYNTHETIC: exercising the label independently of draft contents. The
+    // waveform position with an existing draft has not been measured.
+    for input in ["A draft", "A draft ▁"] {
+        let draft = MEASURED_HOLD.replacen('▁', input, 1);
+        let state = dictation(&draft, ToolKind::Claude);
+        assert_ne!(state, Dictation::Holding, "no waveform proof for a key");
+        assert!(state.active(), "label above occupied composer: {state:?}");
+        assert_eq!(classify(&draft, ToolKind::Claude), HarnessState::Busy);
+    }
+}
+
+#[test]
+fn measured_hold_with_the_label_row_clipped_cannot_prove_the_pane_clear() {
+    use ae::harness_state::{Dictation, dictation};
+    use ae::tool::ToolKind;
+
+    let (_, clipped) = MEASURED_HOLD.split_once('\n').expect("the captured label");
+    let state = dictation(clipped, ToolKind::Claude);
+    assert_ne!(state, Dictation::Holding, "no label proof for a key");
+    assert!(state.active() || state == Dictation::Unread, "{state:?}");
+}
+
+#[test]
+fn measured_hold_after_buffer_load_refuses_overview_before_paste() {
+    assert_measured_hold_pre_paste_refusal("voice-hold-paste", MEASURED_HOLD_STYLED, true);
+}
+
+#[test]
+fn measured_hold_label_alone_after_buffer_load_refuses_overview_before_paste() {
+    // SYNTHETIC reduced-motion variant of the styled owner frame.
+    let reduced_motion = MEASURED_HOLD_STYLED.replacen('▁', "", 1);
+    assert_measured_hold_pre_paste_refusal("voice-label-paste", &reduced_motion, false);
+}
+
+fn assert_measured_hold_pre_paste_refusal(tag: &str, frame: &str, has_wave: bool) {
+    let idle = include_str!("../../../fixtures/harness-state/claude-voice-idle-2.1.332-120x40.txt");
+    let rig = orchestrator(tag, "claude", idle);
+    checked(
+        &rig,
+        &[
+            "resize-window",
+            "-t",
+            "=orchestrator:0",
+            "-x",
+            "120",
+            "-y",
+            "41",
+        ],
+    );
+    let mut setup = before_paste_env(&rig.scratch, &rig.sock);
+    fs::write(rig.scratch.join("next-voice-frame"), frame).expect("the next voice frame");
+    setup.push(("D54_LOCK", rig.send_lock_path().display().to_string()));
+    let env: Vec<_> = setup
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let (code, why) = overview(&rig, "owner capture gate marker", &env);
+    let trace = fs::read_to_string(rig.scratch.join("d54-trace"))
+        .expect("the admitted overview reached the staged-buffer boundary");
+    assert!(trace.starts_with("loaded under lock"), "{trace}");
+    let recorded = super::pane_frame(&rig, &rig.pane);
+    assert!(recorded.contains("listening…"));
+    assert_eq!(recorded.contains('▁'), has_wave);
+    assert!(rig.wire().is_empty(), "no input: {tag}: {code:?}: {why}");
+    assert_ne!(code, Some(0), "the measured hold refuses overview");
+    assert!(why.contains("Claude dictation"), "{why}");
+}

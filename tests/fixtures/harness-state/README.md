@@ -37,3 +37,15 @@ redactions while TUI suffixes, line breaks, and recorded pane geometry were kept
 | `claude-voice-idle-2.1.332-120x40.txt` | Claude Code 2.1.332 | idle, voice on in hold mode (the same bytes as tap mode and voice off) | 120x40 | 2026-11-26, private tmux server, scratch seat on `--settings` voice hold (`.local/d54/cap2/hold.w120.idle.plain`); the banner rows replaced by one redaction row, the composer and footer rows kept |
 | `claude-voice-warming-2.1.332-120x40.txt` | Claude Code 2.1.332 | hold-mode warmup: ` · keep holding…` on the mode row after two Space key events in one `send-keys` | 120x40 | the same seat (`cap2/hold.w120.warm2.plain`), the same redaction |
 | `claude-voice-warming-2.1.332-120x40.esc` | Claude Code 2.1.332 | the same warmup frame, `capture-pane -p -e` (the suffix in `\e[38;5;246m`) | 120x40 | `cap2/hold.w120.warm2.esc`, the same redaction |
+| `claude-voice-holding-2.1.332-120x41.txt` | Claude Code 2.1.332 | hold recording, right-aligned `listening…` above the upper composer border and `▁` in the prompt | 120x41, final 6 rows | 2026-11-26 owner microphone, private tmux, `.local/d54/owner/20261126T161304Z/p1a_no_repeat/0022_001512.plain`, rows 36–41 unchanged |
+| `claude-voice-holding-2.1.332-120x41.esc` | Claude Code 2.1.332 | styled hold recording, the label and waveform in dim ink | 120x41, final 6 rows | `0022_001512.esc`, rows 36–41 unchanged. Both captures fall within the same observed hold interval, with the plain read completed at 1523 ms and the escaped read at 1535 ms. |
+| `claude-voice-speaking-2.1.332-120x41.txt` | Claude Code 2.1.332 | hold recording with speech, waveform `▇` | 120x41, final 6 rows | attached owner, `.local/d54/owner/20261126T162001Z/p1_emulated_hold/0029_001853.plain`, rows 36–41 with usage removed from the custom status row |
+
+The hold fixture gives the current box position and the baseline waveform. The
+test also derives variants from the installed 2.1.332 binary (SHA256
+`5b8214f8f082f3187420b27b4063b9b4f4d9412cd66ea436d6d1966ad582700f`). Its
+waveform renderer (`eao`, rendered by `Iro`) maps audio levels to U+2581–U+2588
+and omits the waveform under `prefersReducedMotion`. Its hold status renderer
+(`abt`) emits `listening…` independently. The column in the captured frame is
+an observation at 120 cells. The label is alone and preceded by whitespace on
+the row directly above the upper border.
