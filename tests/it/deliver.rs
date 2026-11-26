@@ -32,6 +32,7 @@ use super::cli::ae;
 use super::phase2::run_tmux;
 use super::support::{PANE_WAIT, SETUP_WAIT, first_pane, is_shell, observe, pane_command};
 
+mod d54_voice;
 mod web_send_spec;
 mod web_smoke;
 
@@ -87,6 +88,7 @@ my $started = time();
 my $above = "fake tui transcript";
 my $wire;
 my $frame_changed = '';
+my $voice_spaces = 0;
 if ($mode eq 'frame') {
     open($wire, '>>', "$out.wire") or die;
     binmode($wire, ':raw');
@@ -217,7 +219,13 @@ while (1) {
     }
     record_wire($ch);
     transition_frame('onescape') if !$pasting && $ch eq "\e";
+    if (!$pasting && $ch eq ' ' && $mode eq 'frame') {
+        $voice_spaces++;
+        transition_frame('onwarm') if $voice_spaces == 2;
+        transition_frame('onstart') if $voice_spaces == 5;
+    }
     if (!$pasting && $ch eq "\x15") {   # C-u clears the line, and is counted
+        transition_frame('onclear');
         open(my $cu, '>>', "$enters.cu") or die;
         print $cu "cu\n";
         close($cu);

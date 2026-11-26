@@ -1018,6 +1018,137 @@ fn an_orchestrator_run_ignores_a_shadowing_legacy_profile() {
     );
 }
 
+fn dictation_launch(
+    tool: &str,
+    tag: &str,
+    orchestrator: bool,
+    slot: &str,
+    resume_id: Option<&str>,
+) -> (Vec<String>, String) {
+    let rig = Rig::new(tag);
+    let launch_id = if resume_id.is_some() {
+        "tok-resume"
+    } else {
+        "tok-1"
+    };
+    rig.seat_with_launch_id(tool, resume_id.unwrap_or_default(), Some(launch_id));
+    if let Some(id) = resume_id {
+        rig.started();
+        rig.transcript(tool, id);
+    }
+    if orchestrator {
+        let overlay = rig.scratch.join("orchestrator.config");
+        std::fs::write(&overlay, "[workspace]\norchestrator = true\n")
+            .unwrap_or_else(|why| panic!("private role overlay: {why}"));
+        rig.append_meta(&format!(
+            "meta_agent=true\nlocal_config={}\n",
+            overlay.display()
+        ));
+    }
+    if orchestrator && slot == "main" && tool == "claude" {
+        rig.append_meta("voice.main=tok-previous");
+    }
+    if slot != "main" {
+        rig.append_meta(&format!(
+            "seat.{slot}=helper\nprofile.{slot}={tool}\nlaunch_id.{slot}=tok-helper\n"
+        ));
+    }
+    let result = ae()
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &rig.home)
+        .env("AE_HOME", &rig.scratch)
+        .env("CONFIG_FILE", &rig.config)
+        .current_dir(&rig.project)
+        .arg(ae::cli::RUN)
+        .arg(&rig.dir)
+        .arg(slot)
+        .output()
+        .unwrap_or_else(|why| panic!("the private _run process: {why}"));
+    assert!(
+        result.status.success(),
+        "fixture launch: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let receipt = std::fs::read_to_string(&rig.out)
+        .unwrap_or_else(|why| panic!("the executed tool reports its arguments: {why}"));
+    let argv = receipt.split(RS).map(ToOwned::to_owned).collect();
+    let meta = std::fs::read_to_string(rig.dir.join("meta"))
+        .unwrap_or_else(|why| panic!("the launch record: {why}"));
+    (argv, meta)
+}
+
+fn assert_launch_hold(argv: &[String], meta: &str, token: &str) {
+    use ae::json::Value;
+
+    let settings: Vec<_> = argv
+        .windows(2)
+        .filter(|args| args[0] == "--settings")
+        .map(|args| &args[1])
+        .collect();
+    assert_eq!(
+        settings.len(),
+        1,
+        "the executed Claude receives one settings argument"
+    );
+    let settings = ae::json::parse(settings[0])
+        .unwrap_or_else(|why| panic!("the settings argument is JSON: {why}"));
+    let voice = settings
+        .get("voice")
+        .unwrap_or_else(|| panic!("the settings argument controls voice"));
+    assert_eq!(voice.get("enabled"), Some(&Value::Bool(true)));
+    assert_eq!(voice.get("mode").and_then(Value::as_str), Some("hold"));
+    assert_eq!(voice.get("autoSubmit"), Some(&Value::Bool(false)));
+    assert!(
+        meta.lines()
+            .any(|line| line.strip_prefix("launch_id.main=") == Some(token)),
+        "the launch retains its seat token"
+    );
+    let proof: Vec<_> = meta
+        .lines()
+        .filter_map(|line| line.strip_prefix("voice.main="))
+        .collect();
+    assert_eq!(proof, [token], "the voice proof belongs to this launch");
+}
+
+#[test]
+fn d54_orchestrator_claude_execs_safe_hold_settings_and_records_this_launch() {
+    let (argv, meta) = dictation_launch("claude", "voice-hold", true, "main", None);
+    assert_launch_hold(&argv, &meta, "tok-1");
+}
+
+#[test]
+fn d54_orchestrator_claude_resumes_with_safe_hold_settings_and_refreshes_the_proof() {
+    const ID: &str = "05faf269-6295-4a23-8684-1b03cb6ccd9c";
+    let (argv, meta) = dictation_launch("claude", "voice-resume", true, "main", Some(ID));
+    assert!(
+        argv.windows(2).any(|words| words == ["--resume", ID]),
+        "the executed tool resumes the retained conversation"
+    );
+    assert_launch_hold(&argv, &meta, "tok-resume");
+}
+
+#[test]
+fn d54_does_not_enable_voice_outside_the_orchestrators_main_claude_seat() {
+    for (tool, tag, role, slot) in [
+        ("claude", "voice-ordinary", false, "main"),
+        ("codex", "voice-non-claude", true, "main"),
+        ("claude", "voice-helper", true, "worker.0"),
+    ] {
+        let (argv, meta) = dictation_launch(tool, tag, role, slot, None);
+        assert!(
+            !argv.iter().any(|word| word == "--settings"),
+            "{tag} remains outside the voice launch scope"
+        );
+        assert!(
+            !meta.lines().any(|line| line.starts_with("voice.")),
+            "{tag} has no voice launch proof"
+        );
+    }
+}
+
 #[test]
 fn an_alias_link_prepends_its_own_fixed_word() {
     let rig = Rig::new("alias");
