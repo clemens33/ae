@@ -91,7 +91,7 @@ ae rename <old> <new> --expect-uuid <uuid>
                        uuid and no seat declares working, waiting-agent or blocked
 ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
-ae telegram <setup|start|stop|status>
+ae telegram <start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
 ae stop [name] [--reason <text>]
                        Pause session, keep ae + agent conversation state for resume;
@@ -2325,7 +2325,6 @@ plain messages with no `/use` selection are asked in its chat by default — see
 ## `ae telegram`
 
 ```bash
-ae telegram setup       # interactive: writes [telegram] config + token file
 ae telegram start       # spawn daemon now, persist enabled=true
 ae telegram stop        # kill daemon, persist enabled=false
 ae telegram status      # report intent + runtime + core + token validation
@@ -2333,7 +2332,7 @@ ae telegram status      # report intent + runtime + core + token validation
 
 Machine-global daemon that bridges the shared chat of every running ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards each running session's human-facing chat rows. Inbound (when `allowed_user_ids` is set) asks a message in one session's shared chat, chosen by a **reply** to a forwarded message, the compact **`@session[:seat] <msg>`** prefix, or the **`/use <session> [seat]`** selection for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <seat> <msg>`; with nothing selected, plain text is asked in the orchestrator seat's chat, or refused with its cause when the seat cannot take it. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
-`setup`, `start`, `stop` and `status` are core operations, and the daemon is the ae core
+`start`, `stop` and `status` are core operations, and the daemon is the ae core
 binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. What the core
 does not read for itself — which config to honour, which home to keep state under, and
 which tmux server the daemon's session belongs on — used to arrive as the wrapper's

@@ -27,17 +27,14 @@ ae doctor              # reports telegram.core OK/WARN when telegram is configur
 
 ## Setup
 
-One-time, after creating a bot via [@BotFather](https://t.me/BotFather):
+There is no setup command. Do these steps once, after you create a bot with [@BotFather](https://t.me/BotFather):
 
-```bash
-ae telegram setup
-```
-
-The interactive prompt asks for the bot token and your numeric Telegram chat id, writes the token to `~/.config/ae/telegram-bot.token` (chmod 600, owned by you), and appends a `[telegram]` block to `~/.ae/config`:
+1. Write the bot token into `~/.config/ae/telegram-bot.token`, then run `chmod 600` on that file. ae refuses a token file that the group or other users can access.
+2. Add a `[telegram]` block to `~/.ae/config` with your numeric Telegram chat id. Add `allowed_user_ids` only if you want to send messages from the phone.
+3. Run `ae telegram start`. It refuses when `token_file` or `chat_id` is missing or the token file is unusable. Otherwise it writes `enabled = true` and starts the bridge.
 
 ```toml
 [telegram]
-enabled = true
 token_file = "~/.config/ae/telegram-bot.token"
 chat_id = 123456789
 allowed_user_ids = "123456789"
@@ -49,7 +46,7 @@ Optional keys:
 |---|---|---|
 | `scope` | `orchestrator` | `orchestrator` forwards the proven seat's chat and any `also` sessions. `all` forwards eligible chat from every running session. |
 | `also` | Empty | Comma-separated exact session names or full UUIDs. Names are case-sensitive and UUIDs are case-insensitive. Each entry must match one running session to add it. |
-| `allowed_user_ids` | *(from setup)* | Comma/space list of Telegram numeric user ids permitted to send **inbound commands**. Empty → inbound disabled (outbound-only). |
+| `allowed_user_ids` | Empty | Comma/space list of Telegram numeric user ids permitted to send **inbound commands**. Empty → inbound disabled (outbound-only). |
 
 Restart the bridge to apply `scope` or `also` changes. Invalid settings and repeated keys refuse startup with the file and line. Rows skipped by scope stay in the session journal and advance its outbound cursor.
 
@@ -57,7 +54,7 @@ Set `enabled = false` (or remove the block) to disable autostart without uninsta
 
 ## Inbound commands (chat → ae)
 
-Inbound is active **only when `allowed_user_ids` is non-empty** (`ae telegram setup` seeds it with your own id). With no allow-list, the bridge is outbound-only.
+Inbound is active **only when `allowed_user_ids` is non-empty**. With no allow-list, the bridge is outbound-only.
 
 **Trust boundary.** Every incoming message must satisfy **all** of:
 
@@ -120,7 +117,6 @@ The checkpoint `desk-pin` holds the chat, the message id and whether it is pinne
 ## Commands
 
 ```bash
-ae telegram setup      # interactive token + config setup
 ae telegram start      # spawn daemon, persist enabled=true
 ae telegram stop       # kill daemon, persist enabled=false
 ae telegram status     # show runtime + intent + deps + token validation
