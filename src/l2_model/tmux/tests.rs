@@ -1937,7 +1937,7 @@ fn picker_agents_fact_is_typed_bounded_and_all_or_nothing() {
         "v1;old;60;lead:fable5:working:%1",
         "v1;2000;60;bad name:fable5:working:%1",
         "v1;2000;60;lead:bad profile:working:%1",
-        "v1;2000;60;lead:fablex@cc-mic:working:%1",
+        "v1;2000;60;lead:fablex@cc-work:working:%1",
         "v1;2000;60;lead:fable5:unknown:%1",
         "v1;2000;60;lead:fable5:working:pane",
         "v1;2000;60;lead:fable5:working:%1:extra",
@@ -2026,7 +2026,7 @@ fn a_v2_client_cell_carries_a_full_label_or_a_legacy_token() {
     };
     // Full labels ride, 32 cells included; legacy tokens still parse, so
     // a mixed-version fleet renders old rows rather than dropping them.
-    for client in ["cc-mic", "claude", &"l".repeat(32)] {
+    for client in ["cc-work", "claude", &"l".repeat(32)] {
         assert_eq!(
             client_of(&fact(client)),
             Some(client.to_owned()),
@@ -2038,7 +2038,7 @@ fn a_v2_client_cell_carries_a_full_label_or_a_legacy_token() {
     }
     for invalid in [
         fact(&"l".repeat(33)),
-        fact("cc mic"),
+        fact("cc alt"),
         fact("-x"),
         fact("_x"),
     ] {
@@ -2094,7 +2094,7 @@ fn the_v2_parser_refuses_an_over_cap_unknown_or_incoherent_cell() {
         "v3;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:",
         // Client: a legacy adapter token or an agent-shaped label of at
         // most 32 cells — anything else refuses the whole snapshot.
-        "v2;2000;60;lead:fable5:working:%1:cc mic:Opus 5:xhigh:",
+        "v2;2000;60;lead:fable5:working:%1:cc alt:Opus 5:xhigh:",
         "v2;2000;60;lead:fable5:working:%1:-x:Opus 5:xhigh:",
         "v2;2000;60;lead:fable5:working:%1:_x:Opus 5:xhigh:",
         // Effort: the closed vocabulary, not a shape.
@@ -2269,7 +2269,7 @@ fn v2_picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
     let labeled = super::parse_picker_agents(label, 2_000_000_000).expect("label seed");
     assert_eq!(
         (labeled[0].client.as_str(), labeled[1].client.as_str()),
-        ("cc-mic", "-")
+        ("cc-alt", "-")
     );
     assert_eq!(super::parse_picker_agents(bad_label, 2_000_000_000), None);
 }

@@ -7282,7 +7282,7 @@ mod tests {
     #[test]
     fn the_header_reason_comes_before_the_directory() {
         let mut shot = Shot::new();
-        shot.overview.dir = Some("~/projects/clemens33/ae".to_owned());
+        shot.overview.dir = Some("~/projects/workspace/ae".to_owned());
         shot.overview.open = vec![Open {
             seat: "lead".to_owned(),
             text: "approve the plan".to_owned(),
@@ -7624,7 +7624,7 @@ mod tests {
             id: "$1".to_owned(),
             agents: vec![
                 seat("seat-a", "claude", "Sonnet 5.5", "xhigh"),
-                seat("seat-b", "claude-p", "Sonnet 5.5", "xhigh"),
+                seat("seat-b", "claude-a", "Sonnet 5.5", "xhigh"),
                 seat("seat-c", "", "Sonnet 5.5", ""),
                 seat("seat-d", "codex", "", "max"),
             ],
@@ -7641,7 +7641,7 @@ mod tests {
             row[from..to.expect("its state")].trim().to_owned()
         };
         assert_eq!(between("seat-a"), "claude Sonnet 5.5 xhigh");
-        assert_eq!(between("seat-b"), "claude-p Sonnet 5.5 xhigh");
+        assert_eq!(between("seat-b"), "claude-a Sonnet 5.5 xhigh");
         assert_eq!(between("seat-c"), "Sonnet 5.5", "no client is invented");
         assert_eq!(between("seat-d"), "codex max");
         let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
@@ -7657,27 +7657,27 @@ mod tests {
         let mut shot = Shot::new();
         // 25 cells > free 20, but within the second row's 38.
         shot.agents = Some(label_facts(&[
-            ("aa", "Sonnet 5.5", "xhigh", "claude-p"),
+            ("aa", "Sonnet 5.5", "xhigh", "claude-a"),
             ("bb", "", "", ""),
         ]));
         with_sidebar(&mut shot, 44);
         let (buf, _) = framed(&shot, 160, None);
         let rule = horizontal(&buf).expect("the Agents rule");
         assert!(
-            !line(&buf, rule + 1).concat().contains("claude-p"),
+            !line(&buf, rule + 1).concat().contains("claude-a"),
             "no label on row one"
         );
         assert!(
             line(&buf, rule + 2)
                 .concat()
-                .contains("claude-p Sonnet 5.5 xhigh"),
+                .contains("claude-a Sonnet 5.5 xhigh"),
             "the whole label on row two"
         );
         // 8 + 1 + 40 > 38: the effort is left off and the tail is cut.
         let model = "m".repeat(40);
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", &model, "xhigh", "claude-p"),
+            ("aa", &model, "xhigh", "claude-a"),
             ("bb", "", "", ""),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7685,7 +7685,7 @@ mod tests {
         let rule = horizontal(&buf).expect("the Agents rule");
         let tail = line(&buf, rule + 2).concat();
         assert!(
-            tail.contains(&format!("claude-p {}…", "m".repeat(28))),
+            tail.contains(&format!("claude-a {}…", "m".repeat(28))),
             "the client survives the cut: {tail}"
         );
         assert!(!tail.contains("xhigh"), "the effort goes first: {tail}");

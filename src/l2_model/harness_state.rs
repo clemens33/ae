@@ -3027,7 +3027,7 @@ mod tests {
         // refuses that name as a model (400 on the first turn).
         let footer = |drawn: &str| {
             format!(
-                "› Ask Codex to do anything\n\n  {drawn} xhigh · ~/projects/clemens33/ae · main\n"
+                "› Ask Codex to do anything\n\n  {drawn} xhigh · ~/projects/workspace/ae · main\n"
             )
         };
         for (drawn, id) in [
