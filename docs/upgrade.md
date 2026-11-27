@@ -57,9 +57,7 @@ orchestrator session, for the default root and every named root it did not hold.
 `[prompt]` stanza, one row per distinct template, the current one last). A file byte-equal to an
 earlier template is replaced by the current template, even when that template shares its
 `[prompt]` stanza with the current one. That replacement keeps the earlier file's explicit
-`[workspace] sweep` row, so a seat keeps the overview spacing it ran with. When the result is
-byte-equal to the file, as for the template before the 300-second default, which differs from
-the current one only in `sweep = 120`, nothing is written: no backup and no `ae:` line. A file whose `[prompt]` stanza is
+`[workspace] sweep` row, so a seat keeps the overview spacing it ran with. A file whose `[prompt]` stanza is
 byte-equal to an earlier stanza gets only its prompt row replaced, so the owner's other edits
 stay. Either way the old file is kept first at `orchestrator.config.pre-v<new version>` (then
 `-2`, `-3` when a name is taken, and nothing is overwritten), and ONE `ae:` line names both paths.

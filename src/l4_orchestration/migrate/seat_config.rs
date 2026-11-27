@@ -342,11 +342,6 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
             ),
         ),
     };
-    if new == text {
-        // A released template that differs from the current one only in the
-        // spacing it keeps is already what this publish would write.
-        return None;
-    }
     let backup = seat_backup_path(&path, version);
     if let Err(why) = replace(&path, &text, &new, &backup) {
         return unchanged(&format!("it could not be replaced ({why})"));
@@ -971,29 +966,33 @@ mod tests {
 
     #[test]
     fn a_whole_replacement_keeps_an_explicit_sweep_and_a_fresh_seed_does_not() {
-        let latest = include_str!("../../../tests/fixtures/orchestrator/v2026.11.121.config");
-        assert!(latest.contains("\n[workspace]\n") && latest.contains("\nsweep = 120\n"));
+        let released = |wanted: &str| {
+            let found = fixtures().into_iter().find(|(tag, _)| tag == wanted);
+            found.expect("fixture").1
+        };
         assert!(SEAT_TEMPLATE.contains("\nsweep = 300\n"));
+        let explicit = released("v2026.9.61");
+        assert!(workspace_rows(&explicit).any(|row| row == "sweep = 120"));
         assert_eq!(
-            latest,
-            SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 120\n"),
-            "the latest release differs from the current template only in its spacing"
+            keep_workspace_sweep(&explicit, SEAT_TEMPLATE),
+            SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 120\n")
         );
-        let scratch = root_with("whole-sweep", Some(latest.as_bytes()));
-        let path = scratch.0.join("orchestrator.config");
-        for _ in 0..2 {
-            assert_eq!(reconcile(&scratch.0, "9.9"), None, "nothing to replace");
-            assert_eq!(std::fs::read_to_string(&path).expect("file"), latest);
-            assert!(!scratch.0.join("orchestrator.config.pre-v9.9").exists());
-        }
-
-        let unstated = include_str!("../../../tests/fixtures/orchestrator/v2026.9.9.config");
-        assert!(!workspace_rows(unstated).any(is_sweep_row));
-        assert_eq!(keep_workspace_sweep(unstated, SEAT_TEMPLATE), SEAT_TEMPLATE);
-        let custom = latest.replace("\nsweep = 120\n", "\nsweep = 0\n");
+        let unstated = released("v2026.9.9");
+        assert!(!workspace_rows(&unstated).any(is_sweep_row));
+        assert_eq!(
+            keep_workspace_sweep(&unstated, SEAT_TEMPLATE),
+            SEAT_TEMPLATE
+        );
+        let custom = explicit.replace("\nsweep = 120\n", "\nsweep = 0\n");
         assert_eq!(
             keep_workspace_sweep(&custom, SEAT_TEMPLATE),
             SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 0\n")
+        );
+        let prompt_only = SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweeper = 1\n");
+        assert_eq!(
+            keep_workspace_sweep(&prompt_only, SEAT_TEMPLATE),
+            SEAT_TEMPLATE,
+            "only a sweep row is kept"
         );
     }
 
