@@ -2329,7 +2329,7 @@ fn a_cold_selection_says_loading_never_the_last_lane() {
 #[test]
 fn the_header_shows_the_recorded_work_dir_home_shortened_cut_from_the_left() {
     let home = crate::doors::home().expect("a test HOME");
-    let tail = "projects/clemens33/ae/crates/with/deeply/nested/directories/of/leaf-dir";
+    let tail = "projects/workspace/ae/crates/with/deeply/nested/directories/of/leaf-dir";
     let mut app = app(None);
     two(&mut app);
     app.world.sessions[0].work_dir = Some(format!("{}/{tail}", home.display()));
@@ -2346,7 +2346,7 @@ fn the_header_shows_the_recorded_work_dir_home_shortened_cut_from_the_left() {
         "{narrow}"
     );
     assert!(
-        !narrow.contains("~/projects/clemens33/ae/crates"),
+        !narrow.contains("~/projects/workspace/ae/crates"),
         "{narrow}"
     );
     app.world.sessions[0].work_dir = None;
