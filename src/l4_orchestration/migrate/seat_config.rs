@@ -1273,10 +1273,11 @@ mod tests {
             let scratch = root_with(&format!("raised-{tag}"), Some(old.as_bytes()));
             let path = scratch.0.join("orchestrator.config");
             let line = reconcile(&scratch.0, "9.9").unwrap_or_else(|| panic!("{tag}: a line"));
+            assert!(old.contains("\nsweep = 120\n"), "{tag}");
             assert_eq!(
                 std::fs::read_to_string(&path).expect("file"),
-                SEAT_TEMPLATE,
-                "{tag}"
+                SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 120\n"),
+                "{tag}: the current template with the released explicit spacing"
             );
             assert!(
                 line.contains(tag)
