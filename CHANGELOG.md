@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.129] - 2026-11-27
+- Lengthen a waiting-agent ceiling while its direct target works
+- Freeze Claude paste-hint submit acceptance
+- Admit the guarded paste-hint acceptance through the frame rig
+- Read Claude's paste hint row as a readable voice footer
+
 ## [v2026.11.128] - 2026-11-27
 - Use generic account labels in quota and config tests
 - Say how to read back in the chat window
