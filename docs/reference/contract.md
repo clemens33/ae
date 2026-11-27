@@ -556,7 +556,7 @@ auto_reseat_sessions = a   # sessions the path acts in; absent means every sessi
 auto_reseat_grace_secs = 600  # limit-to-move wait; 0 moves on the first cycle past the latch
 auto_reseat_at = 95        # move an idle seat once a window of its own account at least a day long reads this %; off disables, but a resume's exhausted seat still moves; global only
 auto_reseat_lead_at = 96    # the lead pair's own bar in place of auto_reseat_at (50-100 or off); absent = auto_reseat_at; global only
-auto_effort = off          # on: restart a lead-pair seat in place one effort level down at 80%, back up under 75%; global only
+auto_effort = off          # on: restart a lead-pair or spawned seat in place one effort level down at 80%, back up under 75%; global only
 
 [auto_reseat]
 sol6x = opus55x, spark13cm  # where sol6x may move, best first; a profile keyed twice keeps its later row

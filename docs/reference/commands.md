@@ -3281,7 +3281,7 @@ Everything ae does is one core operation reached through a `_`-prefixed entry: `
 The public words above and the session helpers are thin routes to them.
 `_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit, or off an account read at or past the seat's headroom threshold (`auto_reseat_at`, or `auto_reseat_lead_at` for the lead pair) — never run it by hand.
 `_self-reseat <dir> main <id>` is the detached leg the watchdog's claim spawns to run the orchestrator seat's queued reseat `<id>` — never run it by hand.
-`_auto-effort <dir> <slot> <episode>` is the detached leg the watchdog spawns under `auto_effort = on` to restart a lead-pair seat in place at another effort — never run it by hand either.
+`_auto-effort <dir> <slot> <episode>` is the detached leg the watchdog spawns under `auto_effort = on` to restart a lead-pair or spawned seat in place at another effort — never run it by hand either.
 
 Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with
 exit 2 and before any side effect, so a typo cannot quietly become a session name.
