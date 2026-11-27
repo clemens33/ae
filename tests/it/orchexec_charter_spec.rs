@@ -861,6 +861,78 @@ mod desklive_nudge {
     }
 
     #[test]
+    fn chatlag_overview_waits_for_the_running_turn_to_finish() {
+        use ae::harness_state::{HarnessState, classify};
+        use ae::tool::ToolKind;
+
+        let fixture = Fixture::new("lag-overview-turn");
+        let rig = &fixture.rig;
+        let busy = rig.root.join("control.busy");
+        fs::write(&busy, []).expect("model starts a running turn");
+        rig.key(&rig.tool.pane, "C-u");
+        let busy_empty = |screen: &str| {
+            screen.contains("Ask Codex to do anything")
+                && classify(screen, ToolKind::Codex) == HarnessState::Busy
+        };
+        rig.wait(
+            &rig.tool.pane,
+            "running turn with an empty composer",
+            busy_empty,
+        );
+
+        let enters = || fs::read_to_string(rig.root.join("enters")).expect("pane Enter log");
+        let assert_held = || {
+            let receipt = fixture.receipt();
+            assert!(
+                receipt.is_empty(),
+                "the running harness received {receipt:?}"
+            );
+            assert!(enters().is_empty(), "no Enter while the harness runs");
+            let screen = rig.screen(&rig.tool.pane);
+            assert!(
+                busy_empty(&screen),
+                "no paste while the harness runs: {screen}"
+            );
+        };
+
+        fixture.event(
+            -55,
+            "state",
+            r#","ref":"blocked","summary":"superseded fleet need""#,
+        );
+        let (_watchdog, mut steps) = fixture.start("lag-overview-turn");
+        assert_held();
+
+        fixture.event(
+            -25,
+            "state",
+            r#","ref":"waiting-user","summary":"current fleet need""#,
+        );
+        steps.step();
+        assert_held();
+
+        fs::remove_file(busy).expect("model reaches the next turn boundary");
+        rig.key(&rig.tool.pane, "C-u");
+        rig.wait(
+            &rig.tool.pane,
+            "idle turn with an empty composer",
+            |screen| {
+                screen.contains("Ask Codex to do anything")
+                    && classify(screen, ToolKind::Codex) == HarnessState::Idle
+            },
+        );
+        steps.step();
+
+        let after = fixture.receipt();
+        assert_eq!(after.matches(OVERVIEW_TRAILER).count(), 1, "{after}");
+        assert!(after.contains("current fleet need"), "{after}");
+        assert!(!after.contains("superseded fleet need"), "{after}");
+        assert_eq!(enters().lines().count(), 1);
+        steps.step();
+        assert_eq!(fixture.receipt(), after);
+    }
+
+    #[test]
     fn chatlag_desk_edge_waits_for_the_next_eligible_overview() {
         let fixture = Fixture::new("lag-desk");
         let manual = fixture.board(-700);
