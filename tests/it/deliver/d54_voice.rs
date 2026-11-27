@@ -953,3 +953,107 @@ fn grok_mic_is_drawn_disabled_with_a_reason() {
         include_str!("../../fixtures/runtime-identity/grok-transcript-only.txt"),
     );
 }
+
+fn dictation_children(rig: &Rig) -> Vec<u32> {
+    checked(
+        rig,
+        &[
+            "list-clients",
+            "-F",
+            "#{client_control_mode}|#{client_termname}|#{session_name}|#{client_pid}",
+        ],
+    )
+    .lines()
+    .filter_map(|row| row.strip_prefix("1|ae-dictation|orchestrator|"))
+    .map(|pid| pid.parse().expect("private control-client PID"))
+    .collect()
+}
+
+fn start_owned_dictation(rig: &Rig) -> (String, String, u32) {
+    record_hold_launch(rig);
+    let _api = rig_world(rig).session("api", "tui", "");
+    let pane = app(rig, "api");
+    let idle = until_screen(
+        rig,
+        &pane,
+        "the panel renders its passive idle mic",
+        |screen| status(screen, "unknown"),
+    );
+    assert!(
+        dictation_children(rig).is_empty(),
+        "idle panel reads must not attach a control client"
+    );
+    arm_voice_start(rig, HOLD);
+    press_mic(rig, &pane, &idle);
+    wait_for_voice_spaces(rig, &pane, 6);
+    let recording = until_screen(rig, &pane, "the panel renders a live recording", |screen| {
+        status(screen, "recording")
+    });
+    let pids = dictation_children(rig);
+    assert_eq!(pids.len(), 1, "one owned child while holding: {pids:?}");
+    (pane, recording, pids[0])
+}
+
+#[test]
+fn the_panel_starts_one_child_and_reaps_it_after_read_only_settle() {
+    let rig = orchestrator("sidecar-panel-stop", "claude", &composer_cursor(IDLE, 3));
+    let (pane, recording, pid) = start_owned_dictation(&rig);
+    press_mic(&rig, &pane, &recording);
+    let stopped = voice_report(
+        &rig,
+        &pane,
+        &recording,
+        "stop acknowledges the write fence",
+        "dictation: stopping",
+    );
+    let wire = rig.wire();
+    redraw_voice_frame(&rig, TRANSCRIBING);
+    let processing = voice_report(
+        &rig,
+        &pane,
+        &stopped,
+        "the worker enters read-only settle",
+        "dictation: transcribing",
+    );
+    assert_eq!(
+        dictation_children(&rig),
+        [pid],
+        "settle uses the same owned child"
+    );
+    let cells = ratatui_core::text::Span::raw(WORDS).width();
+    redraw_voice_frame(&rig, &composer_cursor(&with_draft(WORDS), cells + 3));
+    voice_report(
+        &rig,
+        &pane,
+        &processing,
+        "settle leaves the result in Claude",
+        UNSENT_NOTICE,
+    );
+    assert!(
+        await_evidence(PANE_WAIT, || dictation_children(&rig)
+            .is_empty()
+            .then_some(()))
+        .is_some(),
+        "the finished controller must leave no attached client"
+    );
+    assert_eq!(rig.wire(), wire, "the read-only settle sent no key");
+    assert!(rig.submitted().is_empty());
+}
+
+#[test]
+fn normal_app_exit_during_hold_removes_the_owned_client() {
+    let rig = orchestrator("sidecar-panel-quit", "claude", &composer_cursor(IDLE, 3));
+    let (pane, _, _) = start_owned_dictation(&rig);
+    input(&rig, &pane, "O");
+    input(&rig, &pane, "qq");
+    assert!(
+        await_evidence(PANE_WAIT, || {
+            let app_closed = !rig.tmux(&["capture-pane", "-p", "-t", &pane]).0;
+            (app_closed && dictation_children(&rig).is_empty()).then_some(())
+        })
+        .is_some(),
+        "the app must exit and leave no sidecar attached to the proved pane"
+    );
+    assert!(rig.wire().iter().all(|key| *key == b' '));
+    assert!(rig.submitted().is_empty());
+}

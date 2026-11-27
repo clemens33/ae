@@ -1289,7 +1289,16 @@ mod tests {
 
     #[test]
     fn a_session_with_a_window_zero_chat_lands_on_it_only_while_it_is_live() {
+        const HUMAN: &str =
+            "#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}";
         let uuid = "0e3c0a4e-7f7e-4c8e-9a3b-2d1f00000001";
+        let released = format!(
+            "if-shell -F -t %9 \"#{{==:#{{session_id}},$7}}\" \
+             {{ if-shell -F -t '$7:^' \
+             \"#{{P:#{{?#{{&&:#{{==:#{{pane_id}},%3}},#{{&&:#{{==:#{{@ae_console}},{uuid}}},#{{!=:#{{pane_dead}},1}}}}}},1,}}}}\" \
+             {{ select-window -t %3 ; select-pane -t %3 }} \
+             {{ select-window -t %9 ; select-pane -t %9 }} }}"
+        );
         assert_eq!(
             words(&Op::SetClientSessionHook {
                 session_id: "$7",
@@ -1301,13 +1310,7 @@ mod tests {
                 "-t".to_owned(),
                 "%9".to_owned(),
                 "client-session-changed[0]".to_owned(),
-                format!(
-                    "if-shell -F -t %9 \"#{{==:#{{session_id}},$7}}\" \
-                     {{ if-shell -F -t '$7:^' \
-                     \"#{{P:#{{?#{{&&:#{{==:#{{pane_id}},%3}},#{{&&:#{{==:#{{@ae_console}},{uuid}}},#{{!=:#{{pane_dead}},1}}}}}},1,}}}}\" \
-                     {{ select-window -t %3 ; select-pane -t %3 }} \
-                     {{ select-window -t %9 ; select-pane -t %9 }} }}"
-                ),
+                format!("if-shell -F '{HUMAN}' {{ {released} }}"),
             ]
         );
     }
@@ -1325,7 +1328,11 @@ mod tests {
                 "-t",
                 "%9",
                 "client-session-changed[0]",
-                "if-shell -F -t %9 \"#{==:#{session_id},$7}\" \"select-window -t %9 ; select-pane -t %9\""
+                concat!(
+                    "if-shell -F '#{?#{&&:#{client_control_mode},",
+                    "#{==:#{client_termname},ae-dictation}},0,1}' { ",
+                    "if-shell -F -t %9 \"#{==:#{session_id},$7}\" \"select-window -t %9 ; select-pane -t %9\" }",
+                )
             ]
         );
         assert_eq!(

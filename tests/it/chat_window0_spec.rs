@@ -692,15 +692,18 @@ fn chat_window0_dead_or_absent_chat_attach_falls_back_to_lead() {
 
 #[test]
 fn chat_window0_off_focus_hook_keeps_pre_feature_lead_command() {
+    const HUMAN: &str =
+        "#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}";
     let rig = Rig::new("offhook", Shape::Pair, Some("off"));
     rig.launch("cwOffHook");
     let main = rig.main("cwOffHook");
     let hooks = rig.tmux(&["show-hooks", "-t", "cwOffHook"]);
     let id = rig.tmux(&["display-message", "-p", "-t", "cwOffHook", "#{session_id}"]);
-    let expected = format!(
-        "client-session-changed[0] if-shell -F -t \"{main}\" \"#{{==:#{{session_id}},{}}}\" \"select-window -t {main} ; select-pane -t {main}\"",
+    let released = format!(
+        "if-shell -F -t \"{main}\" \"#{{==:#{{session_id}},{}}}\" \"select-window -t {main} ; select-pane -t {main}\"",
         id.trim()
     );
+    let expected = format!("client-session-changed[0] if-shell -F \"{HUMAN}\" {{ {released} }}");
     assert_eq!(
         hooks.lines().filter(|line| *line == expected).count(),
         1,
