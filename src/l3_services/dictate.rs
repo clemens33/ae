@@ -305,14 +305,14 @@ fn seen(reading: Option<&Reading>) -> Seen {
 }
 
 /// Whether `reading` may start a hold: an empty idle composer in a Claude
-/// that the frame grammar positively reads as idle. An empty box alone is no
-/// proof, since a busy Claude draws one under its spinner too, and a frame the
-/// grammar cannot place is no idle witness.
+/// that the dictation start reads as idle ([`harness_state::dictation_start_state`]).
+/// An empty box alone is no proof, since a busy Claude draws one under its
+/// spinner too, and a frame the grammar cannot place is no idle witness.
 fn startable(reading: Option<&Reading>) -> bool {
     seen(reading) == Seen::Idle
         && reading.is_some_and(|reading| {
             let plain = region::plain_text(&reading.frame);
-            harness_state::classify(&plain, TOOL) == HarnessState::Idle
+            harness_state::dictation_start_state(&plain, TOOL) == HarnessState::Idle
         })
 }
 

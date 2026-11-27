@@ -633,12 +633,16 @@ dictation stays unsent; no key was sent` when anything exists at
 Linux. ae checks existence only and reads neither, and on any other system it
 always refuses. Then one fresh
 capture must show no dictation, an empty composer, a readable voice footer and
-a Claude that the frame grammar reads as idle. A busy Claude refuses with
+a Claude that the dictation start reads as idle. A busy Claude refuses with
 `refused: dictation waits until Claude is idle; it is busy now`. A frame that
 the grammar cannot place refuses with `refused: the orchestrator pane state is
-not recognized; no key was sent`. Above the composer the grammar skips only
-Claude's measured startup notices: the login expiry, the weekly limit and
-`◐ medium · /effort`. Any other effort word or notice fails closed.
+not recognized; no key was sent`. Above the composer the dictation start skips
+only Claude's measured startup notices: the login expiry, the weekly limit and
+`◐ medium · /effort`. The row behind them tells the state. A fresh start with
+no turn yet counts as idle only when the startup banner and those notices are
+the only rows above the composer. Any other row, effort word or notice fails
+closed. Every other ae reader keeps the plain frame grammar, which reads a
+fresh start as not yet idle.
 
 ae then attaches one tmux control client of its own to the proven
 orchestrator session, with `TERM=ae-dictation` and `-f no-output,ignore-size`.

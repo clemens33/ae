@@ -930,7 +930,7 @@ impl App {
     /// an empty composer, an idle Claude, a footer it reads. Last, the pane's
     /// process, which every key of the dictation is checked against.
     fn mic_start(&self, drawn: &Drawn, label: &str) -> Result<Start, String> {
-        use crate::harness_state::{Dictation, HarnessState, classify, dictation};
+        use crate::harness_state::{Dictation, HarnessState, dictation, dictation_start_state};
 
         if let Some(refusal) = version_refusal() {
             return Err(refusal.to_owned());
@@ -1013,7 +1013,7 @@ impl App {
         if state == Dictation::Unread {
             return refused("refused: dictation cannot read Claude's voice footer");
         }
-        match classify(&plain, tool) {
+        match dictation_start_state(&plain, tool) {
             HarnessState::Idle => {}
             HarnessState::Busy => {
                 return refused("refused: dictation waits until Claude is idle; it is busy now");

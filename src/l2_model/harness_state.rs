@@ -936,26 +936,15 @@ fn read_claude(capture: &str) -> Option<FrameReading> {
     if !claude_input_frame(&lines, prompt_index) {
         return None;
     }
-    let above = &lines[..prompt_index];
-    // The startup notices sit between the box and the row that tells the
-    // state, and say nothing about it themselves.
-    let mut noticed = false;
-    let witness = above.iter().rposition(|line| {
-        if claude_chrome(line) {
-            return false;
-        }
-        let notice = claude_startup_notice(line);
-        noticed |= notice;
-        !notice
-    });
-    let current = witness.map(|at| &above[at]);
-    let state = match (witness, current) {
-        (_, Some(line)) if claude_spinner(line) => HarnessState::Busy,
-        (_, Some(line)) if claude_done(line) => HarnessState::Idle,
-        (_, Some(line)) if claude_compacted(line) => HarnessState::Idle,
-        (Some(at), _) if claude_banner(&above[..=at]) => HarnessState::Idle,
-        // An empty transcript is idle; a notice alone proves nothing.
-        (None, _) if !noticed => HarnessState::Idle,
+    let current = lines[..prompt_index]
+        .iter()
+        .rev()
+        .find(|line| !claude_chrome(line));
+    let state = match current {
+        Some(line) if claude_spinner(line) => HarnessState::Busy,
+        Some(line) if claude_done(line) => HarnessState::Idle,
+        Some(line) if claude_compacted(line) => HarnessState::Idle,
+        None => HarnessState::Idle,
         _ => HarnessState::Unknown,
     };
     Some(FrameReading {
@@ -964,14 +953,60 @@ fn read_claude(capture: &str) -> Option<FrameReading> {
     })
 }
 
-/// Whether `rows` end in the three-row banner Claude Code draws at startup
-/// (2.1.332, measured: `claude-voice-startup-effort-2.1.332-120x40.txt`): the
-/// logo with `Claude Code v…`, the model row, the working directory. Nothing
-/// has been said since, so the frame is a fresh idle one.
-fn claude_banner(rows: &[Cow<'_, str>]) -> bool {
-    let [.., name, model, place] = rows else {
-        return false;
+/// The state a hold dictation may start from in the plain frame `capture`:
+/// [`classify`], and where that has no verdict on a Claude frame, the
+/// verdict [`claude_start_state`] reads past the measured startup notices.
+/// Only the dictation start reads a frame this way, in the panel's preflight
+/// and in the controller's last read before the first Space. Every other
+/// reader keeps [`classify`], which has no verdict for a frame before any
+/// turn.
+#[must_use]
+pub fn dictation_start_state(capture: &str, tool: ToolKind) -> HarnessState {
+    match classify(capture, tool) {
+        HarnessState::Unknown if tool.dictates() => claude_start_state(capture),
+        state => state,
+    }
+}
+
+/// The Claude Code 2.1.332 verdict of the plain frame `capture` when the
+/// measured startup notices (`claude-voice-startup-effort-2.1.332-120x40.txt`
+/// and `claude-voice-startup-notices-2.1.332-120x41.txt`) sit below the row
+/// that tells the state. Apart from chrome, the rows above the box are read
+/// from the box upwards: the trailing notices say nothing, and the row behind
+/// them tells the state as [`classify`] reads it (a spinner is busy, a
+/// finished or compacted turn is idle). Otherwise the frame is idle only as
+/// the measured fresh start: the three banner rows first, then the notices
+/// alone. Any other row, above the banner too, leaves the frame unknown.
+fn claude_start_state(capture: &str) -> HarnessState {
+    let lines = clean_lines(capture);
+    let Some(prompt_index) = lines.iter().rposition(|line| *line == "❯") else {
+        return HarnessState::Unknown;
     };
+    if !claude_input_frame(&lines, prompt_index) {
+        return HarnessState::Unknown;
+    }
+    let rows: Vec<&Cow<'_, str>> = lines[..prompt_index]
+        .iter()
+        .filter(|line| !claude_chrome(line))
+        .collect();
+    let notices = rows
+        .iter()
+        .rev()
+        .take_while(|line| claude_startup_notice(line))
+        .count();
+    let behind = &rows[..rows.len() - notices];
+    match behind {
+        [.., line] if claude_spinner(line) => HarnessState::Busy,
+        [.., line] if claude_done(line) || claude_compacted(line) => HarnessState::Idle,
+        [name, model, place] if claude_banner(name, model, place) => HarnessState::Idle,
+        _ => HarnessState::Unknown,
+    }
+}
+
+/// Whether `name`, `model` and `place` are the three-row banner Claude Code
+/// draws at startup: the logo with `Claude Code v…`, the model row, the
+/// working directory.
+fn claude_banner(name: &str, model: &str, place: &str) -> bool {
     name.starts_with("▐▛███▛█   Claude Code v")
         && model.starts_with("▝▜██████▀  ")
         && place.starts_with("▝▝   ▝▝   ")
@@ -1483,10 +1518,10 @@ mod tests {
         ToolKind::Unknown,
     ];
 
-    /// The rows Claude Code 2.1.332 draws between its startup banner and the
-    /// box, measured on two real captures, prove no state on their own.
+    /// The measured fresh start of Claude Code 2.1.332 is idle for the
+    /// dictation start alone. [`classify`] keeps no verdict for it.
     mod startup {
-        use super::super::{HarnessState, classify};
+        use super::super::{HarnessState, classify, dictation_start_state};
         use crate::tool::ToolKind;
 
         const BANNER: &str = include_str!(
@@ -1497,9 +1532,13 @@ mod tests {
         );
         const LOGIN: &str = "⚠ Your login expires in 3 days · run /login to renew";
         const EFFORT: &str = "◐ medium · /effort";
+        const WEEKLY: &str = "You've used 84% of your weekly limit · resets Nov 30 at 3am (Europe/Vienna) · try /model opus · more runway";
+        const SPINNER: &str = "✻ Enchanting… (12s · esc to interrupt)";
+        const DONE: &str = "✻ Worked for 2s · done 9:10 PM";
+        const COMPACTED: &str = "  ⎿  Compacted (ctrl+o to see full summary)";
 
         fn state(frame: &str) -> HarnessState {
-            classify(frame, ToolKind::Claude)
+            dictation_start_state(frame, ToolKind::Claude)
         }
 
         /// `frame` with the three banner rows removed.
@@ -1515,41 +1554,33 @@ mod tests {
         }
 
         #[test]
-        fn the_startup_banner_behind_its_notices_is_idle() {
+        fn the_measured_fresh_start_is_idle_for_the_dictation_start_only() {
             assert!(
-                BANNER.contains(EFFORT) && NOTICES.contains(LOGIN),
+                BANNER.contains(EFFORT) && NOTICES.contains(LOGIN) && NOTICES.contains(WEEKLY),
                 "premise"
             );
-            assert_eq!(state(BANNER), HarnessState::Idle);
-            assert_eq!(state(NOTICES), HarnessState::Idle);
+            for frame in [BANNER, NOTICES] {
+                assert_eq!(state(frame), HarnessState::Idle);
+                assert_eq!(
+                    classify(frame, ToolKind::Claude),
+                    HarnessState::Unknown,
+                    "the generic reading has no verdict before any turn"
+                );
+            }
+            for tool in [ToolKind::Codex, ToolKind::Muse, ToolKind::Unknown] {
+                assert_eq!(dictation_start_state(BANNER, tool), HarnessState::Unknown);
+            }
         }
 
         #[test]
-        fn a_finished_turn_behind_the_notices_is_idle_and_a_spinner_is_busy() {
-            let done = NOTICES.replacen(
-                LOGIN,
-                &format!("✻ Worked for 2s · done 9:10 PM\n{LOGIN}"),
-                1,
-            );
-            assert_ne!(done, NOTICES);
-            assert_eq!(state(&bannerless(&done)), HarnessState::Idle);
-            let spinning = BANNER.replacen(
-                EFFORT,
-                &format!("✻ Enchanting… (12s · esc to interrupt)\n{EFFORT}"),
-                1,
-            );
-            assert_ne!(spinning, BANNER);
-            assert_eq!(state(&spinning), HarnessState::Busy);
-        }
-
-        #[test]
-        fn notices_without_a_witness_behind_them_are_unknown() {
-            let notices = bannerless(NOTICES);
-            assert!(notices.contains(LOGIN) && !notices.contains("Claude Code v"));
-            assert_eq!(state(&notices), HarnessState::Unknown);
-            let effort = bannerless(BANNER);
-            assert!(effort.contains(EFFORT) && !effort.contains("Claude Code v"));
-            assert_eq!(state(&effort), HarnessState::Unknown);
+        fn the_generic_verdict_stands_for_every_other_frame() {
+            for frame in [
+                include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-busy-167x40.txt"),
+            ] {
+                assert_ne!(classify(frame, ToolKind::Claude), HarnessState::Unknown);
+                assert_eq!(state(frame), classify(frame, ToolKind::Claude));
+            }
             let effort_gone = bannerless(BANNER).replace(EFFORT, "");
             assert_eq!(
                 state(&effort_gone),
@@ -1558,20 +1589,67 @@ mod tests {
             );
         }
 
-        /// Only the measured shapes are skipped: a row that merely looks like a
-        /// notice stays the row that tells the state, over an old idle witness
-        /// too.
+        /// The row behind the measured notices tells the state as `classify`
+        /// reads it, with the banner above it or without: a spinner is busy,
+        /// a finished or compacted turn is idle. `classify` itself, which
+        /// stops at the nearest notice, has no verdict for any of them.
         #[test]
-        fn a_row_shaped_like_a_notice_still_tells_the_state() {
-            const WEEKLY: &str = "You've used 84% of your weekly limit · resets Nov 30 at 3am (Europe/Vienna) · try /model opus · more runway";
-            assert!(NOTICES.contains(WEEKLY), "premise");
-            let old = NOTICES.replacen(
-                LOGIN,
-                &format!("✻ Worked for 2s · done 9:10 PM\n{LOGIN}"),
-                1,
-            );
-            let old = bannerless(&old);
-            assert_eq!(state(&old), HarnessState::Idle, "premise");
+        fn a_turn_behind_the_notices_tells_the_state() {
+            for (row, want) in [
+                (SPINNER, HarnessState::Busy),
+                (DONE, HarnessState::Idle),
+                (COMPACTED, HarnessState::Idle),
+            ] {
+                let behind_effort = BANNER.replacen(EFFORT, &format!("{row}\n{EFFORT}"), 1);
+                let behind_notices = NOTICES.replacen(LOGIN, &format!("{row}\n{LOGIN}"), 1);
+                assert_ne!(behind_effort, BANNER, "premise: {row}");
+                assert_ne!(behind_notices, NOTICES, "premise: {row}");
+                for frame in [
+                    behind_effort.clone(),
+                    behind_notices.clone(),
+                    bannerless(&behind_effort),
+                    bannerless(&behind_notices),
+                ] {
+                    assert_eq!(
+                        classify(&frame, ToolKind::Claude),
+                        HarnessState::Unknown,
+                        "premise: {frame}"
+                    );
+                    assert_eq!(state(&frame), want, "{frame}");
+                }
+            }
+        }
+
+        /// Every non-chrome row above the box counts: one the reading cannot
+        /// place refuses wherever it sits, above the banner too, and so does
+        /// a turn that is not directly behind the notices.
+        #[test]
+        fn a_row_outside_the_measured_shape_is_unknown_wherever_it_sits() {
+            const UNFAMILIAR: &str = "Unrecognized vendor state";
+            let between = BANNER.replacen("▝▜██████▀", &format!("{UNFAMILIAR}\n▝▜██████▀"), 1);
+            let covered = NOTICES.replacen(LOGIN, &format!("{DONE}\n{UNFAMILIAR}\n{LOGIN}"), 1);
+            for frame in [
+                format!("{UNFAMILIAR}\n{BANNER}"),
+                format!("{UNFAMILIAR}\n{NOTICES}"),
+                format!("{SPINNER}\n{BANNER}"),
+                format!("{DONE}\n{NOTICES}"),
+                BANNER.replacen(EFFORT, UNFAMILIAR, 1),
+                NOTICES.replacen(LOGIN, &format!("{LOGIN}\n{UNFAMILIAR}"), 1),
+                between,
+                covered,
+                bannerless(NOTICES),
+                bannerless(BANNER),
+            ] {
+                assert_ne!(frame, BANNER);
+                assert_ne!(frame, NOTICES);
+                assert_eq!(state(&frame), HarnessState::Unknown, "{frame}");
+            }
+        }
+
+        /// Only the measured notice shapes are skipped: a row that merely looks
+        /// like one makes the frame no fresh start.
+        #[test]
+        fn a_row_shaped_like_a_notice_is_no_notice() {
             for (row, near) in [
                 (LOGIN, "⚠ Your login expires in soon · run /login to renew"),
                 (
@@ -1595,8 +1673,8 @@ mod tests {
                     "You've used 84% of your weekly limit · resets Nov 30 at 3am (Europe/Vienna)",
                 ),
             ] {
-                let frame = old.replacen(row, near, 1);
-                assert_ne!(frame, old, "premise: {near}");
+                let frame = NOTICES.replacen(row, near, 1);
+                assert_ne!(frame, NOTICES, "premise: {near}");
                 assert_eq!(state(&frame), HarnessState::Unknown, "{near}");
             }
             for near in [
@@ -1605,12 +1683,13 @@ mod tests {
                 "◐ medium · /effort now",
             ] {
                 let frame = BANNER.replacen(EFFORT, near, 1);
+                assert_ne!(frame, BANNER, "premise: {near}");
                 assert_eq!(state(&frame), HarnessState::Unknown, "{near}");
             }
         }
 
         #[test]
-        fn a_partial_or_reordered_banner_is_no_witness() {
+        fn a_partial_or_reordered_banner_is_no_fresh_start() {
             let rows: Vec<&str> = BANNER.lines().collect();
             let at = rows
                 .iter()
@@ -1622,8 +1701,8 @@ mod tests {
             let mut missing = rows.clone();
             missing.remove(at);
             assert_eq!(state(&(missing.join("\n") + "\n")), HarnessState::Unknown);
-            let other = BANNER.replacen(EFFORT, "an unrecognized vendor row", 1);
-            assert_eq!(state(&other), HarnessState::Unknown);
+            let doubled = BANNER.replacen(EFFORT, &format!("{}\n{EFFORT}", rows[at]), 1);
+            assert_eq!(state(&doubled), HarnessState::Unknown);
         }
     }
 
