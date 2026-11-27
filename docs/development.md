@@ -922,7 +922,7 @@ own turn (an upper bound: its delivery is not observed, and a tool that was abse
 launched counts none). Knobs: `AE_HARNESS_SMOKE_TOOLS` (default `claude,codex,muse,opencode`;
 `agy`, `grok`, `gemini` are opt-in; an unknown, empty or repeated name refuses before any state is
 created), `AE_HARNESS_SMOKE_<TOOL>_CMD` (the profile command), `AE_HARNESS_SMOKE_CLAUDE_HOME` (the
-claude login, for example `~/.claude-p`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_SECS`,
+claude login, for example `~/.claude-work`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_SECS`,
 `_TOTAL_SECS` (a tool started late gets only what is left of the total), `AE_HARNESS_SMOKE_REPORT`
 (a directory for the TSV report; asked for and unwritable is a failure). Raw tool output is never
 printed: a version is reduced to its numeric token and a refused verb to its exit code. The one

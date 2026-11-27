@@ -276,7 +276,7 @@ Every record ae appends ends in `"schema_version":1`. A record without it is **v
 ```json
 {"ts":"2026-11-01T10:00:00Z","actor":"lead","action":"worker-birth","target":"scout","target_slot":"spawned.3",
  "target_session_id":"<session uuid>","birth_v":1,"birth":"<first launch_id>","birth_tool":"claude",
- "birth_client":"claude-p","birth_model":"sonnet","birth_effort":"high","birth_profile":"sonnet5h","schema_version":1}
+ "birth_client":"claude-work","birth_model":"sonnet","birth_effort":"high","birth_profile":"sonnet5h","schema_version":1}
 ```
 
 - **`birth`** is the seat's first `launch_id`. A journal record never rotates it, and a reseat's new launch id matches no birth.
