@@ -582,6 +582,19 @@ fn unfamiliar_rows_and_a_spinner_behind_notices_cannot_prove_idle() {
 }
 
 #[test]
+fn an_unfamiliar_row_above_the_startup_banner_refuses_before_the_probe() {
+    let frame = format!("Unrecognized vendor state\n{IDLE}");
+    let mut script = Circuit::start_with([]);
+    script.reads[0] = Sample::frame(&frame);
+    let _ = script.run(Duration::from_secs(1));
+    assert_eq!(
+        script.spaces(),
+        0,
+        "the startup banner cannot hide an unfamiliar row"
+    );
+}
+
+#[test]
 fn only_a_readable_idle_frame_can_wait_for_the_start_warmup() {
     let mut idle = Circuit::start_with([Sample::frame(HOLD)]);
     idle.reads.insert(1, Sample::frame(IDLE));
