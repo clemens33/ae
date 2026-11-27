@@ -6689,7 +6689,7 @@ mod tests {
             go: false,
         };
         let default = scope(&["solx"], &["codex"]);
-        let mic = scope(&[], &["codex-mic"]);
+        let work = scope(&[], &["codex-work"]);
         let rollout = |profile: &str, client: Option<&str>, id: &str| FleetRollout {
             owner: format!("session:{id}"),
             profile: profile.to_owned(),
@@ -6700,7 +6700,7 @@ mod tests {
         };
         let fleet = FleetRollouts {
             rollouts: vec![
-                rollout("solx", Some("codex-mic"), "overridden"),
+                rollout("solx", Some("codex-work"), "overridden"),
                 rollout("solx", None, "legacy"),
                 rollout("solx", Some("ghost"), "unclaimed"),
             ],
@@ -6712,7 +6712,7 @@ mod tests {
                 .map(|rollout| rollout.id.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(owners(&mic), vec!["overridden".to_owned()]);
+        assert_eq!(owners(&work), vec!["overridden".to_owned()]);
         assert_eq!(owners(&default), vec!["legacy".to_owned()]);
     }
 
@@ -7164,10 +7164,10 @@ mod tests {
                     },
                 ),
                 (
-                    "mic".to_owned(),
+                    "work".to_owned(),
                     crate::config::Client {
                         executable: "claude".to_owned(),
-                        config_home: Some("$HOME/.claude-mic".to_owned()),
+                        config_home: Some("$HOME/.claude-work".to_owned()),
                         manual_resets: None,
                         manual_resets_note: None,
                         tool: ToolKind::Claude,
@@ -7176,7 +7176,7 @@ mod tests {
             ],
             profiles: vec![
                 ("default".to_owned(), "claude".to_owned()),
-                ("custom".to_owned(), "mic".to_owned()),
+                ("custom".to_owned(), "work".to_owned()),
                 ("moved-home".to_owned(), "HOME=/other claude".to_owned()),
             ],
             ..crate::config::IdentityConfig::default()
@@ -7186,12 +7186,12 @@ mod tests {
         assert_eq!(scopes[0].home, Some(canonical_root.join(".claude")));
         assert_eq!(scopes[0].source, Some(canonical_root.join(".claude.json")));
         assert!(scopes[0].clients.is_empty(), "default alias stays concise");
-        assert_eq!(scopes[1].home, Some(canonical_root.join(".claude-mic")));
+        assert_eq!(scopes[1].home, Some(canonical_root.join(".claude-work")));
         assert_eq!(
             scopes[1].source,
-            Some(canonical_root.join(".claude-mic/.claude.json"))
+            Some(canonical_root.join(".claude-work/.claude.json"))
         );
-        assert_eq!(scopes[1].clients, ["mic"]);
+        assert_eq!(scopes[1].clients, ["work"]);
         assert_eq!(
             scopes[2].home,
             Some(std::path::PathBuf::from("/other/.claude"))
@@ -7208,7 +7208,7 @@ mod tests {
         let root =
             std::path::PathBuf::from(format!("/tmp/ae-quota-claude-homes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let custom = root.join(".claude-mic");
+        let custom = root.join(".claude-work");
         std::fs::create_dir_all(&custom).expect("custom client home");
         let cache = |percent| {
             format!(
@@ -7374,11 +7374,11 @@ mod tests {
 
     fn unusable_claude_group(now: i64, observed_at: Option<i64>) -> Group {
         Group {
-            profiles: vec!["claude-mic".to_owned()],
+            profiles: vec!["claude-work".to_owned()],
             tool: ToolKind::Claude,
-            home: Some(std::path::PathBuf::from("/tmp/mic/.claude-mic")),
+            home: Some(std::path::PathBuf::from("/tmp/work/.claude-work")),
             source: Some(std::path::PathBuf::from(
-                "/tmp/mic/.claude-mic/.claude.json",
+                "/tmp/work/.claude-work/.claude.json",
             )),
             clients: Vec::new(),
             rollout: None,
@@ -7418,11 +7418,11 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".claude-mic")).expect("claude-mic home");
+        std::fs::create_dir_all(root.join(".claude-work")).expect("claude-work home");
         let config = root.join("config");
         std::fs::write(
             &config,
-            "[profiles]\nclaude-mic = CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\n",
+            "[profiles]\nclaude-work = CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --model fable\n",
         )
         .expect("identity config");
         let now = crate::time::Timestamp::parse("2026-09-13T09:00:00Z")
@@ -7435,7 +7435,7 @@ mod tests {
              {{\"kind\":\"weekly_all\",\"percent\":59,\"resets_at\":\"2026-09-13T00:00:00Z\"}}]}}}}}}",
             fetched * 1_000
         );
-        std::fs::write(root.join(".claude-mic/.claude.json"), cache).expect("claude cache");
+        std::fs::write(root.join(".claude-work/.claude.json"), cache).expect("claude cache");
 
         let observation = super::observe(&super::Inputs {
             home: Some(&root),
@@ -7461,7 +7461,7 @@ mod tests {
         assert!(!table.contains("8%"), "{table}");
         let scopes = observation.quota_view();
         assert_eq!(scopes.len(), 1);
-        assert_eq!(scopes[0].title, "claude · ~/.claude-mic");
+        assert_eq!(scopes[0].title, "claude · ~/.claude-work");
         assert_eq!(
             scopes[0].only.as_deref(),
             Some(
@@ -7477,11 +7477,11 @@ mod tests {
         let root =
             std::path::PathBuf::from(format!("/tmp/ae-quota-observe-full-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".claude-mic")).expect("claude-mic home");
+        std::fs::create_dir_all(root.join(".claude-work")).expect("claude-work home");
         let config = root.join("config");
         std::fs::write(
             &config,
-            "[profiles]\nclaude-mic = CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\n",
+            "[profiles]\nclaude-work = CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --model fable\n",
         )
         .expect("identity config");
         let now = 1_788_858_600;
@@ -7490,7 +7490,7 @@ mod tests {
              {{\"kind\":\"session\",\"percent\":8,\"resets_at\":\"2026-09-08T11:00:00Z\"}}]}}}}}}",
             (now - 60) * 1_000
         );
-        std::fs::write(root.join(".claude-mic/.claude.json"), cache).expect("claude cache");
+        std::fs::write(root.join(".claude-work/.claude.json"), cache).expect("claude cache");
         let inputs = super::Inputs {
             home: Some(&root),
             global: Some(&config),
@@ -8206,10 +8206,10 @@ mod tests {
             entry.source = Some(std::path::PathBuf::from(format!("/s{tail}")));
             entry
         };
-        let scopes = viewed(vec![tail(""), tail("-mic")]);
+        let scopes = viewed(vec![tail(""), tail("-work")]);
         assert!(scopes[0].title.contains("...") && scopes[0].title.contains("claude"));
-        assert!(!scopes[0].title.contains("claude-mic"));
-        assert!(scopes[1].title.contains("claude-mic"));
+        assert!(!scopes[0].title.contains("claude-work"));
+        assert!(scopes[1].title.contains("claude-work"));
     }
 
     #[test]
@@ -9150,25 +9150,25 @@ mod tests {
         let mut group = unusable_claude_group(10_000, Some(9_000));
         assert_eq!(
             super::scope_label(&group, None, 10_000),
-            "claude · /tmp/mic/.claude-mic"
+            "claude · /tmp/work/.claude-work"
         );
 
         group.plan = Some(plan_max_20x(Some(9_000)));
         assert_eq!(
             super::scope_label(&group, None, 10_000),
-            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported 16m ago)"
+            "claude · /tmp/work/.claude-work · plan: claude max 20x (reported 16m ago)"
         );
 
         group.plan = Some(plan_max_20x(Some(20_000)));
         assert_eq!(
             super::scope_label(&group, None, 10_000),
-            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported)"
+            "claude · /tmp/work/.claude-work · plan: claude max 20x (reported)"
         );
 
         group.plan = Some(plan_max_20x(None));
         assert_eq!(
             super::scope_label(&group, None, 10_000),
-            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported)"
+            "claude · /tmp/work/.claude-work · plan: claude max 20x (reported)"
         );
     }
 

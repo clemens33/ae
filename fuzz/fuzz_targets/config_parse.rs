@@ -62,7 +62,7 @@ fuzz_target!(|data: &[u8]| {
         &text,
     ));
     let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
-    let _ = std::hint::black_box(pairs.judge("opus55x", "cc-mic"));
+    let _ = std::hint::black_box(pairs.judge("opus55x", "cc-work"));
     let _ = std::hint::black_box(ae::telegram::validate_settings_in(
         std::path::Path::new("config"),
         &text,

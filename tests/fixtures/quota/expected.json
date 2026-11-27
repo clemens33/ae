@@ -45,8 +45,8 @@
       ]
     },
     {
-      "profiles": ["micx"],
-      "scope": "claude · mic",
+      "profiles": ["workx"],
+      "scope": "claude · work",
       "tool": "claude",
       "plan": null,
       "rollout_owner": null,

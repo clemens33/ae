@@ -3742,7 +3742,7 @@ mod tests {
     const V2: &str = "[profiles]\n\
         fable5 = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"\n\
         gpt56sol = \"codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh\"\n\
-        mic = \"CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\"\n\
+        work = \"CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --model fable\"\n\
         [roster]\n\
         lead = fable5\n\
         colead = gpt56sol\n\
@@ -3809,11 +3809,11 @@ mod tests {
                 .iter()
                 .map(|(k, _)| k.as_str())
                 .collect::<Vec<_>>(),
-            ["fable5", "gpt56sol", "mic"]
+            ["fable5", "gpt56sol", "work"]
         );
         assert_eq!(
-            cfg.profile("mic"),
-            Some("CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable"),
+            cfg.profile("work"),
+            Some("CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --model fable"),
             "a quoted value keeps its inner bytes, $HOME included"
         );
         assert_eq!(
@@ -3891,7 +3891,7 @@ mod tests {
     #[test]
     fn the_shared_client_expansion_leaves_every_profile_resolution_byte_identical() {
         let (_f, cfg) = v2(
-            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+            "[clients]\ncc = claude config_home=$HOME/.claude-work\nplain = codex\n\
              [profiles]\nhomed = cc --model fable\nbare = plain -m sol\n\
              abs = /usr/bin/cc --flag\nstranger = nosuchclient --x\n\
              [roster]\nlead = homed\n[workspace]\nmain = lead\n",
@@ -3900,7 +3900,7 @@ mod tests {
         for (profile, text, label) in [
             (
                 "homed",
-                "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable",
+                "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --model fable",
                 Some("cc"),
             ),
             ("bare", "codex -m sol", Some("plain")),
@@ -3923,7 +3923,7 @@ mod tests {
     #[test]
     fn override_replaces_the_launch_word_and_reports_the_original_binary() {
         let (_f, cfg) = v2(
-            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+            "[clients]\ncc = claude config_home=$HOME/.claude-work\nplain = codex\n\
              [profiles]\nhomed = cc --model fable\nbare = plain -m sol\n\
              abs = /usr/bin/cc --flag\nstranger = nosuchclient --x\n\
              [roster]\nlead = homed\n[workspace]\nmain = lead\n",
@@ -3934,7 +3934,7 @@ mod tests {
             .expect("same-client override resolves");
         assert_eq!(
             resolved.command.as_str(),
-            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable"
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --model fable"
         );
         assert_eq!(resolved.command.client_label(), Some("cc"));
         assert_eq!(resolved.original_binary, "claude");
@@ -3953,7 +3953,7 @@ mod tests {
             .expect("path profile resolves");
         assert_eq!(
             resolved.command.as_str(),
-            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --flag"
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --flag"
         );
         assert_eq!(resolved.original_binary, "cc");
         // A profile that names no client still reports its own word.
@@ -3962,7 +3962,7 @@ mod tests {
             .expect("clientless profile resolves");
         assert_eq!(
             resolved.command.as_str(),
-            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --x"
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --x"
         );
         assert_eq!(resolved.original_binary, "nosuchclient");
         assert_eq!(resolved.original_client, None);
@@ -3990,7 +3990,7 @@ mod tests {
     #[test]
     fn override_retakes_the_client_env_conflict_for_its_pair() {
         let (_f, cfg) = v2(
-            "[clients]\nclaude = claude\ncc = claude config_home=$HOME/.claude-mic\n\
+            "[clients]\nclaude = claude\ncc = claude config_home=$HOME/.claude-work\n\
              [profiles]\nclean = claude --model fable\n\
              dirty = CLAUDE_CONFIG_DIR=/pinned claude --model fable\n\
              [roster]\nlead = clean\n[workspace]\nmain = lead\n",
@@ -4048,7 +4048,7 @@ mod tests {
     #[test]
     fn a_client_row_resolves_on_its_own_to_its_expansion_alone() {
         let (_f, cfg) = v2(
-            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+            "[clients]\ncc = claude config_home=$HOME/.claude-work\nplain = codex\n\
              [profiles]\nhomed = cc --model fable\n\
              [roster]\nlead = homed\n[workspace]\nmain = lead\n",
         );
@@ -4059,7 +4059,7 @@ mod tests {
             .expect("client exists");
         assert_eq!(
             resolved.as_str(),
-            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude"
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude"
         );
         assert_eq!(resolved.client_label(), Some("cc"));
         let plain = cfg
@@ -4080,7 +4080,7 @@ mod tests {
     /// with an empty key would read as a bug.
     #[test]
     fn a_client_row_refusal_names_the_clients_section_not_an_absent_profile() {
-        let (_f, cfg) = v2("[clients]\ncc = claude config_home=$HOME/.claude-mic\n\
+        let (_f, cfg) = v2("[clients]\ncc = claude config_home=$HOME/.claude-work\n\
              [profiles]\nhomed = cc --model fable\n\
              [roster]\nlead = homed\n[workspace]\nmain = lead\n");
         let error = cfg.client_command("cc", None).unwrap_err();
@@ -4887,8 +4887,8 @@ mod tests {
         // Colead IMPORTANT-1: the validated assign/argv spans are transported
         // on the Seat, not reparsed downstream.
         let (_f, cfg) = v2(
-            "[profiles]\nmic = \"A=1  B=2 env -u C claude --model\tfable\"\n\
-             [roster]\nlead = mic\n[workspace]\nmain = lead\n",
+            "[profiles]\nwork = \"A=1  B=2 env -u C claude --model\tfable\"\n\
+             [roster]\nlead = work\n[workspace]\nmain = lead\n",
         );
         let plan = launch_plan(&cfg, None, None).expect("launchable");
         let seat = &plan.seats[0];
@@ -4968,7 +4968,7 @@ mod tests {
     fn the_roster_client_label_is_agent_shaped_capped_at_32() {
         // `CC` is no legacy token (those are lowercase) but IS a label the
         // config parser accepts, so the cell takes it.
-        for label in ["claude", "cc-mic", "codex", "muse", "CC", "a", "0x"] {
+        for label in ["claude", "cc-work", "codex", "muse", "CC", "a", "0x"] {
             assert!(super::is_client_label(label), "{label:?} rides");
         }
         assert!(super::is_client_label(&"l".repeat(32)), "32 rides");
@@ -4977,20 +4977,20 @@ mod tests {
         for hostile in [
             "",
             "-",
-            "cc mic",
+            "cc work",
             "cc#x",
             "cc:x",
             "cc;x",
             "-l",
             "_l",
-            "cc-mic!",
+            "cc-work!",
             over.as_str(),
             far.as_str(),
         ] {
             assert!(!super::is_client_label(hostile), "{hostile:?} falls back");
         }
-        assert!(!super::is_client_label("cc\0mic"), "NUL falls back");
-        assert!(!super::is_client_label("cc\x7fmic"), "DEL falls back");
+        assert!(!super::is_client_label("cc\0work"), "NUL falls back");
+        assert!(!super::is_client_label("cc\x7fwork"), "DEL falls back");
     }
 
     /// The display-only label lookup behind the roster's client cell: which
@@ -5000,15 +5000,15 @@ mod tests {
     #[test]
     fn profile_client_label_names_the_clients_row_without_expanding() {
         let (_f, cfg) = v2(
-            "[clients]\nclaude = claude\ncc-mic = claude config_home=$HOME/.claude-mic\n\
-             codex = codex\n[profiles]\np1 = claude --model fable\np2 = cc-mic --model fable\n\
+            "[clients]\nclaude = claude\ncc-work = claude config_home=$HOME/.claude-work\n\
+             codex = codex\n[profiles]\np1 = claude --model fable\np2 = cc-work --model fable\n\
              p3 = codex --full-auto\np4 = /usr/bin/Muse --model fable\n\
              p5 = nosuchclient --x\np6 = \"unclosed quote\n[roster]\nlead = p1\n\
              [workspace]\nmain = lead\n",
         );
         for (profile, label) in [
             ("p1", Some("claude")),
-            ("p2", Some("cc-mic")),
+            ("p2", Some("cc-work")),
             ("p3", Some("codex")),
             ("p4", None),
             ("p5", None),
@@ -5023,7 +5023,7 @@ mod tests {
         }
         // The label survives what the expansion cannot: no home, no loss.
         assert!(cfg.command("p2", None).is_err(), "expansion needs a home");
-        assert_eq!(cfg.profile_client_label("p2").as_deref(), Some("cc-mic"));
+        assert_eq!(cfg.profile_client_label("p2").as_deref(), Some("cc-work"));
         // Where the expansion succeeds the two agree — one rule, not two.
         let home = Path::new("/Users/a");
         for profile in ["p1", "p2", "p3", "p4", "p5", "p6"] {

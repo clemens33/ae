@@ -31,13 +31,13 @@ fn rig(tag: &str) -> PathBuf {
         concat!(
             "[clients]\n",
             "claude = claude\n",
-            "mic = claude config_home=$HOME/.claude-mic\n",
+            "work = claude config_home=$HOME/.claude-work\n",
             "codex = codex\n",
             "[profiles]\n",
             "fablex = claude --model fable\n",
             "fable5 = claude --model fable\n",
             "opusx = claude --model opus\n",
-            "micx = mic --model fable\n",
+            "workx = work --model fable\n",
             "astrax = codex --model astra\n",
             "solx = codex --model sol\n",
             "grok46 = grok --model grok-4.6\n",
@@ -60,12 +60,12 @@ fn rig(tag: &str) -> PathBuf {
         include_bytes!("../fixtures/quota/claude-cache.json"),
     )
     .expect("Claude cache");
-    std::fs::create_dir_all(root.join(".claude-mic")).expect("custom Claude home");
+    std::fs::create_dir_all(root.join(".claude-work")).expect("custom Claude home");
     let custom_cache =
         String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
             .replace("\"percent\": 66", "\"percent\": 77");
     std::fs::write(
-        root.join(".claude-mic/.claude.json"),
+        root.join(".claude-work/.claude.json"),
         custom_cache.as_bytes(),
     )
     .expect("custom Claude cache");
@@ -685,7 +685,7 @@ fn absent_and_unexpected_sources_are_unknown_and_read_error() {
     let root = rig("source-errors");
     std::fs::remove_file(root.join(".claude.json")).expect("remove planted cache");
     std::fs::create_dir(root.join(".claude.json")).expect("unexpected directory source");
-    std::fs::remove_file(root.join(".claude-mic/.claude.json")).expect("remove custom cache");
+    std::fs::remove_file(root.join(".claude-work/.claude.json")).expect("remove custom cache");
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = ae::quota::run(
@@ -707,7 +707,7 @@ fn absent_and_unexpected_sources_are_unknown_and_read_error() {
         "{text}"
     );
     assert!(
-        text.contains("claude · mic") && text.contains("unknown"),
+        text.contains("claude · work") && text.contains("unknown"),
         "{text}"
     );
     assert!(stderr.is_empty());
@@ -721,21 +721,23 @@ fn client_labels_sharing_one_home_merge_into_one_scope() {
         root.join("config"),
         concat!(
             "[clients]\n",
-            "mic = claude config_home=$HOME/.claude-mic\n",
-            "work = claude config_home=$HOME/.claude-mic\n",
+            "work = claude config_home=$HOME/.claude-work\n",
+            "work-alt = claude config_home=$HOME/.claude-work\n",
             "[profiles]\n",
-            "micx = mic\n",
             "workx = work\n",
+            "work-altx = work-alt\n",
         ),
     )
     .expect("profile config");
     let text = run_quota(&root);
     let _ = std::fs::remove_dir_all(&root);
     assert!(
-        text.contains("micx workx") && text.contains("claude · mic, work") && text.contains("77%"),
+        text.contains("workx work-altx")
+            && text.contains("claude · work, work-alt")
+            && text.contains("77%"),
         "{text}"
     );
-    assert_eq!(text.matches("claude · mic, work").count(), 1, "{text}");
+    assert_eq!(text.matches("claude · work, work-alt").count(), 1, "{text}");
 }
 
 #[test]
@@ -769,7 +771,7 @@ fn symlinked_client_home_and_its_target_are_one_scope() {
     use std::os::unix::fs::symlink;
 
     let root = rig("symlink-client-home");
-    let link = root.join(".claude-mic");
+    let link = root.join(".claude-work");
     let target = root.join("claude-target");
     std::fs::remove_dir_all(&link).expect("remove planted client home");
     std::fs::create_dir_all(&target).expect("target client home");
@@ -780,7 +782,7 @@ fn symlinked_client_home_and_its_target_are_one_scope() {
     std::fs::write(
         root.join("config"),
         format!(
-            "[clients]\nmic = claude config_home=$HOME/.claude-mic\ntarget = claude config_home={}\n[profiles]\nmicx = mic\ntargetx = target\n",
+            "[clients]\nwork = claude config_home=$HOME/.claude-work\nwork-target = claude config_home={}\n[profiles]\nworkx = work\nwork-targetx = work-target\n",
             target.display()
         ),
     )
@@ -788,12 +790,16 @@ fn symlinked_client_home_and_its_target_are_one_scope() {
     let text = run_quota(&root);
     let _ = std::fs::remove_dir_all(&root);
     assert!(
-        text.contains("micx targetx")
-            && text.contains("claude · mic, target")
+        text.contains("workx work-targetx")
+            && text.contains("claude · work, work-target")
             && text.contains("77%"),
         "{text}"
     );
-    assert_eq!(text.matches("claude · mic, target").count(), 1, "{text}");
+    assert_eq!(
+        text.matches("claude · work, work-target").count(),
+        1,
+        "{text}"
+    );
 }
 
 #[test]
@@ -834,7 +840,7 @@ fn a_client_no_profile_names_is_a_scope_of_its_own() {
         root.join("config"),
         concat!(
             "[clients]\n",
-            "mic = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "work = claude config_home=$HOME/.claude-work manual_resets=1\n",
             "[profiles]\n",
             "fablex = claude --model fable\n",
         ),
@@ -843,7 +849,7 @@ fn a_client_no_profile_names_is_a_scope_of_its_own() {
     let text = run_quota(&root);
     let _ = std::fs::remove_dir_all(&root);
     assert!(
-        text.contains("claude · mic") && text.contains("77%"),
+        text.contains("claude · work") && text.contains("77%"),
         "the unnamed client is read: {text}"
     );
     assert!(
@@ -856,7 +862,7 @@ fn a_client_no_profile_names_is_a_scope_of_its_own() {
     );
     let row = text
         .lines()
-        .find(|line| line.contains("claude · mic"))
+        .find(|line| line.contains("claude · work"))
         .expect("the client row");
     assert!(
         row.starts_with("- "),
@@ -873,16 +879,16 @@ fn a_client_a_profile_already_names_is_not_counted_twice() {
         root.join("config"),
         concat!(
             "[clients]\n",
-            "mic = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "work = claude config_home=$HOME/.claude-work manual_resets=1\n",
             "[profiles]\n",
-            "micx = mic --model fable\n",
+            "workx = work --model fable\n",
         ),
     )
     .expect("named client config");
     let text = run_quota(&root);
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(
-        text.matches("claude · mic").count(),
+        text.matches("claude · work").count(),
         1,
         "exactly one scope per account: {text}"
     );
@@ -1048,7 +1054,7 @@ fn an_unexpandable_profile_is_its_own_row_and_the_proven_scope_takes_the_count()
         root.join("config"),
         concat!(
             "[clients]\n",
-            "cc = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "cc = claude config_home=$HOME/.claude-work manual_resets=1\n",
             "[profiles]\n",
             "p = cc --model $MODEL\n",
         ),
@@ -1091,14 +1097,14 @@ fn an_unexpandable_profile_is_its_own_row_and_the_proven_scope_takes_the_count()
 fn a_fixed_home_profile_is_never_correlated_with_the_bare_client_by_label() {
     let root = rig("fixed-home-unrelated-variable");
     let other = root.join("other");
-    std::fs::create_dir_all(other.join(".claude-mic")).expect("other client home");
+    std::fs::create_dir_all(other.join(".claude-work")).expect("other client home");
     let cache = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
         .replace("\"percent\": 66", "\"percent\": 11");
-    std::fs::write(other.join(".claude-mic/.claude.json"), cache.as_bytes()).expect("other cache");
+    std::fs::write(other.join(".claude-work/.claude.json"), cache.as_bytes()).expect("other cache");
     std::fs::write(
         root.join("config"),
         format!(
-            "[clients]\ncc = claude config_home=$HOME/.claude-mic manual_resets=1\n[profiles]\np = HOME={} cc --model $MODEL\n",
+            "[clients]\ncc = claude config_home=$HOME/.claude-work manual_resets=1\n[profiles]\np = HOME={} cc --model $MODEL\n",
             other.display()
         ),
     )
@@ -1329,12 +1335,12 @@ fn quota_marks_unobserved_parameter_home_unknown_but_launch_resolves_injected_va
     let root = rig("parameter-home");
     std::fs::write(
         root.join("config"),
-        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-mic} claude\n",
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-work} claude\n",
     )
     .expect("profile config");
     let quota_text = run_quota(&root);
     let cfg = ae::config::parse_identity(
-        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-mic} claude\n",
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-work} claude\n",
     )
     .expect("identity config");
     let command = cfg
@@ -1367,7 +1373,7 @@ fn quota_marks_unobserved_parameter_home_unknown_but_launch_resolves_injected_va
 fn quota_self_referential_claude_config_dir_fallback_is_unknown_before_launch_injection() {
     let root = rig("parameter-home-claude-config-dir");
     let config =
-        "[profiles]\np = CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude-mic} claude\n";
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude-work} claude\n";
     std::fs::write(root.join("config"), config).expect("profile config");
     let cfg = ae::config::parse_identity(config).expect("identity config");
     let command = cfg
@@ -1400,7 +1406,7 @@ fn quota_self_referential_claude_config_dir_fallback_is_unknown_before_launch_in
 #[test]
 fn quota_nested_home_plus_claude_config_dir_fallback_is_unknown_before_launch_injection() {
     let root = rig("nested-home-plus-claude-config-dir");
-    let config = "[profiles]\np = CLAUDE_CONFIG_DIR=${HOME:+${CLAUDE_CONFIG_DIR:-$HOME/.claude-mic}} claude\n";
+    let config = "[profiles]\np = CLAUDE_CONFIG_DIR=${HOME:+${CLAUDE_CONFIG_DIR:-$HOME/.claude-work}} claude\n";
     std::fs::write(root.join("config"), config).expect("profile config");
     let cfg = ae::config::parse_identity(config).expect("identity config");
     let command = cfg
@@ -1720,7 +1726,7 @@ fn bare_quoted_assignment_is_an_unknown_command_not_a_home_prefix() {
     let root = rig("claude-bare-quoted");
     std::fs::write(
         root.join("config"),
-        "[profiles]\ncontrol = \"CLAUDE_CONFIG_DIR=$HOME/.claude-mic\" claude\n",
+        "[profiles]\ncontrol = \"CLAUDE_CONFIG_DIR=$HOME/.claude-work\" claude\n",
     )
     .expect("profile config");
     let text = run_quota(&root);
