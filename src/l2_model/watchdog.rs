@@ -3621,6 +3621,10 @@ pub struct SweepState {
 }
 
 /// What the cycle observed about the orchestrator and its durable checkpoint.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent reading per cycle fact (overview changed, NEEDS YOU changed, turn running, desk stale): no two form a state machine"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepObservation {
     /// Wall clock for this cycle.
