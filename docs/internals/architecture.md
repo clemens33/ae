@@ -325,6 +325,11 @@ shell that never asked sees a plain paste. A 2026-08-30 reproduction on Claude r
 plain-paste head loss in 4/4 trials and bracketed-paste loss in 0/6, with receiver-side
 byte-exact payloads.
 
+One fresh capture between the load and the paste is the last read before any byte lands. A
+message delivery to a modelled composer refuses there, deletes the staged buffer and pastes
+nothing when the box now holds text or reads unreadable, as it does for a dictation: a human
+who starts typing after the quiet gate keeps their draft whole (`deliver::stage_into_empty`).
+
 The transport threshold is 8192 framed bytes. Bodies at or below it are pasted directly;
 larger Claude/Codex bodies are published once in the sender's `messages/` directory and
 only a <=300-byte notice is pasted. Same-session notices use `messages/<file>`; a

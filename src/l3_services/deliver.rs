@@ -1875,6 +1875,10 @@ pub enum StageFailure {
     /// The read between the load and the paste held ([`VoiceGate`]): nothing
     /// was pasted, and the staged buffer has been deleted.
     Held(Dictation),
+    /// The read between the load and the paste found the composer no longer
+    /// empty, or no longer readable: a human started a draft after every
+    /// earlier read. Nothing was pasted, and the staged buffer has been deleted.
+    Occupied(DeferHeld),
 }
 
 /// The recording gate: ONE fresh read of a Claude pane right before each
@@ -1964,14 +1968,49 @@ pub fn stage_and_paste(
     pane: &str,
     gate: VoiceGate,
 ) -> Result<(), StageFailure> {
+    stage_into_empty(
+        server,
+        (buffer, bytes),
+        pane,
+        (gate, InputModel::Unmodelled),
+    )
+}
+
+/// [`stage_and_paste`] into a composer that must still be empty: for a
+/// modelled `composer`, the read between the load and the paste also refuses
+/// [`StageFailure::Occupied`] when the box holds text or reads unreadable.
+/// One capture answers both that and `gate`.
+///
+/// # Errors
+///
+/// As [`stage_and_paste`], plus [`StageFailure::Occupied`].
+pub fn stage_into_empty(
+    server: &ServerId,
+    (buffer, bytes): (&str, &[u8]),
+    pane: &str,
+    (gate, composer): (VoiceGate, InputModel),
+) -> Result<(), StageFailure> {
     if !transport::load_buffer(server, buffer, bytes) {
         return Err(StageFailure::Load);
     }
-    // The last read before the paste: a dictation that started after every
-    // earlier read stops it here.
-    if let Some(state) = gate.holds(server, pane) {
+    // The last read before the paste: a dictation or a human draft that
+    // started after every earlier read stops it here.
+    let refusal = if composer.is_modelled() {
+        let capture = transport::capture_screen(server, pane, Styling::Escapes);
+        gate.held_by(capture.as_deref())
+            .map(StageFailure::Held)
+            .or_else(|| {
+                let occupancy = capture.as_deref().map_or(Occupancy::Unreadable, |region| {
+                    region::occupancy(region, composer)
+                });
+                DeferHeld::of(occupancy, false).map(StageFailure::Occupied)
+            })
+    } else {
+        gate.holds(server, pane).map(StageFailure::Held)
+    };
+    if let Some(refusal) = refusal {
         let _ = transport::delete_buffer(server, buffer);
-        return Err(StageFailure::Held(state));
+        return Err(refusal);
     }
     if transport::paste_buffer(server, buffer, pane) {
         return Ok(());
@@ -2002,7 +2041,13 @@ fn submit(
     let diagnostic = input.diagnostic;
     let server = request.server;
     let pane = request.pane;
-    if let Err(failure) = staged(request, (payload, diagnostic), gate, body_file, err)? {
+    if let Err(failure) = staged(
+        request,
+        (payload, diagnostic),
+        (gate, model),
+        body_file,
+        err,
+    )? {
         return Ok(Err(failure));
     }
     if let notice::Mode::Notice(pointer) = mode {
@@ -2095,7 +2140,7 @@ fn submit(
 fn staged(
     request: &Request<'_>,
     (payload, diagnostic): (&str, &str),
-    gate: VoiceGate,
+    (gate, model): (VoiceGate, InputModel),
     body_file: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
@@ -2104,35 +2149,39 @@ fn staged(
     let paste = || Failure::Paste {
         body_file: body_file.to_owned(),
     };
-    match stage_and_paste(request.server, &buffer, payload.as_bytes(), pane, gate) {
-        Ok(()) => Ok(Ok(())),
-        Err(StageFailure::Held(voice)) => {
-            let held = DeferHeld::of_voice(voice);
-            writeln!(
-                err,
-                "ae: {} to {} ABANDONED — {}; nothing was pasted. Body preserved at {body_file}. Re-send.",
-                request.action,
-                request.logged_target,
-                held.describe()
-            )?;
-            Ok(Err(Failure::Abandoned { held }))
-        }
+    let held = match stage_into_empty(
+        request.server,
+        (&buffer, payload.as_bytes()),
+        pane,
+        (gate, model),
+    ) {
+        Ok(()) => return Ok(Ok(())),
+        Err(StageFailure::Held(voice)) => DeferHeld::of_voice(voice),
+        Err(StageFailure::Occupied(held)) => held,
         Err(StageFailure::Load) => {
             writeln!(
                 err,
                 "ae: paste transport FAILED for pane {pane} ({diagnostic}) — could not stage {} bytes. Nothing was sent.",
                 payload.chars().count()
             )?;
-            Ok(Err(paste()))
+            return Ok(Err(paste()));
         }
         Err(StageFailure::Paste) => {
             writeln!(
                 err,
                 "ae: paste FAILED into pane {pane} ({diagnostic}) — nothing was sent."
             )?;
-            Ok(Err(paste()))
+            return Ok(Err(paste()));
         }
-    }
+    };
+    writeln!(
+        err,
+        "ae: {} to {} ABANDONED — {}; nothing was pasted. Body preserved at {body_file}. Re-send.",
+        request.action,
+        request.logged_target,
+        held.describe()
+    )?;
+    Ok(Err(Failure::Abandoned { held }))
 }
 
 /// The settle an input model takes between the paste and the Enter.
@@ -2509,18 +2558,20 @@ fn under_lock(
         return Ok(Outcome::Skipped(Leg::Mismatch));
     }
     // (4) The paste, then the bounded submit under the same lock.
-    match stage_and_paste(
+    match stage_into_empty(
         request.server,
-        &buffer_name(request.pane),
-        request.text.as_bytes(),
+        (&buffer_name(request.pane), request.text.as_bytes()),
         request.pane,
-        gate,
+        (gate, request.model),
     ) {
         Ok(()) => {}
         Err(StageFailure::Held(state)) => {
             return Ok(Outcome::Skipped(Leg::Busy {
                 held: DeferHeld::of_voice(state),
             }));
+        }
+        Err(StageFailure::Occupied(held)) => {
+            return Ok(Outcome::Skipped(Leg::Busy { held }));
         }
         Err(StageFailure::Load | StageFailure::Paste) => {
             return Ok(Outcome::Skipped(Leg::PasteFailed));
