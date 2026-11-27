@@ -467,3 +467,58 @@ fn the_smallest_active_count_wins_across_labels_of_one_config_home() {
         assert_eq!(refusals(&text), 0, "case {index}: both are usable: {text}");
     }
 }
+
+#[test]
+fn an_expiry_at_the_weekly_reset_itself_gets_no_advisory() {
+    // r7: the cutoff is strict. A reset expiring at the instant the window
+    // turns over is replaced by the vendor reset, so nothing expires unused.
+    // One minute earlier the same declaration advises, so the pin is not vacuous.
+    let at_reset = "2026-09-14T09:10+00:00"; // WEEKLY_RESET, NOW + 6 d
+    let minute_before = "2026-09-14T09:09+00:00"; // WEEKLY_RESET - 60 s
+    let root = rig("at-weekly-reset", at_reset, &one_reading(10.0));
+    let text = run_quota(root.path());
+    assert_eq!(
+        cell(&text, "PACE"),
+        "unknown",
+        "fixture has no pace: {text}"
+    );
+    assert!(
+        advisories(&text).is_empty(),
+        "an expiry at the weekly reset itself is not unused: {text}"
+    );
+    let root = rig("before-weekly-reset", minute_before, &one_reading(10.0));
+    let text = run_quota(root.path());
+    assert_eq!(
+        advisories(&text).len(),
+        1,
+        "one minute before the weekly reset it advises: {text}"
+    );
+}
+
+#[test]
+fn a_known_pace_cutoff_is_strict_at_the_raw_runout_instant() {
+    // r7: one declared reset; raw 20% at NOW - 4 h and 60% at NOW in one weekly
+    // window instance: 10 %/h raw, so 40% raw headroom runs out in exactly 4 h,
+    // at 13:10Z (the judged PACE is 5 %/h over both windows). A reset expiring at
+    // that instant is not unused; one minute earlier it is. Both are before the
+    // weekly reset, so only the run-out decides.
+    let rollout =
+        record("2026-09-08T05:10:00.000Z", 20.0) + &record("2026-09-08T09:10:00.000Z", 60.0);
+    for (tag, expiry, advised) in [
+        ("at-runout", "2026-09-08T13:10+00:00", false),
+        ("minute-before-runout", "2026-09-08T13:09+00:00", true),
+    ] {
+        let root = rig(tag, expiry, &rollout);
+        let text = run_quota(root.path());
+        let pace = cell(&text, "PACE");
+        assert!(
+            pace.contains("%/h"),
+            "{tag}: the fixture measures a rate: {pace:?} in {text}"
+        );
+        assert_eq!(
+            advisories(&text).len(),
+            usize::from(advised),
+            "{tag}: the raw run-out cutoff is strict: {text}"
+        );
+    }
+}

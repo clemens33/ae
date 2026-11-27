@@ -2869,6 +2869,9 @@ pub fn read_workspace_keys_with_identity_sections(
 }
 
 #[cfg(test)]
+#[path = "config/banked_grammar_spec.rs"]
+mod banked_grammar_spec;
+#[cfg(test)]
 #[path = "config/desk_template_spec.rs"]
 mod desk_template_spec;
 #[cfg(test)]

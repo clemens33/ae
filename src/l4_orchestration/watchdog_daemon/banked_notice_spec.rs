@@ -276,3 +276,34 @@ fn banked_notice_identity_is_the_scope_and_utc_instant_not_the_label_or_offset()
     let journal = [receipt("watchdog", "resetexpiry", &base)];
     assert!(crate::quota::reset_expiry_notices(&alias, &journal).is_empty());
 }
+
+#[test]
+fn banked_notice_at_equal_dated_counts_follows_the_earlier_first_difference() {
+    // r7: two labels on one config home declare two resets each. The lists share
+    // their first instant and differ at the second, so only a comparison of the
+    // first DIFFERING item picks the earlier list. Both label orders must agree.
+    let earlier = dated(&[IN_24H_UTC, IN_47H]);
+    let later = dated(&[IN_24H_UTC, IN_48H]);
+    for (tag, clients) in [
+        (
+            "earlier-first",
+            [("cx", earlier.as_str()), ("cy", later.as_str())],
+        ),
+        (
+            "later-first",
+            [("cx", later.as_str()), ("cy", earlier.as_str())],
+        ),
+    ] {
+        let observation = observe(&root(), &clients);
+        let mut instants: Vec<i64> = crate::quota::reset_expiry_notices(&observation, &[])
+            .iter()
+            .map(|notice| notice.expiry)
+            .collect();
+        instants.sort_unstable();
+        assert_eq!(
+            instants,
+            [NOW + 86_400, NOW + 169_200],
+            "{tag}: the earlier list [+24 h, +47 h] wins, never [+24 h, +48 h]"
+        );
+    }
+}

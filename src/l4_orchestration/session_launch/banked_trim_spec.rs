@@ -163,3 +163,28 @@ fn a_resume_trim_keeps_a_live_reset_receipt_and_cuts_an_old_one() {
         "the cut keeps its window plus the one standing receipt"
     );
 }
+
+#[test]
+fn a_reset_receipt_stands_until_the_expiry_instant_and_falls_at_it() {
+    // r7: no wall clock. The expiry instant itself is excluded, as for the count.
+    const NOW: i64 = 1_788_858_600; // 2026-09-08T09:10:00Z
+    const EXPIRY: i64 = NOW + 86_400; // minute-aligned: 2026-09-09T09:10:00Z
+    let fleet = root("edge-ref");
+    let reference = reference(&fleet, EXPIRY, NOW);
+    let parsed = |actor| {
+        crate::events::Event::parse_line(&line(actor, &reference)).expect("a receipt parses")
+    };
+    let booked = parsed("watchdog");
+    let stands = |now| crate::quota::reset_expiry_receipt_stands(&booked, now);
+    assert!(stands(NOW), "a fresh receipt stands");
+    assert!(
+        stands(EXPIRY - 1),
+        "one second before the instant it stands"
+    );
+    assert!(!stands(EXPIRY), "at the instant itself the reset is gone");
+    assert!(!stands(EXPIRY + 1), "after the instant it is gone");
+    assert!(
+        !crate::quota::reset_expiry_receipt_stands(&parsed("lead"), EXPIRY - 1),
+        "only a watchdog receipt stands"
+    );
+}
