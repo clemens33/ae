@@ -233,7 +233,7 @@ The board is one replaced record per orchestrator session ([Orchestrator board](
 ### Spawn on another account
 
 One preset can run on several logins of the SAME harness without a duplicate profile per login:
-`spawn scout --using opus55x@cc-mic` runs `opus55x` on the `cc-mic` client. The profile keeps
+`spawn scout --using opus55x@cc-work` runs `opus55x` on the `cc-work` client. The profile keeps
 its flags and arguments; only its launch client changes. ae records the bare profile in
 `profile.<slot>` and the label in `client.<slot>` in the seat's own write, so resume,
 the roster and the birth record all read the account the seat really runs on. A bare
@@ -243,7 +243,7 @@ A pair runs only when the human has approved it, in the GLOBAL config:
 
 ```toml
 [client_pairs]
-opus55x = cc-mic, cc-p     # profile = the clients it may run on
+opus55x = cc-work, cc-alt     # profile = the clients it may run on
 ```
 
 - Only the global file counts. A project `.ae/config` can neither approve a pair nor redefine an
@@ -264,7 +264,7 @@ opus55x = cc-mic, cc-p     # profile = the clients it may run on
 - An approved pair still has to pass the launch's own gates: the profile and the client must run
   the same known harness (`opus55x@codex` is refused), the profile's command must be one simple
   command, and the account's conversation store must be one ae can verify before the first start.
-- A launch you type yourself (`ae my-app --lead opus55x@cc-mic`) is not gated by this list.
+- A launch you type yourself (`ae my-app --lead opus55x@cc-work`) is not gated by this list.
 
 This is a guardrail, not a sandbox: it stops an agent from naming an account you did not approve.
 A bare profile whose own command sets the account variable can already pick any account, and

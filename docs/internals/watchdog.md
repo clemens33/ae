@@ -757,8 +757,8 @@ width (`TrustWarnings::wraps`); anything else is named with its reason (lead rul
 The raw warning text rides in `TrustSighting::block`, so both reads and the read after the arrow
 must show the same body. Every proof of `autotrust::due` above still holds; the config home is not consulted. A
 home-folder Yes lasts one claude session, so every new or reseated seat in `HOME` is answered
-again. Residual, accepted by the owner: a seat on another config home (the `claude-mic` or
-`claude-p` login) that is answered in `HOME` loads `~/.claude/settings.json` and its hooks as
+again. Residual, accepted by the owner: a seat on another config home (a second Claude
+Code login) that is answered in `HOME` loads `~/.claude/settings.json` and its hooks as
 project settings for that session. `auto_trust = off` names every block and answers none.
 
 **A differing block is named with its reason.** When a prompt has a tool's folder-trust shape but

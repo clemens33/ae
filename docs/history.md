@@ -326,8 +326,8 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 - **agy's launch is gated by a TRUST MODAL, and the trust list is EXACT-PATH.** A workspace
   not listed in `trustedWorkspaces` (agy's `~/.gemini/antigravity-cli/settings.json`) draws
   "Do you trust the contents of this project?" and the pane sits on it until a human answers
-  — measured 2026-09-04, and measured again for the prefix question: `/Users/ckriech` being
-  trusted does NOT cover `/Users/ckriech/projects/clemens33/agy-live-probe`, so every fresh
+  — measured 2026-09-04, and measured again for the prefix question: the home folder `~` being
+  trusted does NOT cover `~/projects/agy-live-probe`, so every fresh
   work directory prompts once. ae's context survives it, because it rides the ARGV and agy
   replays it after the dialog (verified: the full workspace context and identity line
   arrived after a single Enter). A pasted BRIEF would not — Enter answers the dialog. Same

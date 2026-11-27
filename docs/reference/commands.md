@@ -275,7 +275,7 @@ re-paired to another profile of the same tool kind while keeping its conversatio
 kind is refused. A running session must be stopped before any seat profile changes.
 
 Suffix a selection with `@<client>` to run that profile on another account of the SAME harness:
-`ae myproject --lead fablex@cc-mic`. Both clients must resolve to the same known tool — an
+`ae myproject --lead fablex@cc-work`. Both clients must resolve to the same known tool — an
 unrecognized binary on either side refuses, and crossing harnesses needs a duplicate profile.
 `spawn --using profile@client` takes the same spelling for a spawned seat, behind one more gate
 (see [Spawn on another account](helpers.md#spawn-on-another-account)). ae records
@@ -406,7 +406,7 @@ A seat whose last start measured its harness (`[workspace] version_probe = on`) 
 `version:<bin> <release> (measured <release>)`, for example `version:claude 2.1.330 (measured 2.1.330)`:
 the release `<bin> --version` printed at that start beside the newest release the captured fixtures
 prove for that tool, or `(measured: none)` where there is none. A start that could not measure says
-why instead, `version:codex-mic unknown (unclassified) (measured: none)`. No row, no cell; `ae doctor`
+why instead, `version:codex-work unknown (unclassified) (measured: none)`. No row, no cell; `ae doctor`
 repeats it as a `seat-version` row and names a damaged row under `seat-records`. Table only, and
 diagnosis only: no release is judged old or new.
 Each session's indented detail line ends with three lifecycle ages:
@@ -1701,7 +1701,7 @@ A script that has not read stdin yet starts with `input=$(cat)` (fish: `set inpu
 
 Each login keys its own record by the Claude config home of the claude running the statusline:
 `CLAUDE_CONFIG_DIR` when that claude has one — a client with `config_home=` sets it, and the
-statusline inherits it, so a `cc-mic` login needs nothing extra — else the default account behind
+statusline inherits it, so a `cc-work` login needs nothing extra — else the default account behind
 `~/.claude.json`. Put the line in the statusline each login's own `settings.json` names.
 
 `ae _quota-feed` reads stdin to its end (at most 64 KiB kept; a longer payload is drained and
@@ -2429,7 +2429,7 @@ longer answer.
 
 ```bash
 ae reseat my-feature colead --using lunam
-ae reseat my-feature colead --using opus55x@cc-mic   # same preset, another account
+ae reseat my-feature colead --using opus55x@cc-work   # same preset, another account
 ```
 
 **Another account, same preset.** `--using <profile>@<client>` moves the seat onto the
@@ -2517,7 +2517,7 @@ withdraws a request not yet claimed (docs/internals/reseat.md, "A requested move
 
 **Between two accounts of ONE tool, the conversation travels.** When the profile you move
 to runs the SAME binary and differs only in its config home — `opus5x` on `~/.claude` to
-`opus5x-mic` on `~/.claude-mic`, the move a dead login forces — ae COPIES that
+`opus5x-work` on `~/.claude-work`, the move a dead login forces — ae COPIES that
 conversation's files into the other account and the seat RESUMES it. No seed pack, no
 fresh conversation: the successor remembers everything, because it is the same
 conversation read by a different login. Claude only, today; every other tool takes the

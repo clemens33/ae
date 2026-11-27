@@ -117,18 +117,18 @@ use that client name as the executable word in its profiles:
 ```toml
 [clients]
 cc = claude
-cc-mic = claude config_home=$HOME/.claude-mic
+cc-work = claude config_home=$HOME/.claude-work
 codex = codex
-codex-mic = codex config_home=${HOME}/.codex-mic
+codex-work = codex config_home=${HOME}/.codex-work
 
 [profiles]
 fable5 = "cc --permission-mode bypassPermissions --model fable --effort xhigh"
-fablemic = "cc-mic --permission-mode bypassPermissions --model fable --effort xhigh"
-solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+fablework = "cc-work --permission-mode bypassPermissions --model fable --effort xhigh"
+solwork = "codex-work --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 ```
 
 For a one-off seat on another account, skip the duplicate profile and say so at launch instead:
-`ae myproject --lead fable5@cc-mic` runs the `fable5` flags against the `cc-mic` account. The
+`ae myproject --lead fable5@cc-work` runs the `fable5` flags against the `cc-work` account. The
 `@` spelling works on `--lead`, `--colead` and `--seat`, and on `spawn --using` once you approve
 the pair (below). Both sides must be the same known tool, and the recorded client is
 write-once for the session: a flagless resume honors it by itself, while an explicit
@@ -138,12 +138,12 @@ re-pairing repeats its exact label. See
 ### `[client_pairs]`: which pairs an agent may spawn
 
 A launch is yours, so the `@` spelling there needs no permission. A spawn is an agent's, so
-`spawn --using fable5@cc-mic` runs only for a pair you listed, in the GLOBAL config:
+`spawn --using fable5@cc-work` runs only for a pair you listed, in the GLOBAL config:
 
 ```toml
 [client_pairs]
-fable5 = cc-mic            # fable5 may run on cc-mic
-opus55x = cc-mic, cc-p
+fable5 = cc-work            # fable5 may run on cc-work
+opus55x = cc-work, cc-alt
 ```
 
 The key is a profile, the value the clients it may run on, comma-separated. Only the global file
@@ -165,7 +165,7 @@ A client row also takes `manual_resets=<0-9>`, in any order beside `config_home=
 ```toml
 [clients]
 codex = codex manual_resets=1
-codex-mic = codex config_home=${HOME}/.codex-mic manual_resets=0
+codex-work = codex config_home=${HOME}/.codex-work manual_resets=0
 ```
 
 It is the one fact no client reports: how many manual window resets that subscription has in hand.
@@ -196,7 +196,7 @@ The config home becomes seat identity on first start: ae records its canonical p
 tool-specific variable was explicit or the default was derived from an unset variable. It uses that
 recorded value and mode for resume probes, execution, Codex session-id capture, and optional history
 purge. For a default-derived store, ae also records the effective `HOME`; this keeps the tool's login
-and state files aligned even when the default store is a symlink. Changing `cc-mic` from directory A
+and state files aligned even when the default store is a symlink. Changing `cc-work` from directory A
 to B while a session is retained therefore prints:
 
 ```text
@@ -543,7 +543,7 @@ The `[auto_reseat]` map names where each profile may move, in order:
 
 ```toml
 [auto_reseat]
-sol6x = opus55x-mic, opus55x, spark13cm
+sol6x = opus55x-work, opus55x, spark13cm
 ```
 
 The key is the seat's current profile; the value is its candidates,
