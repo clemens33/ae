@@ -3408,12 +3408,15 @@ mod tests {
 
     #[test]
     fn a_reserved_key_claimed_oddly_or_twice_is_refused_alone() {
-        for rows in [
-            "reserved_systems = Payments\nreserved_systems = Payments\n",
-            "reserved_systems\n",
-            "reserved_systems =\n",
-            "reserved_systems Payments\n",
-            "reserved_systems = # Payments\n",
+        for (rows, repeated) in [
+            (
+                "reserved_systems = Payments\nreserved_systems = Payments\n",
+                true,
+            ),
+            ("reserved_systems\n", false),
+            ("reserved_systems =\n", false),
+            ("reserved_systems Payments\n", false),
+            ("reserved_systems = # Payments\n", false),
         ] {
             let read = reserved_from(&format!("{rows}reserved_organisation = Example Corp\n"));
             assert!(read.systems.is_empty(), "{rows:?}");
@@ -3424,6 +3427,9 @@ mod tests {
             );
             let keys: Vec<_> = read.refused.iter().map(|(key, _)| *key).collect();
             assert_eq!(keys, ["reserved_systems"], "{rows:?}");
+            // The note names the real cause: only a repeated key is a repeat.
+            let why = &read.refused[0].1;
+            assert_eq!(why.contains("more than once"), repeated, "{rows:?}: {why}");
         }
     }
 
