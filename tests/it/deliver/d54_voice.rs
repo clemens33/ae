@@ -811,6 +811,8 @@ fn a_foreign_draft_without_transcribing_reports_an_unproved_result() {
 
 #[test]
 fn the_mic_explains_an_older_launch_without_voice_proof() {
+    const DECISION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+    const MISSING_PROOF: &str = "this launch lacks ae's hold-mode dictation proof";
     let rig = orchestrator("voice-old-launch", "claude", &composer_cursor(IDLE, 3));
     let meta = fs::read_to_string(rig.dir.join("meta")).expect("private launch metadata");
     assert!(meta.lines().any(|row| row.starts_with("launch_id.main=")));
@@ -820,7 +822,19 @@ fn the_mic_explains_an_older_launch_without_voice_proof() {
     let shown = until_screen(&rig, &pane, "the older launch has a mic", |s| {
         status(s, "unknown")
     });
+    assert!(!shown.contains(MISSING_PROOF));
+    arm_voice_start(&rig, HOLD);
     press_mic(&rig, &pane, &shown);
+    assert!(
+        await_evidence(DECISION_WAIT, || {
+            let screen = pane_frame(&rig, &pane);
+            (screen.contains(MISSING_PROOF) || status(&screen, "recording")).then_some(())
+        })
+        .is_some(),
+        "the click must refuse or show recording within ten seconds:\n{}",
+        pane_frame(&rig, &pane)
+    );
+    assert!(rig.wire().is_empty(), "the older launch receives no bytes");
     let reported = voice_report(
         &rig,
         &pane,
@@ -834,8 +848,6 @@ fn the_mic_explains_an_older_launch_without_voice_proof() {
         }),
         "the click does not claim a relaunch fixes an unproved launch"
     );
-    rig.frame_barrier();
-    assert!(rig.wire().is_empty(), "the older launch receives no bytes");
     untouched(&rig, &api);
 }
 
@@ -992,6 +1004,86 @@ fn managed_claude_drop_in_directory_refuses_the_probe() {
 #[test]
 fn managed_claude_settings_appearing_at_attach_refuse_the_probe() {
     assert_managed_policy_refusal("d54-managed-late", ManagedNode::OnAttach);
+}
+
+#[test]
+fn a_failed_hook_preflight_refuses_even_with_complete_output() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    const WRAPPER: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Cwd qw(abs_path);
+my $private = 0;
+for (my $i = 0; $i + 1 < @ARGV; ++$i) {
+    $private = 1 if $ARGV[$i] eq '-S'
+        && (abs_path($ARGV[$i + 1]) // '') eq $ENV{D54_HOOK_SOCKET};
+}
+sub mark {
+    open my $file, '>', $_[0] or die "hook marker: $!";
+    close $file or die "close hook marker: $!";
+}
+my $real = $ENV{D54_HOOK_TMUX};
+if ($private && (grep { $_ eq 'show-hooks' } @ARGV)) {
+    system {$real} $real, @ARGV;
+    die "real hook read failed" if $? != 0;
+    mark($ENV{D54_HOOK_READ});
+    exit 67;
+}
+if ($private && (grep { $_ eq '-C' } @ARGV) && (grep { $_ eq 'attach-session' } @ARGV)) {
+    mark($ENV{D54_HOOK_ATTACH});
+}
+exec {$real} $real, @ARGV;
+die "forward tmux: $!";
+"#;
+    const REFUSAL: &str =
+        "refused: dictation cannot attach safely with these tmux hooks (docs/app.md)";
+
+    let rig = orchestrator("voice-hook-status", "claude", &composer_cursor(IDLE, 3));
+    record_hold_launch(&rig);
+    let api = rig_world(&rig).session("api", "tui", "");
+    let path = std::env::var_os("PATH").expect("fixture PATH");
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("tmux"))
+        .find(|file| file.is_file())
+        .expect("real tmux executable");
+    let bin = rig.scratch.join("hook-wrapper");
+    fs::create_dir(&bin).expect("private tmux wrapper directory");
+    let wrapper = bin.join("tmux");
+    fs::write(&wrapper, WRAPPER).expect("hook wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("wrapper executable");
+    let receipt = rig.scratch.join("hook-read");
+    let attach = rig.scratch.join("hook-attach");
+    let socket = rig.sock.canonicalize().expect("private socket");
+    let pane = app_env(
+        &rig,
+        "api",
+        &[
+            &format!("PATH={}:{}", bin.display(), path.to_string_lossy()),
+            &format!("D54_HOOK_TMUX={}", real.display()),
+            &format!("D54_HOOK_SOCKET={}", socket.display()),
+            &format!("D54_HOOK_READ={}", receipt.display()),
+            &format!("D54_HOOK_ATTACH={}", attach.display()),
+        ],
+    );
+    let shown = until_screen(&rig, &pane, "the fully proved idle mic is visible", |s| {
+        status(s, "unknown")
+    });
+    press_mic(&rig, &pane, &shown);
+    until_screen(&rig, &pane, "the hook read reaches a decision", |s| {
+        s.contains("dictation cannot attach safely") || attach.is_file()
+    });
+    assert!(
+        receipt.is_file(),
+        "the wrapper forwarded the complete hook read"
+    );
+    assert!(
+        !attach.exists(),
+        "a failed hook read cannot start a sidecar"
+    );
+    assert!(rig.wire().is_empty(), "the pane receives no bytes");
+    voice_report(&rig, &pane, &shown, "the hook-read refusal", REFUSAL);
+    untouched(&rig, &api);
 }
 
 #[test]
@@ -1187,6 +1279,7 @@ fn dictation_children(rig: &Rig) -> Vec<u32> {
 }
 
 fn start_owned_dictation(rig: &Rig) -> (String, String, u32) {
+    const START_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
     record_hold_launch(rig);
     let _api = rig_world(rig).session("api", "tui", "");
     let pane = app(rig, "api");
@@ -1202,12 +1295,37 @@ fn start_owned_dictation(rig: &Rig) -> (String, String, u32) {
     );
     arm_voice_start(rig, HOLD);
     press_mic(rig, &pane, &idle);
-    wait_for_voice_spaces(rig, &pane, 6);
-    let recording = until_screen(rig, &pane, "the panel renders a live recording", |screen| {
-        status(screen, "recording")
+    let holding = |screen: &str| {
+        status(screen, "recording") && screen.contains("dictation: recording; click the mic")
+    };
+    let recording = await_evidence(START_WAIT, || {
+        let screen = pane_frame(rig, &pane);
+        let refused = [
+            "the panel no longer shows that orchestrator",
+            "pane changed while ae checked it",
+            "dictation could not prove the orchestrator's pane",
+        ]
+        .into_iter()
+        .any(|message| screen.contains(message));
+        (refused || (holding(&screen) && voice_wire(rig).len() >= 6)).then_some(screen)
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "the mic must reach a startup outcome within ten seconds:\n{}",
+            pane_frame(rig, &pane)
+        )
     });
+    assert!(
+        holding(&recording),
+        "the unchanged panel and pane must keep the recording live:\n{recording}"
+    );
     let pids = dictation_children(rig);
     assert_eq!(pids.len(), 1, "one owned child while holding: {pids:?}");
+    let wire = rig.wire();
+    assert!(
+        wire.len() >= 6 && wire.iter().all(|byte| *byte == b' '),
+        "the live hold receives only Spaces, including a repeat: {wire:?}"
+    );
     (pane, recording, pids[0])
 }
 
@@ -1371,5 +1489,50 @@ fn normal_app_exit_during_hold_removes_the_owned_client() {
         "the app must exit and leave no sidecar attached to the proved pane"
     );
     assert!(rig.wire().iter().all(|key| *key == b' '));
+    assert!(rig.submitted().is_empty());
+}
+
+#[test]
+fn quitting_during_transcribing_reaps_the_client_and_releases_the_lock() {
+    // The settle deadline is 15 seconds. Quitting must interrupt it.
+    const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+    let rig = orchestrator(
+        "sidecar-panel-quit-settle",
+        "claude",
+        &composer_cursor(IDLE, 3),
+    );
+    let (pane, recording, pid) = start_owned_dictation(&rig);
+    press_mic(&rig, &pane, &recording);
+    let stopped = voice_report(
+        &rig,
+        &pane,
+        &recording,
+        "stop acknowledges the write fence",
+        "dictation: stopping",
+    );
+    let wire = rig.wire();
+    redraw_voice_frame(&rig, TRANSCRIBING);
+    voice_report(
+        &rig,
+        &pane,
+        &stopped,
+        "the worker enters read-only settle",
+        "dictation: transcribing",
+    );
+    let lock = rig.send_lock_path();
+    assert_eq!(dictation_children(&rig), [pid]);
+    assert!(!lock_is_free(&lock), "settle still owns the delivery lock");
+
+    input(&rig, &pane, "O");
+    input(&rig, &pane, "qq");
+    assert!(
+        await_evidence(QUIT_WAIT, || {
+            let app_closed = !rig.tmux(&["capture-pane", "-p", "-t", &pane]).0;
+            (app_closed && dictation_children(&rig).is_empty() && lock_is_free(&lock)).then_some(())
+        })
+        .is_some(),
+        "quitting must reap the settling client and release the lock within four seconds"
+    );
+    assert_eq!(rig.wire(), wire, "settling and quitting send no keys");
     assert!(rig.submitted().is_empty());
 }

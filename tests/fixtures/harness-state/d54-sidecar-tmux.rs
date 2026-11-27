@@ -221,6 +221,13 @@ fn the_owned_sidecar_attaches_exactly_and_uses_one_child_for_a_frame_and_one_spa
     );
     assert!(effects.is_empty(), "no per-command process: {effects:?}");
     assert_started_and_reaped(&events, pid);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            WaitChildEvent::Reaped(id, status) if *id == pid && status.code().is_some()
+        )),
+        "a normal close lets the child exit: {events:?}"
+    );
     rig.await_clients("current", 0);
     assert_eq!(wire.finish(), b" ");
 }

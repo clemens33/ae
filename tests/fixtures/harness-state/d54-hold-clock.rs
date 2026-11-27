@@ -552,6 +552,42 @@ fn captured_startup_chrome_preserves_the_idle_proof() {
     }
 }
 
+fn notice_idle_with_model(model: &str) -> String {
+    let notice = NOTICE_IDLE
+        .lines()
+        .find(|row| row.contains("/model opus ·"))
+        .expect("the captured weekly-limit notice");
+    let width = notice.chars().count();
+    let modified = notice
+        .trim_start()
+        .replacen("/model opus ·", &format!("/model {model} ·"), 1);
+    assert_ne!(modified, notice.trim_start(), "the model token was varied");
+    assert!(modified.chars().count() <= width, "the notice must fit");
+    // The captured notice is right aligned in the 120-column frame.
+    NOTICE_IDLE.replacen(notice, &format!("{modified:>width$}"), 1)
+}
+
+#[test]
+fn punctuation_or_space_in_the_weekly_limit_model_cannot_prove_idle() {
+    let writes = ["opus!", "opus 5"].map(|model| {
+        let frame = notice_idle_with_model(model);
+        let mut script = Circuit::start_with([]);
+        script.reads[0] = Sample::frame(&frame);
+        let _ = script.run(Duration::from_secs(1));
+        script.spaces()
+    });
+    assert_eq!(writes, [0, 0], "neither model token proves idle");
+}
+
+#[test]
+fn a_dotted_weekly_limit_model_preserves_the_idle_proof() {
+    let frame = notice_idle_with_model("opus5.5");
+    let mut script = Circuit::start_with([]);
+    script.reads[0] = Sample::frame(&frame);
+    let _ = script.run(Duration::from_secs(1));
+    assert_eq!(script.spaces(), 5, "the dotted model token preserves idle");
+}
+
 #[test]
 fn unfamiliar_rows_and_a_spinner_behind_notices_cannot_prove_idle() {
     let spinner = BUSY
