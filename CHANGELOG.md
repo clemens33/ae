@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.126] - 2026-11-27
+- Freeze acceptance for the measured Claude hold frame
+- Read the measured Claude hold frame above the composer
+- Freeze acceptance for measured Claude tap and transcription frames
+- Read the measured Claude tap and transcribing rows above the composer
+- Pin the pane frame helper the measured voice acceptance shares
+
 ## [v2026.11.125] - 2026-11-26
 - Refuse every build recipe on the MacBook
 - Define orchestrator dictation start acceptance
