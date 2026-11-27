@@ -1068,11 +1068,7 @@ impl App {
             if app.history.len() > HISTORY {
                 app.lost = Some(app.history.remove(0).0);
             }
-            app.restored &= app.loading;
-            if app.deferred.is_empty() && !app.restored {
-                app.model
-                    .clamp_scroll(app.layout.max_scroll, app.layout.page_rows);
-            }
+            app.settle_chat_scroll();
             app.drawn = Some(app.freeze(ORCH));
             app.model.set_columns(main);
             (

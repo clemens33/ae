@@ -133,17 +133,29 @@ pub(super) fn tail_with(
     tail_in(lane, width, paint, (show, None), need, visited)
 }
 
-/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
-/// from the newest back, whole, then coverage rows from the last back, until
-/// `need` rows stand. `visited` gets the index of each item whose body this
-/// call wrapped, in the order it wrapped them. With a cache in `md`, an agent's
-/// turn is drawn through Markdown.
+/// [`tail_through`] without an older turn that must be reached.
+#[cfg(test)]
 pub(super) fn tail_in(
     lane: &Lane,
     width: usize,
     paint: Paint,
-    (show, md): (&Show<'_>, Option<&RefCell<lanemd::Cache>>),
+    style: (&Show<'_>, Option<&RefCell<lanemd::Cache>>),
     need: usize,
+    visited: Option<&mut Vec<usize>>,
+) -> Tail {
+    tail_through(lane, width, paint, style, need, None, visited)
+}
+
+/// Draw at least `need` rows, wrapping whole turns newest first, then
+/// coverage. `through` also demands one turn and a margin before it.
+/// `visited` receives the item indexes in the order they were wrapped.
+pub(super) fn tail_through(
+    lane: &Lane,
+    width: usize,
+    paint: Paint,
+    (show, md): (&Show<'_>, Option<&RefCell<lanemd::Cache>>),
+    mut need: usize,
+    through: Option<(usize, usize)>,
     mut visited: Option<&mut Vec<usize>>,
 ) -> Tail {
     // Newest first, each turn's item, rows, the rows above its header (the
@@ -152,7 +164,7 @@ pub(super) fn tail_in(
     let mut turns: Vec<(usize, Vec<Drawn>, usize, Option<usize>)> = Vec::new();
     let mut count = 0;
     let mut items = lane.items.iter().enumerate().rev();
-    while count < need {
+    while count < need || through.is_some_and(|(anchor, _)| items.len() > anchor) {
         let Some((at, item)) = items.next() else {
             break;
         };
@@ -199,6 +211,9 @@ pub(super) fn tail_in(
             rows.len() - 1
         });
         count += rows.len();
+        if let Some((_, margin)) = through.filter(|(anchor, _)| *anchor == at) {
+            need = need.max(count.saturating_add(margin));
+        }
         turns.push((at, rows, lead, fold));
     }
     let mut gaps = lane.coverage.iter().rev();

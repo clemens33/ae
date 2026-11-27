@@ -34,6 +34,8 @@ use crate::render::Audience;
 use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
+mod chatstick_more_spec;
+mod chatstick_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;

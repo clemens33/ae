@@ -14,7 +14,9 @@ use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::fleet::{Counts, Facts, Fleet, Line2, Row, summary};
-use super::model::{Columns, Drag, Edge, Model, SettingsTab, Split, Stopped};
+use super::model::{
+    ChatAnchor, ChatScroll, Columns, Drag, Edge, Model, SettingsTab, Split, Stopped,
+};
 use super::overview::{Open, Overview};
 use super::peek;
 use super::reader;
@@ -195,6 +197,7 @@ pub(crate) struct Layout {
     area: Rect,
     chat: Rect,
     pub page_rows: usize,
+    pub(super) scroll: Option<ChatScroll>,
     /// How far back the chat can scroll: exact once `complete`, else only
     /// as far as this frame produced.
     pub max_scroll: usize,
@@ -559,6 +562,7 @@ impl Layout {
         (self.list_max, self.body_max) = (0, 0);
         (self.seats, self.focused) = (Vec::new(), None);
         self.page_rows = 0;
+        self.scroll = None;
         self.max_scroll = 0;
         self.complete = true;
         self.turns.clear();
@@ -2237,14 +2241,13 @@ fn chat_head(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: &Range<u16>, layout: 
     put(buf, left, 1, &"─".repeat(usize::from(room)), room, rule);
 }
 
-/// The chat column over `columns`: the header, the turns anchored to the
-/// bottom, the composer.
+/// The chat column over `columns`: the header, the chat window, the composer.
 fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout: &mut Layout) {
     let (screen, paint) = (ctx.screen, ctx.paint);
     let height = buf.area.height;
     let (left, end) = (columns.start, columns.end);
     let room = end - left;
-    let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
+    let border = paint.fg(|p| p.border);
     chat_head(ctx, buf, &columns, layout);
     // While writing, the composer has a row for each row of the draft's view,
     // under the address row; the hint row, the pane's last, follows.
@@ -2256,40 +2259,20 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     };
     let composer = height.saturating_sub(2 + grown);
     let (top, bottom) = (2, composer.saturating_sub(2));
-    let main = screen
-        .selected
-        .and_then(|entry| entry.main_agent.as_deref())
-        .or_else(|| match screen.composer {
-            Composer::NoHome => None,
-            _ => screen.pair.first().map(String::as_str),
-        })
-        .unwrap_or_default();
-    let clock = view::Style::resolve(true, screen.look, screen.zone, main);
     let room_rows = usize::from(bottom.saturating_sub(top));
-    let scroll = screen.model.scroll_rows(room_rows);
-    // One page and a notch past the window, so a wheel notch or a page key
-    // stays inside what this frame produced until the next produces more.
-    let need = scroll
-        .saturating_add(room_rows.saturating_mul(2))
-        .saturating_add(super::model::WHEEL_ROWS);
+    let (tail, window, scroll) = chat_window(ctx, room, room_rows);
     let super::lane::Tail {
         mut rows,
         complete,
         turns: produced,
-        mut links,
-        mut files,
-    } = body_tail(ctx, &clock, main, (room, need));
-    if ctx.wait.lane {
-        rows.push(Line::from(Span::styled("loading", dim)));
-        links.push(Vec::new());
-        files.push(Vec::new());
-    }
+        links,
+        files,
+    } = tail;
     let (turns, bars, folds) = place_turns(ctx, &produced, &mut rows, layout);
-    let last = rows
-        .len()
-        .saturating_sub(scroll)
-        .max(room_rows.min(rows.len()));
-    let first = last.saturating_sub(room_rows);
+    let Range {
+        start: first,
+        end: last,
+    } = window;
     let y0 = bottom - cells(last - first);
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
@@ -2303,8 +2286,13 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     turn_targets(buf, layout, (&turns, &folds), (first..last, left, y0, room));
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
     let viewing = screen.composer.in_place();
-    if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
-        newer_hint(buf, layout, (left, bottom, room), (&produced, last, paint));
+    if room_rows > 0 && last < rows.len() && !viewing {
+        newer_hint(
+            buf,
+            layout,
+            (left, bottom, room),
+            (&produced, last, paint, ctx.icons),
+        );
     }
     put(
         buf,
@@ -2341,6 +2329,79 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
+    layout.scroll = scroll;
+}
+
+/// Wrap the tail through the previous anchor, choose the rows to show, and
+/// record where the resulting window starts for the next frame.
+fn chat_window(
+    ctx: &Ctx<'_, '_>,
+    room: u16,
+    room_rows: usize,
+) -> (super::lane::Tail, Range<usize>, Option<ChatScroll>) {
+    let screen = ctx.screen;
+    let main = screen
+        .selected
+        .and_then(|entry| entry.main_agent.as_deref())
+        .or_else(|| match screen.composer {
+            Composer::NoHome => None,
+            _ => screen.pair.first().map(String::as_str),
+        })
+        .unwrap_or_default();
+    let clock = view::Style::resolve(true, screen.look, screen.zone, main);
+    let (scroll, prior) = screen.model.requested_scroll(room_rows);
+    let anchor = prior.filter(|_| scroll > 0).and_then(|prior| {
+        let first = prior.first?;
+        let at = ctx.wait.folds.iter().position(|&key| key == first.turn)?;
+        Some((at, first.row, prior.back))
+    });
+    // One page and a notch past the window, so a wheel notch or a page key
+    // stays inside what this frame produced until the next produces more.
+    let need = scroll
+        .saturating_add(room_rows.saturating_mul(2))
+        .saturating_add(super::model::WHEEL_ROWS);
+    let through = anchor.map(|(at, _, back)| {
+        let margin = room_rows + super::model::WHEEL_ROWS;
+        (at, margin.saturating_add(scroll.saturating_sub(back)))
+    });
+    let mut tail = body_tail(ctx, &clock, main, (room, need), through);
+    if ctx.wait.lane {
+        let dim = ctx.paint.fg(|p| p.dim);
+        tail.rows.push(Line::from(Span::styled("loading", dim)));
+        tail.links.push(Vec::new());
+        tail.files.push(Vec::new());
+    }
+    let pinned = anchor.and_then(|(at, offset, back)| {
+        let turn = tail.turns.iter().find(|turn| turn.at == at)?;
+        let end = turn.first + turn.rows.saturating_sub(1);
+        let top = turn.first.saturating_add_signed(offset).min(end);
+        // Apply only movement the human requested since the anchor was drawn.
+        Some(top.saturating_add(room_rows + back).saturating_sub(scroll))
+    });
+    let total = tail.rows.len();
+    let last = pinned
+        .unwrap_or_else(|| total.saturating_sub(scroll))
+        .clamp(room_rows.min(total), total);
+    let first = last.saturating_sub(room_rows);
+    let back = total - last;
+    let drawn = (room_rows > 0).then(|| {
+        let first = (back > 0).then(|| {
+            let turn = tail
+                .turns
+                .iter()
+                .find(|turn| turn.first + turn.rows > first)?;
+            Some(ChatAnchor {
+                turn: *ctx.wait.folds.get(turn.at)?,
+                row: first.checked_signed_diff(turn.first)?,
+            })
+        });
+        ChatScroll {
+            first: first.flatten(),
+            back,
+            page_rows: room_rows,
+        }
+    });
+    (tail, first..last, drawn)
 }
 
 /// Draw and expose only the draft rows between the address and the hint.
@@ -2378,14 +2439,15 @@ fn newer_hint(
     buf: &mut Buffer,
     layout: &mut Layout,
     (left, y, room): (u16, u16, u16),
-    (turns, last, paint): (&[super::lane::Turn], usize, Paint),
+    (turns, last, paint, icons): (&[super::lane::Turn], usize, Paint, bool),
 ) {
     // Every row below the window is produced, so the count is exact.
     let below = turns.iter().filter(|turn| turn.first >= last).count();
+    let (arrow, divider) = if icons { ("↓", "·") } else { ("v", "-") };
     let words = match below {
-        0 => "↓ more below · End".to_owned(),
-        1 => "↓ 1 newer turn · End".to_owned(),
-        count => format!("↓ {count} newer turns · End"),
+        0 => format!("{arrow} more below {divider} End"),
+        1 => format!("{arrow} 1 newer turn {divider} End"),
+        count => format!("{arrow} {count} newer turns {divider} End"),
     };
     let width = cells(Span::raw(words.as_str()).width()).min(room);
     let from = left + room.saturating_sub(width) / 2;
@@ -2489,10 +2551,11 @@ fn body_tail(
     clock: &view::Style,
     main: &str,
     size: (u16, usize),
+    through: Option<(usize, usize)>,
 ) -> super::lane::Tail {
     match status_line(ctx) {
         Some(why) => status_tail(ctx, why, size.0),
-        None => lane_tail(ctx, clock, main, size),
+        None => lane_tail(ctx, clock, main, size, through),
     }
 }
 
@@ -2534,6 +2597,7 @@ fn lane_tail(
     clock: &view::Style,
     main: &str,
     size: (u16, usize),
+    through: Option<(usize, usize)>,
 ) -> super::lane::Tail {
     // The viewer's day now, in the zone the turn times wear.
     let (today, _) =
@@ -2550,7 +2614,15 @@ fn lane_tail(
     let (room, need) = size;
     let lane = ctx.screen.lane;
     let shown = (&show, ctx.wait.md);
-    super::lane::tail_in(lane, usize::from(room), ctx.paint, shown, need, None)
+    super::lane::tail_through(
+        lane,
+        usize::from(room),
+        ctx.paint,
+        shown,
+        need,
+        through,
+        None,
+    )
 }
 
 /// A turn's fingerprint and the rows it spans.
@@ -4151,7 +4223,7 @@ fn live_seat_rows(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 22] = [
+const WRITE_KEYS: [(&str, &str); 23] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "attach a clipboard PNG"),
@@ -4161,6 +4233,7 @@ const WRITE_KEYS: [(&str, &str); 22] = [
     ("^C", "just after a clear: arms; again in 2 s quits"),
     ("Left Right", "move the cursor"),
     ("Home End", "start / end of line"),
+    ("PgUp PgDn", "scroll the chat a page"),
     ("^A ^E", "start / end of line"),
     ("Backspace", "erase before the cursor"),
     ("Delete", "erase at the cursor"),

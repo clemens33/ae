@@ -143,9 +143,12 @@ recorded config first.
   it hides, `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch;
   another session starts at its first row.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
-  coverage rows, then the composer. Only the rows on screen and a page beyond
-  are drawn: older turns are drawn as you scroll back to them, and the oldest
-  stops the scroll. The composer is its address row and one input row while
+  coverage rows, then the composer. The chat follows new turns at the bottom.
+  While you scroll back, arrivals stay below the viewport, including while
+  you write. A resize or a growing draft keeps the first visible entry where
+  the lane can still fill the viewport from that entry. The session chat and
+  orchestrator panel scroll independently. The oldest turn stops the scroll.
+  The composer is its address row and one input row while
   browsing; while writing the input grows with the draft to ten rows, taking
   them from the lane, which keeps at least three rows: a short pane shrinks
   the composer first, to one input row at least. A resize sizes it again, and
@@ -252,7 +255,7 @@ Browsing:
 | `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
 | `PgUp` / `PgDn` | scroll the focused chat a page |
 | `G` / `End` | scroll the chat to its newest turn |
-| Click the hint under a scrolled-up chat | the same: the accent line `↓ 3 newer turns · End` (`↓ 1 newer turn · End`, or `↓ more below · End` when only the rest of the newest turn waits) stands centered on the row under the lane and counts the turns that start below the window; a click on its words scrolls to the newest turn, also while writing, and keeps the draft |
+| Click the hint under a scrolled-up chat | return to the newest turn. The hint counts the turns that start below the viewport, for example `↓ 3 newer turns · End` or `v 3 newer turns - End` with `icons = off`. A click also works while writing and keeps the draft |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
 | `r` | read the first file link of the marked turn in the chat column ([Reading a linked file](#reading-a-linked-file)) |
@@ -329,7 +332,7 @@ the Settings overlay swallows a paste silently.
 Writing: the draft is the chat's own input — a plain line asks the session's lead, or its colead when [routing](#routing-a-line) says the lead cannot take it,
 `@<seat> text` either lead-pair seat for that line only, `/close` withdraws your newest open ask,
 `!<command>` runs that line as your own command ([Running a command](#running-a-command)),
-five asks open at most; see [Input](chat.md#input). `Alt+Enter` and `^J` put a line break in the draft, `Enter` sends, and Shift+Enter is `Enter` (tmux hands the app a plain CR for it). A refusal such as the cap keeps the line in the composer. Writing stays on after a send. The composer shows the
+five asks open at most; see [Input](chat.md#input). `Alt+Enter` and `^J` put a line break in the draft, `Enter` sends, and Shift+Enter is `Enter` (tmux hands the app a plain CR for it). A refusal such as the cap keeps the line in the composer. When the app admits your send, the chat returns to the bottom and follows new turns. Writing stays on after a send. `PgUp` and `PgDn` scroll the chat one page while you write. `End` moves the draft cursor. The composer shows the
 whole draft as the chat does — the same wrap, each pasted line break its own
 row, all of it under the address row from the column's left edge, and past its rows the window
 around the cursor with `… +N lines above` and `… +N lines below` among them

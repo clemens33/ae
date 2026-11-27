@@ -3,7 +3,7 @@
 use super::{
     App, Arm, Armed, Binding, Console, Effect, Entry, Input, Instant, Key, Lane, PathBuf,
     QUIT_WINDOW, Rc, Reading, Request, SessionEntry, Status, Target, Timestamp, doors, guarded_at,
-    names, overview, route, submit, term,
+    model, names, overview, route, submit, term,
 };
 
 #[cfg(doc)]
@@ -381,6 +381,14 @@ impl App {
                     let line = "dropped the keys typed before writing started";
                     self.effects(vec![Effect::Print(line.to_owned())]);
                 }
+            }
+            Key::PageUp | Key::PageDown => {
+                let page = if key == Key::PageUp {
+                    model::Key::PageUp
+                } else {
+                    model::Key::PageDown
+                };
+                let _ = self.model.key(page, &self.fleet, false);
             }
             key => {
                 if key.edits_draft() || matches!(key, Key::Enter | Key::Redirect) {

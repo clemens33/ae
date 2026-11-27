@@ -131,15 +131,7 @@ impl App {
         self.model
             .settle(self.layout.list_start, self.layout.body_top);
         self.frame_panel(buf);
-        // Held keys replay from the scroll they were read at, as one read. A
-        // handed-over scroll waits for the lane it scrolls: until that is
-        // read there is no bound to hold it to.
-        let waits = self.restored && self.loading;
-        self.restored = waits;
-        if self.deferred.is_empty() && !waits {
-            self.model
-                .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
-        }
+        self.settle_chat_scroll();
         self.settings_due();
         if let Some(open) = self.model.settings() {
             self.layout.strip_for_settings();
@@ -168,6 +160,15 @@ impl App {
         self.drawn = drawn;
         self.paint_modal(look.as_ref(), buf);
         self.settle_selection(buf);
+    }
+
+    /// Held keys replay from the scroll they were read at. A handed-over
+    /// scroll waits until the first read of its lane gives it a bound.
+    pub(super) fn settle_chat_scroll(&mut self) {
+        self.restored &= self.loading;
+        if self.deferred.is_empty() && !self.restored {
+            self.model.settle_scroll(self.layout.scroll);
+        }
     }
 
     fn draw_main_column(

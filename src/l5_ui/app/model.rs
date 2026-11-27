@@ -226,6 +226,23 @@ pub(crate) struct Spawned {
     pub(crate) folded: bool,
 }
 
+/// The top row's position relative to its turn's header. A separator can
+/// stand above the header, and a long turn can start above the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChatAnchor {
+    pub(crate) turn: u64,
+    pub(crate) row: isize,
+}
+
+/// The last viewport the renderer settled. Scroll input is measured in
+/// that frame's rows until the next frame resolves it against the lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChatScroll {
+    pub(crate) first: Option<ChatAnchor>,
+    pub(crate) back: usize,
+    pub(crate) page_rows: usize,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -234,6 +251,7 @@ pub struct Model {
     pages: usize,
     /// Wheel rows between pages, normalized after each frame.
     rows: usize,
+    scroll: Option<ChatScroll>,
     /// The first session the wheeled list shows; `None` keeps the selection
     /// in view.
     list_top: Option<usize>,
@@ -277,6 +295,7 @@ pub(crate) struct Chat {
     selected: Option<String>,
     pub(super) pages: usize,
     pub(super) rows: usize,
+    scroll: Option<ChatScroll>,
     focus: Option<String>,
     turn: Option<u64>,
 }
@@ -426,6 +445,9 @@ impl Model {
                     self.rows = 0;
                 }
                 self.pages = self.pages.saturating_sub(1);
+                if self.pages() == 0 {
+                    self.scroll = None;
+                }
                 Act::Redraw
             }
             Key::Open => Act::Open,
@@ -505,8 +527,7 @@ impl Model {
         }
         self.selected = Some(row.name.clone());
         self.moved();
-        self.pages = 0;
-        self.rows = 0;
+        let _ = self.newest();
         self.body_top = 0;
         self.focus = None;
         self.turn = None;
@@ -517,6 +538,7 @@ impl Model {
     /// the `↓ newer turns` hint. Where the chat already stands there it
     /// changes nothing and asks for no redraw.
     pub(crate) fn newest(&mut self) -> Act {
+        self.scroll = None;
         if self.pages == 0 && self.rows == 0 {
             return Act::None;
         }
@@ -542,8 +564,7 @@ impl Model {
     pub(crate) fn reveal(&mut self, lo: usize, hi: usize, page_rows: usize) {
         let scroll = self.scroll_rows(page_rows).min(lo);
         let scroll = scroll.max(hi.saturating_sub(page_rows));
-        self.pages = scroll / page_rows.max(1);
-        self.rows = scroll % page_rows.max(1);
+        self.set_scroll(scroll, page_rows);
     }
 
     /// Where the selection sits in `fleet`.
@@ -567,6 +588,7 @@ impl Model {
         std::mem::swap(&mut self.selected, &mut chat.selected);
         std::mem::swap(&mut self.pages, &mut chat.pages);
         std::mem::swap(&mut self.rows, &mut chat.rows);
+        std::mem::swap(&mut self.scroll, &mut chat.scroll);
         std::mem::swap(&mut self.focus, &mut chat.focus);
         std::mem::swap(&mut self.turn, &mut chat.turn);
     }
@@ -634,11 +656,28 @@ impl Model {
             .saturating_add(self.rows)
     }
 
-    /// Bound and normalize the scroll using the rows the frame actually drew.
-    pub(crate) fn clamp_scroll(&mut self, max: usize, page_rows: usize) {
-        let scroll = self.scroll_rows(page_rows).min(max);
+    fn set_scroll(&mut self, scroll: usize, page_rows: usize) {
         self.pages = scroll / page_rows.max(1);
         self.rows = scroll % page_rows.max(1);
+        if scroll == 0 {
+            self.scroll = None;
+        }
+    }
+
+    /// The scroll requested in the last frame's rows, and the position that
+    /// frame showed before those keys were taken.
+    pub(crate) fn requested_scroll(&self, page_rows: usize) -> (usize, Option<ChatScroll>) {
+        let page_rows = self.scroll.map_or(page_rows, |scroll| scroll.page_rows);
+        (self.scroll_rows(page_rows), self.scroll)
+    }
+
+    /// Normalize the offset to what the frame actually drew. An empty
+    /// viewport (for example below the terminal size floor) leaves it alone.
+    pub(crate) fn settle_scroll(&mut self, scroll: Option<ChatScroll>) {
+        if let Some(scroll) = scroll {
+            self.set_scroll(scroll.back, scroll.page_rows);
+            self.scroll = Some(scroll);
+        }
     }
 
     /// One wheel notch, three rows, independent of the keyboard page size.
@@ -649,8 +688,7 @@ impl Model {
         } else {
             scroll.saturating_sub(WHEEL_ROWS)
         };
-        self.pages = scroll.min(max) / page_rows.max(1);
-        self.rows = scroll.min(max) % page_rows.max(1);
+        self.set_scroll(scroll.min(max), page_rows);
     }
 
     /// A clicked card: the list keeps the window the frame drew from `start`,

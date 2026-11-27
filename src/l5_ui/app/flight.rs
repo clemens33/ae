@@ -615,6 +615,11 @@ impl App {
                 };
                 match begun {
                     Ok((id, done, lease)) => {
+                        if self.panel_entry(&q.key) {
+                            self.in_panel(|app| app.model.newest());
+                        } else if self.model.selected() == Some(q.key.0.as_str()) {
+                            let _ = self.model.newest();
+                        }
                         let own = OriginDraft {
                             key: q.key.clone(),
                             raw: q.raw.clone(),
