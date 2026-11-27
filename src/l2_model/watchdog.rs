@@ -1731,8 +1731,9 @@ const NUDGE_ACTION: &str = "nudge";
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
 
-/// The action the orchestrator's standalone desk-stale tick is journaled
-/// under. It paints the pane like a sweep nudge and is no overview.
+/// The action a standalone desk-stale tick was journaled under before the
+/// desk line rode only overview turns. Older journals still carry it: it
+/// paints the pane like a sweep nudge and is no overview.
 pub(crate) const DESK_TICK_ACTION: &str = "desk-tick";
 
 /// The journal action of an automatic reseat notice or continuation.
@@ -3429,7 +3430,7 @@ pub struct SweepKnobs {
 impl Default for SweepKnobs {
     fn default() -> Self {
         Self {
-            sweep_secs: 120,
+            sweep_secs: 300,
             retry_secs: 30,
             retry_max: 6,
         }
@@ -3583,9 +3584,6 @@ pub enum SweepEffect {
     /// report the outcome to [`record_sweep`]. A desk-stale line due in the
     /// same cycle rides in this turn.
     FireSweepNudge,
-    /// Deliver one standalone desk-stale tick: no overview, no
-    /// acknowledgement and no hash, only the spacing both share.
-    FireDeskTick,
     /// Raise or clear one alert.
     Alert(SweepAlert),
     /// ONCE per daemon lifetime, on the first acknowledged overview with no
@@ -3630,6 +3628,9 @@ pub struct SweepObservation {
     /// Whether the newly rendered overview differs from the last one that
     /// landed in the orchestrator pane.
     pub overview_changed: bool,
+    /// Whether the overview's `NEEDS YOU` set differs from the last delivered
+    /// one: such a change is due at once, without the minimum spacing.
+    pub needs_changed: bool,
     /// Oldest unacknowledged delivery recovered from durable state.
     pub persisted_outstanding_since: Option<SystemTime>,
     /// Latest delivered overview recovered for durable minimum spacing.
@@ -3651,6 +3652,7 @@ impl SweepObservation {
             last_done,
             working_since: None,
             overview_changed: true,
+            needs_changed: false,
             persisted_outstanding_since: None,
             persisted_last_delivery: None,
             desk_stale: false,
@@ -3679,6 +3681,13 @@ impl SweepObservation {
         self.overview_changed = changed;
         self.persisted_outstanding_since = persisted_outstanding_since;
         self.persisted_last_delivery = persisted_last_delivery;
+        self
+    }
+
+    /// Add whether the `NEEDS YOU` set changed since the last delivery.
+    #[must_use]
+    pub const fn with_needs_changed(mut self, changed: bool) -> Self {
+        self.needs_changed = changed;
         self
     }
 
@@ -3786,8 +3795,10 @@ pub fn sweep_step(
     }
 
     // 3.
-    // The overview and the desk tick share one spacing: either delivery holds
-    // the other, and a tick moves only its own stamp.
+    // One minimum spacing covers every overview, and a stamp of the retired
+    // standalone desk tick still counts in it. A changed `NEEDS YOU` set is
+    // due at once. A desk edge alone is never due: its line rides the next
+    // overview that is.
     let last_sweep = [
         prior.last_sweep,
         seen.persisted_last_delivery,
@@ -3796,7 +3807,8 @@ pub fn sweep_step(
     .into_iter()
     .flatten()
     .max();
-    let due = last_sweep.is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
+    let due = seen.needs_changed
+        || last_sweep.is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
     let holding_for_work = seen
         .working_since
         .is_some_and(|at| secs_between(seen.now, at) < OVERVIEW_HOLD_WHILE_WORKING_SECS);
@@ -3805,8 +3817,6 @@ pub fn sweep_step(
         // spacing clock advances, so the next cycle sees the same change.
         if seen.overview_changed {
             effects.push(SweepEffect::FireSweepNudge);
-        } else if seen.desk_stale {
-            effects.push(SweepEffect::FireDeskTick);
         }
     }
 
@@ -7245,12 +7255,12 @@ tail line
     }
 
     #[test]
-    fn the_overview_defaults_to_a_two_minute_minimum_spacing() {
+    fn the_overview_defaults_to_a_five_minute_minimum_spacing() {
         let k = SweepKnobs::default();
-        assert_eq!(k.sweep_secs, 120, "minimum spacing");
+        assert_eq!(k.sweep_secs, 300, "minimum spacing");
         assert_eq!(k.retry_secs, 30, "retry floor");
         assert_eq!(k.retry_max, 6, "retry ceiling");
-        assert_eq!(k.wedge_secs(), 300, "SWEEP_SECS * 2 + 60");
+        assert_eq!(k.wedge_secs(), 660, "SWEEP_SECS * 2 + 60");
         assert!(k.enabled());
     }
 
@@ -7409,44 +7419,35 @@ tail line
     }
 
     #[test]
-    fn the_desk_tick_and_the_overview_share_one_spacing_and_one_hold() {
+    fn a_desk_edge_rides_the_next_due_overview_and_never_fires_alone() {
         let k = knobs();
         let turns = |seen: &SweepObservation| -> Vec<SweepEffect> {
             sweep_step(&SweepState::default(), seen, &k)
                 .expect("enabled")
                 .effects
                 .into_iter()
-                .filter(|effect| {
-                    matches!(
-                        effect,
-                        SweepEffect::FireSweepNudge | SweepEffect::FireDeskTick
-                    )
-                })
+                .filter(|effect| matches!(effect, SweepEffect::FireSweepNudge))
                 .collect()
         };
         let quiet = |now| seen(now, Some(now), &k).with_overview(false, Some(at(0)), Some(at(0)));
         let changed = |now| seen(now, Some(now), &k).with_overview(true, Some(at(0)), Some(at(0)));
 
-        assert_eq!(
-            turns(&quiet(300).with_desk(true, None)),
-            [SweepEffect::FireDeskTick]
-        );
         assert!(
-            turns(&quiet(299).with_desk(true, None)).is_empty(),
-            "a recent overview holds the tick"
+            turns(&quiet(900).with_desk(true, None)).is_empty(),
+            "a desk edge alone is no turn"
         );
-        assert!(turns(&quiet(900).with_desk(false, None)).is_empty());
         assert_eq!(
             turns(&changed(300).with_desk(true, None)),
             [SweepEffect::FireSweepNudge],
             "one overview turn carries a due desk line"
         );
+        assert!(turns(&changed(299).with_desk(true, None)).is_empty());
 
         let after_tick = changed(400).with_desk(false, Some(at(200)));
         let booked = sweep_step(&SweepState::default(), &after_tick, &k).expect("enabled");
         assert!(
             turns(&after_tick).is_empty(),
-            "a recent tick holds the overview"
+            "a stamp of the retired standalone tick still holds the overview"
         );
         assert_eq!(
             booked.next.last_delivered,
@@ -7457,21 +7458,38 @@ tail line
             turns(&changed(500).with_desk(false, Some(at(200)))),
             [SweepEffect::FireSweepNudge]
         );
+    }
 
-        let working = |now| {
-            quiet(now)
-                .with_desk(true, None)
-                .with_working_since(Some(at(250)))
+    #[test]
+    fn a_changed_needs_you_set_skips_the_spacing_but_not_the_working_hold() {
+        let k = knobs();
+        let fires = |seen: &SweepObservation| {
+            sweep_step(&SweepState::default(), seen, &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge)
         };
+        let changed = |now| seen(now, Some(now), &k).with_overview(true, Some(at(0)), Some(at(0)));
         assert!(
-            turns(&working(849)).is_empty(),
-            "declared work holds the tick"
+            !fires(&changed(10)),
+            "an ordinary change waits for the spacing"
         );
-        assert_eq!(
-            turns(&working(850)),
-            [SweepEffect::FireDeskTick],
-            "the tick stays due once the hold expires"
+        assert!(
+            fires(&changed(10).with_needs_changed(true)),
+            "a NEEDS YOU change is due at once"
         );
+        assert!(
+            !fires(
+                &changed(10)
+                    .with_needs_changed(true)
+                    .with_working_since(Some(at(5)))
+            ),
+            "declared work still holds it"
+        );
+        let unchanged = seen(10, Some(10), &k)
+            .with_overview(false, Some(at(0)), Some(at(0)))
+            .with_needs_changed(true);
+        assert!(!fires(&unchanged), "no change, no turn");
     }
 
     #[test]

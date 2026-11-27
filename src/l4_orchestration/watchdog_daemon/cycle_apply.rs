@@ -582,10 +582,16 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
+        let booking = state.desk.take();
+        if !observed.overview_changed {
+            // Unreachable by construction: only a changed overview is due. A
+            // desk edge alone waits for one, unclaimed.
+            return Ok(());
+        }
         // A stale desk is told only under a stored claim: the observation's
         // booking, claimed over exactly what that observation read. A tick or
         // overview delivered since then holds this turn whole.
-        let desk = match state.desk.take() {
+        let desk = match booking {
             Some(booking) if observed.desk_stale => {
                 match self.claim_desk(booking, on.slot, err)? {
                     DeskClaim::Held => return Ok(()),
@@ -595,23 +601,6 @@ impl Cycle<'_> {
             }
             _ => None,
         };
-        if !observed.overview_changed {
-            // The standalone tick: no overview is booked, so no hash, no
-            // acknowledgement deadline and no overview delivery time moves.
-            // Its claim is its only record and its stamp the shared spacing.
-            if let Some((previous, claim)) = desk {
-                let delivery = self.deliver(
-                    on.agent,
-                    crate::desktick::LINE,
-                    crate::desktick::ACTION,
-                    crate::desktick::SUMMARY,
-                    None,
-                    Some(on.slot),
-                );
-                self.settle_desk(&previous, &claim, &delivery, err)?;
-            }
-            return Ok(());
-        }
         if desk.is_none() && !self.spacing_unmoved(on, err)? {
             return Ok(());
         }

@@ -141,12 +141,69 @@ pub fn nudge_body(rendered: &str) -> String {
     }
 }
 
-/// Return a stable dependency-free FNV-1a 64 digest of the semantic fleet
-/// facts that decide an overview, never their elapsed ages. The display can
-/// advance from `20m` to `22m` without spending a seat turn; a visible state,
-/// leadership reason, open-request count, goal, or topic change cannot.
+/// Hex digits of one FNV-1a 64 digest.
+const DIGEST_HEX: usize = 16;
+
+/// Return two stable dependency-free FNV-1a 64 digests, concatenated as hex:
+/// first the semantic fleet facts that decide an overview, then the
+/// `NEEDS YOU` set alone ([`needs_changed`] reads it). Neither covers an
+/// elapsed age: the display can advance from `20m` to `22m` without spending
+/// a seat turn; a visible state, leadership reason, open-request count, goal,
+/// or topic change cannot.
 #[must_use]
 pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
+    format!(
+        "{:016x}{:016x}",
+        fleet_digest(cards, own_session),
+        needs_digest(cards, own_session)
+    )
+}
+
+/// Whether the `NEEDS YOU` set in `current` differs from the one in the
+/// last delivered `prior` hash, both from [`semantic_hash`]. A prior hash
+/// without that half (none delivered, or written before it existed) proves
+/// no change, so it never bypasses the overview spacing.
+#[must_use]
+pub fn needs_changed(prior: Option<&str>, current: &str) -> bool {
+    match (prior.and_then(needs_half), needs_half(current)) {
+        (Some(prior), Some(current)) => prior != current,
+        _ => false,
+    }
+}
+
+/// The `NEEDS YOU` half of a [`semantic_hash`], when it has one.
+fn needs_half(hash: &str) -> Option<&str> {
+    hash.get(DIGEST_HEX..)
+        .filter(|half| half.len() == DIGEST_HEX)
+}
+
+/// The human needs the `NEEDS YOU` section shows: per session, each seat's
+/// owner, reason and declared detail, never an age.
+fn needs_digest(cards: &[Card], own_session: &str) -> u64 {
+    let mut value = 0xcbf2_9ce4_8422_2325_u64;
+    for card in cards
+        .iter()
+        .filter(|card| card.name != own_session && card.status == "running")
+    {
+        for need in card.human_needs() {
+            if let Need::Seat {
+                owner,
+                reason,
+                detail,
+                ..
+            } = need
+            {
+                hash_field(&mut value, &card.name);
+                hash_field(&mut value, owner);
+                hash_field(&mut value, reason.as_str());
+                hash_field(&mut value, detail);
+            }
+        }
+    }
+    value
+}
+
+fn fleet_digest(cards: &[Card], own_session: &str) -> u64 {
     let mut value = 0xcbf2_9ce4_8422_2325_u64;
     for card in cards
         .iter()
@@ -191,7 +248,7 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
         hash_field(&mut value, &card.open_ask_count().to_string());
         hash_field(&mut value, "end-session");
     }
-    format!("{value:016x}")
+    value
 }
 
 fn hash_optional(value: &mut u64, field: Option<&str>) {
@@ -395,7 +452,7 @@ fn clipped(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRAILER, WIDTH, nudge_body, render, semantic_hash};
+    use super::{TRAILER, WIDTH, needs_changed, nudge_body, render, semantic_hash};
     use crate::attention::Reason;
     use crate::brief::{AgentLine, Card, Need, TopicLine};
 
@@ -817,6 +874,76 @@ mod tests {
             semantic_hash(&original, "orchestrator"),
             semantic_hash(&worker_blocked, "orchestrator"),
             "a new human need from any seat wakes the overview"
+        );
+    }
+
+    #[test]
+    fn needs_changed_reads_only_the_needs_you_half_of_the_hash() {
+        let quiet = vec![card(
+            "alpha",
+            vec![
+                agent("lead", "working", 0, None),
+                agent("worker", "done", 60, None),
+            ],
+        )];
+        let mut blocked = quiet.clone();
+        blocked[0].needs.push(Need::Seat {
+            owner: "worker".to_owned(),
+            reason: Reason::Blocked,
+            age_secs: Some(0),
+            detail: "first blocker".to_owned(),
+        });
+        let mut reworded = blocked.clone();
+        if let Some(Need::Seat {
+            detail, age_secs, ..
+        }) = reworded[0].needs.last_mut()
+        {
+            *detail = "second blocker".to_owned();
+            *age_secs = Some(900);
+        }
+        let mut older = blocked.clone();
+        if let Some(Need::Seat { age_secs, .. }) = older[0].needs.last_mut() {
+            *age_secs = Some(900);
+        }
+        let mut asked = blocked.clone();
+        asked[0].needs.push(Need::Unanswered {
+            kind: "ask".to_owned(),
+            reference: "ae-second".to_owned(),
+            from: "worker".to_owned(),
+            to: "lead".to_owned(),
+            age_secs: 0,
+            question: "another body".to_owned(),
+        });
+        let hash = |cards: &[Card]| semantic_hash(cards, "orchestrator");
+        assert!(
+            needs_changed(Some(&hash(&quiet)), &hash(&blocked)),
+            "a new need"
+        );
+        assert!(
+            needs_changed(Some(&hash(&blocked)), &hash(&quiet)),
+            "a need gone"
+        );
+        assert!(
+            needs_changed(Some(&hash(&blocked)), &hash(&reworded)),
+            "a new reason"
+        );
+        assert!(
+            !needs_changed(Some(&hash(&blocked)), &hash(&older)),
+            "an age is no change"
+        );
+        assert!(
+            !needs_changed(Some(&hash(&blocked)), &hash(&asked)),
+            "an open ask changes the fleet, not NEEDS YOU"
+        );
+        assert_ne!(hash(&blocked), hash(&asked));
+        let legacy = &hash(&quiet)[..16];
+        assert!(
+            !needs_changed(Some(legacy), &hash(&blocked)),
+            "an old hash proves nothing"
+        );
+        assert!(
+            !needs_changed(None, &hash(&blocked)),
+            "no delivery proves nothing"
         );
     }
 

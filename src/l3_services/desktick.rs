@@ -18,13 +18,8 @@ use crate::events::{Cursor, Event, Identity, RefMeaning, RoutingMember, SessionK
 use crate::time::Timestamp;
 use crate::watchdog_state::DeskTick;
 
-/// The journal action of a standalone desk-stale turn.
-pub const ACTION: &str = crate::watchdog::DESK_TICK_ACTION;
-
-/// The journal summary of a standalone desk-stale turn.
-pub const SUMMARY: &str = "desk record behind the fleet";
-
-/// The one line the orchestrator reads, alone or before an overview trailer.
+/// The one line the orchestrator reads before an overview trailer. It never
+/// travels alone: a desk edge waits for the next due overview turn.
 pub const LINE: &str = "Desk stale: a seat or a request to the human changed after the desk's \
                         last update. Refresh the desk record when it suits you.";
 

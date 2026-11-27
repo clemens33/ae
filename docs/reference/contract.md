@@ -563,6 +563,7 @@ quota = on                 # off stops ae acting on vendor quota (advisories and
                            # Low-entry checkpoint ask alike); ae quota stays
 quota_every_secs = 300     # watchdog quota advisory cadence; 0 disables
 idle_nudge_secs = 300      # positive empty-input reminder cadence; 0 disables
+sweep = 300                # orchestrator only: overview minimum spacing (a changed NEEDS YOU set skips it); 0 disables, 1-59 reads 60
 done_confirmations = 2     # later done/waiting-agent/blocked declarations required after challenges; 0 disables
 auto_reseat = off          # move seats off a vendor usage limit: on skips main, all moves it (orchestrator: only keeping its conversation); global only
 auto_reseat_sessions = a   # sessions the path acts in; absent means every session

@@ -169,7 +169,7 @@ The watchdog reads one environment variable, `AE_WATCHDOG_SWEEP_SEC`. The other 
 | undelivered max (`--undelivered-max`) | 3 | Consecutive undelivered nudges before attempts stop and one alert fires |
 | sweep retry (`--sweep-retry-secs`) | 30 | After an UNDELIVERED sweep nudge, retry this soon instead of waiting a full sweep spacing (clamped to it; floor — lands on the next poll) |
 | sweep retry max (`--sweep-retry-max`) | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
-| `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when persisted `sweep_sec` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Orchestrator changed-overview minimum-spacing fallback when persisted `sweep_sec` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
 
 The hidden `_watchdog-run` takes one more flag, for tests only: `--step-channel <name>`
 (a bare tmux channel word). With it the startup cycle runs at once, and then the daemon
@@ -184,7 +184,11 @@ and a rebind of the recorded server stops a stepped daemon with exit 1. `ae watc
 `tests/it/watchdog_step.rs`.
 
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
-that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
+that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 300. A
+changed overview waits for that spacing unless its `NEEDS YOU` set changed:
+the overview hash carries a second digest of the seat needs alone (owner,
+reason and declared detail per session, never an age), and a change there is
+due on the next free cycle. The working hold still applies to it.
 
 Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session,
 and the canonical `[workspace] quota` awareness (`on` by default) beside it.
@@ -319,15 +323,15 @@ past the position the last tick consumed. A relevant change is a seat's
 declaration into `waiting-user`, `blocked` or `done` that differs from that
 seat incarnation's previous one, or a request to a human sink that opens or
 closes; the orchestrator main's own `done`, its overview acknowledgement, is
-none. The tick shares the overview's spacing and working hold in both
-directions. With a changed overview due, one `Desk stale:` line rides before
-the overview trailer and the overview hash stays its own; otherwise the tick is
-a standalone `desk-tick` turn that moves no overview hash, acknowledgement
-deadline or overview delivery time. An owed reseat continuation carries a
-changed overview and its `Desk stale:` line together in its one turn, and
-defers a desk-only tick to the next free cycle. An overview turn that carries
-no desk claim rechecks the two spacing stamps its observation read before it
-pastes, and a tick or overview delivered since holds it. The checkpoint and
+none. A desk edge is never a turn of its own: with a changed overview due,
+one `Desk stale:` line rides before the overview trailer and the overview hash
+stays its own; otherwise the edge waits, unclaimed, for the next due overview.
+An owed reseat continuation carries a changed overview and its `Desk stale:`
+line together in its one turn, and leaves a desk-only edge for the next
+overview. A `desk_tick_last_at` stamp that an older core's standalone
+`desk-tick` turn wrote still counts in the overview spacing. An overview turn
+that carries no desk claim rechecks the two spacing stamps its observation read
+before it pastes, and an overview delivered since holds it. The checkpoint and
 its locked operations live in `watchdog_state` (layer 3); `monitor` re-exports
 the document. Before its submit the watchdog stores the claim in
 `meta-agent-state.json`

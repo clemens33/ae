@@ -2166,8 +2166,11 @@ its meta as `meta_agent=true`) gets a different watchdog behaviour for its **mai
 agent**: instead of the stale-nudge watchdog, each cycle renders the fleet
 overview and sends it only when the text changed and the minimum spacing
 elapsed. The spacing comes from persisted `[workspace] sweep`, then
-`AE_WATCHDOG_SWEEP_SEC`, then 120 seconds. A zero disables the sweep branch;
+`AE_WATCHDOG_SWEEP_SEC`, then 300 seconds. A zero disables the sweep branch;
 positive values below 60 seconds are clamped to 60, one normal watchdog cycle.
+A change in the `NEEDS YOU` set does not wait for the spacing: it goes on the
+next free cycle. A stale desk record adds one `Desk stale:` line to the next
+due overview and is never a turn of its own.
 It never escalates the orchestrator to a stale `attn:` alert (idle between changes is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
@@ -2312,7 +2315,7 @@ reattaches the local seat with that file as its overlay. Project-local
 is written. Use `--no-attach` to build or reattach without attaching and print the exact attach
 command. The generated config
 carries workspace and role prompt only, including `orchestrator = true` and
-`sweep = 120`; old generated configs with
+`sweep = 300`; old generated configs with
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
 still overlay. `CHARTER.md` is its readable reference,
 not a guessed runtime path.

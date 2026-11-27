@@ -438,6 +438,7 @@ impl Cycle<'_> {
                 overview.and_then(OverviewReading::persisted_outstanding_since),
                 overview.and_then(OverviewReading::persisted_last_delivery),
             )
+            .with_needs_changed(overview.is_some_and(OverviewReading::needs_changed))
             .with_desk(
                 desk.is_some_and(|sight| sight.booking.is_some()),
                 desk.and_then(|sight| sight.last_at)

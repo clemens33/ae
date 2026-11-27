@@ -271,7 +271,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `reserved_systems` | Comma-separated production systems whose production effects are reserved: a lead seat's relay rule names them. Such an effect needs your direct approval of that exact act in the seat's own pane, or bound owner words that `requests --verify` shows as `owner ingress` and that approve that exact act for the session. At most 16 names; a name is 1 to 64 characters, starts with a letter or digit, and holds only letters, digits, spaces and `- . _ & + / '`. Absent, the rule reserves a system you named as reserved, or every production system when none is named. A bad name, a second row or a malformed row refuses the whole key: the generic words stand, a launch or resume prints one note and `ae doctor` shows a `workspace.reserved` warning. A seat reads the key when it starts. Global config only: a project `.ae/config` and the orchestrator seat's own file never count | none |
 | `reserved_organisation` | The organisation whose commitments are reserved: a message that commits it needs the same approval of that exact act. One name with the same characters. Absent or refused, the rule says `the human's employer`. Refusal, note and warning work as for `reserved_systems`. Global config only | none |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the `relay` helper into other sessions' chats | `false`       |
-| `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
+| `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `300` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
 | `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
@@ -843,7 +843,7 @@ The watchdog reads one environment variable, `AE_WATCHDOG_SWEEP_SEC`. Its other 
 | undelivered max (`--undelivered-max`) | 3 | Consecutive undelivered nudges before attempts stop and one alert fires |
 | sweep retry secs (`--sweep-retry-secs`) | 30 | After an undelivered sweep nudge, retry this soon (clamped to the sweep spacing) |
 | sweep retry max (`--sweep-retry-max`) | 6 | Fast retries before falling back to normal cadence and one `meta-agent unreachable` alert |
-| `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when `[workspace] sweep` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Orchestrator changed-overview minimum-spacing fallback when `[workspace] sweep` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
 
 To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
 

@@ -1586,8 +1586,8 @@ pub(super) fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
     for effect in booked {
         match effect {
             // One delivery effect: the turn decides at apply whether it is an
-            // overview or the standalone desk-stale tick.
-            SweepEffect::FireSweepNudge | SweepEffect::FireDeskTick => out.push(Effect::SweepNudge),
+            // overview, which carries any due desk-stale line.
+            SweepEffect::FireSweepNudge => out.push(Effect::SweepNudge),
             SweepEffect::ReconcileWedge => out.push(Effect::ReconcileWedge),
             SweepEffect::Alert(alert) => {
                 out.push(Effect::Emit {

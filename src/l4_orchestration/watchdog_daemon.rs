@@ -1069,7 +1069,7 @@ fn sweep_env() -> Option<String> {
 
 /// Resolve overview spacing in authority order: the session's persisted launch
 /// fact, the watchdog-wide environment fallback, then the supplied internal
-/// knob (120 in production defaults; CLI flags may override it in tests).
+/// knob (300 in production defaults; CLI flags may override it in tests).
 fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
     let resolved = crate::meta::sole_value(meta_bytes, "sweep_sec")
         .and_then(|value| std::str::from_utf8(value).ok())
@@ -2348,6 +2348,11 @@ struct OverviewReading {
 impl OverviewReading {
     fn changed(&self) -> bool {
         self.checkpoint.hash.as_deref() != Some(self.hash.as_str())
+    }
+
+    /// Whether the `NEEDS YOU` set differs from the last delivered overview's.
+    fn needs_changed(&self) -> bool {
+        crate::overview::needs_changed(self.checkpoint.hash.as_deref(), &self.hash)
     }
 
     fn persisted_outstanding_since(&self) -> Option<SystemTime> {
