@@ -925,13 +925,13 @@ The dialog is one table, laid out by the same pure formatter `ae app`'s Settings
 tab uses (`src/l3_services/quota/view.rs`). A dim column header (`WINDOW`, an 8-cell bar, `USED`,
 `COUNTS`, `NOTE`, `RESETS`, `SEEN`) sits above each scope: a head row naming the client
 (`claude · cc`), its profiles and any account fact (`credits 12.40`, `spend cap reached`,
-`plan: claude max 20x (reported 44m ago)`),
+`plan: claude max 20x (reported 44m ago)`, `resets in hand 1`),
 then one indented row per window. A window's name is plain (`Session 5h`, `Weekly 7d`,
 `Weekly Fable 7d`; a qualified session keeps its qualifier). The bar is filled to the
 judged percentage in eighths (`█`/`░`, or `#`/`.` when the session's icons are off), `USED`
 is the vendor's own percentage, and `COUNTS` (`→ 48.5%`) appears only when the judged
 percentage reads differently — a reset in hand, `unlimited` credits or a reached spend cap
-— with `NOTE` naming the reason (`1 reset in hand`, `credits unlimited`, `runs on credits`,
+— with `NOTE` naming the reason (`resets in hand 1`, `credits unlimited`, `runs on credits`,
 `spend cap reached`), the level (`low`, `critical`) and `stale`. A window running on a credit
 balance keeps its vendor percentage, so `COUNTS` stays absent and `NOTE` carries `runs on credits`. `RESETS` is the window-reset
 countdown and `SEEN` the age of the observation. Like `ae quota`, determinable scopes come
@@ -945,7 +945,8 @@ same with colour stripped. With no usable observation the scope says why in word
 ae can trust (last report 2d 4h ago) — run /usage in a claude session or feed ae from your
 statusline`, `quota file unreadable`, `read cut short`, `this client reports no quota`);
 a config failure becomes one `quota: unavailable` head. A narrow client drops, in order, `SEEN`, the bar and the long
-note words, then elides window names from the tail with `…` (floor 12 columns); a short client
+note words, then elides window names from the tail with `…` (floor 12 columns). In compact notes,
+the account heading carries the reset count. A short client
 folds calm windows into one `+N calm scopes, M calm windows — ae quota` line (`+1 calm scope`,
 `1 calm window` in the singular; either half alone when the other is zero), trouble
 rows never fold, and a client that still cannot hold the table is refused with the size it
@@ -1655,7 +1656,8 @@ The real output is one line; it is wrapped here:
  "tool":"claude","plan":null,"rollout_owner":null,"credits":{"state":"unreported","balance":null},"summary":null,
  "windows":[{"bucket":"session","qualifier":null,"window_minutes":300,"used_percent":66,
   "effective_percent":66,"derivation":null,"pace":{"kind":"unknown"},"resets_at":1788868199,
-  "observed_at":1788858413,"status":"fresh","reason":null}]}],"notes":[]}
+  "observed_at":1788858413,"status":"fresh","reason":null}],"manual_resets":null}],"notes":[],
+ "reset_expiry_advisories":[]}
 ```
 
 Numbers are numbers and an absent fact is `null`; nothing is a display string where a number
@@ -1671,6 +1673,12 @@ exists. Fields are only ever added, under `version`. A new field is absent until
 - `credits.state` is `unreported`, `unlimited`, `available`, `none` or `spend-cap` (the CREDITS
   cell). `balance` is the vendor's decimal literal, normalized as the `CREDITS` cell normalizes
   it, as a number token, with no float round trip, or `null` when ae holds no exact amount.
+- `manual_resets` is the declaration from RESETS-IN-HAND, once per account even with several
+  rollout groups. It is `null` on entries without a declaration to show. Otherwise, `count`
+  is the active count at `now` and `expiry_times` lists future expiries as UTC Unix seconds in
+  ascending order, including duplicates. `next_expiry` contains the first `expires_at` and its
+  `remaining_secs` from `now`. With an undated count or no future expiry, `expiry_times` is `[]`
+  and `next_expiry` is `null`.
 - `summary` is non-`null` on the entry that stands for the table's `+N rollouts not shown` line:
   `hidden_rollouts`, `unreadable_rollouts`, `oldest_observed_at`, `not_read` and `status`. That
   entry has no `windows`.
@@ -1689,6 +1697,9 @@ exists. Fields are only ever added, under `version`. A new field is absent until
   rounded exactly as the cell rounds them.
 - `status` is the STATUS word; `reason` is the hint the table prints beside it, or `null`.
 - `notes` is the table's footer notes, each once.
+- `reset_expiry_advisories` lists the table's banked-reset advisories as objects with `scope`
+  and `expires_at` (UTC Unix seconds). An advisory names the account even when its windows come
+  from several rollouts. If no advisory is due, the list is `[]`.
 
 ### Feed Claude quota from your statusline
 

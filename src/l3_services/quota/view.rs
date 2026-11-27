@@ -18,6 +18,7 @@ const BAR_CELLS: usize = 8;
 const NAME_FLOOR: usize = 12;
 /// The text every admit row ends with.
 const ADMIT_TAIL: &str = "— ae quota";
+pub(super) const RESETS_IN_HAND_LABEL: &str = "resets in hand";
 
 /// One window's level, as the one classifier judged it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +152,25 @@ fn is_calm(window: &Window) -> bool {
 }
 
 pub(crate) fn note(window: &Window, long: bool) -> String {
+    note_with_reset_words(window, long, |count| {
+        let noun = if count == 1 { "reset" } else { "resets" };
+        let suffix = if long { " in hand" } else { "" };
+        Some(format!("{count} {noun}{suffix}"))
+    })
+}
+
+fn settings_note(window: &Window, long: bool) -> String {
+    // On a narrow surface the count stays in the account heading.
+    note_with_reset_words(window, long, |count| {
+        long.then(|| format!("{RESETS_IN_HAND_LABEL} {count}"))
+    })
+}
+
+fn note_with_reset_words(
+    window: &Window,
+    long: bool,
+    reset_words: impl FnOnce(u8) -> Option<String>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     match window.level {
         Level::Headroom => {}
@@ -158,10 +178,7 @@ pub(crate) fn note(window: &Window, long: bool) -> String {
         Level::Critical => parts.push("critical".to_owned()),
     }
     match (window.why, long) {
-        (Some(Why::Resets(1)), true) => parts.push("1 reset in hand".to_owned()),
-        (Some(Why::Resets(count)), true) => parts.push(format!("{count} resets in hand")),
-        (Some(Why::Resets(1)), false) => parts.push("1 reset".to_owned()),
-        (Some(Why::Resets(count)), false) => parts.push(format!("{count} resets")),
+        (Some(Why::Resets(count)), _) => parts.extend(reset_words(count)),
         (Some(Why::Unlimited), true) => parts.push("credits unlimited".to_owned()),
         (Some(Why::Unlimited), false) => parts.push("unlimited".to_owned()),
         (Some(Why::Credits), true) => parts.push("runs on credits".to_owned()),
@@ -342,7 +359,7 @@ impl Columns {
     fn note_width(&self, windows: &[&Window]) -> usize {
         windows
             .iter()
-            .map(|w| note(w, self.long).chars().count())
+            .map(|w| settings_note(w, self.long).chars().count())
             .max()
             .unwrap_or(0)
             .max("NOTE".len())
@@ -492,7 +509,7 @@ fn draw(scopes: &[Scope], dropped: &[Vec<bool>], geometry: Geometry) -> Vec<Line
                     bar: &judged_bar,
                     used: window.raw.as_deref().unwrap_or("-"),
                     counts: &counts,
-                    note: &note(window, columns.long),
+                    note: &settings_note(window, columns.long),
                     resets: window.resets.as_deref().unwrap_or("?"),
                     seen: window.seen.as_deref().unwrap_or("?"),
                     burn: &columns.burn.map_or_else(String::new, |(tier, _)| {

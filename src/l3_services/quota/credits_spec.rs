@@ -541,7 +541,7 @@ fn relieved_window_view_machine_pace_history_agree() {
     assert_eq!(window.burn, None);
     assert_eq!(scopes[0].account.as_deref(), Some("credits 62500"));
 
-    let document = machine::document([&group], &PaceTable::default(), None, NOW).render();
+    let document = machine::document([&group], &PaceTable::default(), None, NOW, &[]).render();
     assert!(
         document.contains(r#""used_percent":96,"effective_percent":0,"derivation":"credits""#),
         "{document}"
@@ -583,7 +583,7 @@ fn available_unknown_relieve_without_amount() {
     let group = group(vec![row("96")], policy);
     let line = observation(group.clone()).state_line(&group, &decided, Path::new("/tmp/meta"));
     assert!(line.contains("runs on credits,"), "{line}");
-    let document = machine::document([&group], &PaceTable::default(), None, NOW).render();
+    let document = machine::document([&group], &PaceTable::default(), None, NOW, &[]).render();
     assert!(
         document.contains(r#""state":"available","balance":null"#),
         "{document}"
@@ -623,7 +623,7 @@ fn stale_credit_report_parks() {
     );
     let table = render_at(std::slice::from_ref(&group), None, NOW);
     assert!(table.contains(&note), "{table}");
-    let document = machine::document([&group], &PaceTable::default(), None, NOW).render();
+    let document = machine::document([&group], &PaceTable::default(), None, NOW, &[]).render();
     assert!(
         document.contains(r#""used_percent":96,"effective_percent":96,"derivation":null"#),
         "{document}"
@@ -670,7 +670,7 @@ fn spend_cap_outranks_balance_on_every_surface() {
     assert_eq!(credits_label(&policy), "spend-cap");
     let group = group(vec![row("96")], policy);
     assert_eq!(untrusted_credit_note(&group), None);
-    let document = machine::document([&group], &PaceTable::default(), None, NOW).render();
+    let document = machine::document([&group], &PaceTable::default(), None, NOW, &[]).render();
     assert!(
         document.contains(r#""effective_percent":100,"derivation":"spend-cap""#),
         "{document}"

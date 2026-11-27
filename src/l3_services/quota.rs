@@ -1558,8 +1558,23 @@ impl Advisory {
     }
 }
 
+struct ResetExpiryAdvisory {
+    scope: String,
+    expires_at: i64,
+}
+
+impl ResetExpiryAdvisory {
+    fn table_line(&self, now: i64) -> String {
+        let when = reset_label(self.expires_at, now);
+        format!(
+            "a banked reset expires {when} unused: spend {} harder",
+            self.scope
+        )
+    }
+}
+
 impl Observation {
-    fn reset_expiry_advisories(&self, pace: &pace::PaceTable) -> Vec<String> {
+    fn reset_expiry_advisories(&self, pace: &pace::PaceTable) -> Vec<ResetExpiryAdvisory> {
         if self
             .groups
             .iter()
@@ -1802,7 +1817,7 @@ impl SettingsScope {
         pace: &pace::PaceTable,
         home: Option<&Path>,
         now: i64,
-    ) -> Option<String> {
+    ) -> Option<ResetExpiryAdvisory> {
         let expiry = *self.policy.reset_expiries().first()?;
         let count = self.policy.reset_count()?;
         let source = self.group.source.as_deref()?;
@@ -1817,13 +1832,13 @@ impl SettingsScope {
                 row.resets_at.is_some_and(|reset| expiry < reset)
                     && pace.current_window_outlasts(source, row, count, expiry.saturating_sub(now))
             });
-        before_weekly_runout.then(|| {
-            let scope = sanitize_cell(&scope_identity(&self.group, home));
-            let when = reset_label(expiry, now);
-            format!(
-                "a banked reset expires {when} unused: spend {} · {scope} harder",
-                self.group.tool.as_str()
-            )
+        before_weekly_runout.then(|| ResetExpiryAdvisory {
+            scope: format!(
+                "{} · {}",
+                self.group.tool.as_str(),
+                sanitize_cell(&scope_identity(&self.group, home))
+            ),
+            expires_at: expiry,
         })
     }
 
@@ -1932,7 +1947,7 @@ impl SettingsScope {
         let resets = self
             .policy
             .resets_in_hand(now)
-            .map(|cell| format!("resets in hand {cell}"));
+            .map(|cell| format!("{} {cell}", view::RESETS_IN_HAND_LABEL));
         [self.credit_words(), plan, resets]
             .into_iter()
             .flatten()
@@ -3385,22 +3400,17 @@ fn run_with(
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     let groups = observation.ordered_groups(&observation.rendered);
     let home = observation.home.as_deref().or(inputs.home);
+    let advisories = observation.reset_expiry_advisories(&pace);
     match format {
         Format::Table => write!(
             out,
             "{}{blocked}",
-            render_with_pace(
-                groups,
-                &pace,
-                home,
-                observation.now,
-                observation.reset_expiry_advisories(&pace)
-            )
+            render_with_pace(groups, &pace, home, observation.now, &advisories)
         )?,
         Format::Json => writeln!(
             out,
             "{}",
-            machine::document(groups, &pace, home, observation.now).render()
+            machine::document(groups, &pace, home, observation.now, &advisories).render()
         )?,
     }
     Ok(0)
@@ -5251,8 +5261,16 @@ fn render_observation_at(observation: &Observation) -> String {
         &pace::PaceTable::default(),
         observation.home.as_deref(),
         observation.now,
-        Vec::new(),
+        &[],
     )
+}
+
+/// Show a declaration once across the rendered groups for one source.
+fn claim_resets<'a>(group: &'a Group, shown: &mut BTreeSet<(&'static str, &'a Path)>) -> bool {
+    group
+        .source
+        .as_deref()
+        .is_none_or(|source| shown.insert((group.tool.as_str(), source)))
 }
 
 fn render_with_pace<'a>(
@@ -5260,7 +5278,7 @@ fn render_with_pace<'a>(
     pace: &pace::PaceTable,
     home: Option<&Path>,
     now: i64,
-    advisories: Vec<String>,
+    advisories: &[ResetExpiryAdvisory],
 ) -> String {
     const HEADER: [&str; COLUMNS] = [
         "PROFILES",
@@ -5293,16 +5311,16 @@ fn render_with_pace<'a>(
         }
         for (index, row) in group.rows.iter().enumerate() {
             let mut cells = table_cells(group, row, index, pace, &mut claimed, home, now);
-            if index == 0
-                && let Some(source) = group.source.as_deref()
-                && !shown_resets.insert((group.tool.as_str(), source))
-            {
+            if index == 0 && !claim_resets(group, &mut shown_resets) {
                 cells[RESETS_IN_HAND_COLUMN].clear();
             }
             table.push(RenderLine::Cells(cells));
         }
     }
-    for note in notes.into_iter().chain(advisories) {
+    for note in notes
+        .into_iter()
+        .chain(advisories.iter().map(|advisory| advisory.table_line(now)))
+    {
         table.push(RenderLine::Summary {
             label: note,
             status: String::new(),

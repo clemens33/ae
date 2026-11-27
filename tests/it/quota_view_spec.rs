@@ -72,12 +72,12 @@ fn full_width_draws_header_heads_bar_used_counts_note_resets_seen() {
     assert_eq!(
         texts(&trio(), 116, true),
         [
-            "  WINDOW                    USED  COUNTS   NOTE             RESETS  SEEN",
+            "  WINDOW                    USED  COUNTS   NOTE              RESETS  SEEN",
             "claude · cc   fable opus55x",
-            "  Session 5h      ██░░░░░░   31%                             2h10m    2m",
-            "  Weekly Fable 7d ███████░   88%           low · stale      3d 20h   40m",
+            "  Session 5h      ██░░░░░░   31%                              2h10m    2m",
+            "  Weekly Fable 7d ███████░   88%           low · stale       3d 20h   40m",
             "codex · cx   sol61x",
-            "  codex pro 5h    ████░░░░   97%  → 48.5%  1 reset in hand   1h35m    3m",
+            "  codex pro 5h    ████░░░░   97%  → 48.5%  resets in hand 1   1h35m    3m",
         ]
     );
 }
@@ -115,30 +115,32 @@ fn narrowing_drops_seen_then_bar_then_long_notes() {
     assert_eq!(
         texts(&trio(), 71, true),
         [
-            "  WINDOW                    USED  COUNTS   NOTE             RESETS",
+            "  WINDOW                    USED  COUNTS   NOTE              RESETS",
             "claude · cc   fable opus55x",
-            "  Session 5h      ██░░░░░░   31%                             2h10m",
-            "  Weekly Fable 7d ███████░   88%           low · stale      3d 20h",
+            "  Session 5h      ██░░░░░░   31%                              2h10m",
+            "  Weekly Fable 7d ███████░   88%           low · stale       3d 20h",
             "codex · cx   sol61x",
-            "  codex pro 5h    ████░░░░   97%  → 48.5%  1 reset in hand   1h35m",
+            "  codex pro 5h    ████░░░░   97%  → 48.5%  resets in hand 1   1h35m",
         ]
     );
     assert_eq!(
         texts(&trio(), 65, true),
         [
-            "  WINDOW           USED  COUNTS   NOTE             RESETS",
+            "  WINDOW           USED  COUNTS   NOTE              RESETS",
             "claude · cc   fable opus55x",
-            "  Session 5h        31%                             2h10m",
-            "  Weekly Fable 7d   88%           low · stale      3d 20h",
+            "  Session 5h        31%                              2h10m",
+            "  Weekly Fable 7d   88%           low · stale       3d 20h",
             "codex · cx   sol61x",
-            "  codex pro 5h      97%  → 48.5%  1 reset in hand   1h35m",
+            "  codex pro 5h      97%  → 48.5%  resets in hand 1   1h35m",
         ]
     );
 }
 
 #[test]
 fn short_notes_and_elided_names_hold_the_floor() {
-    let lines = texts(&trio(), 50, true);
+    let mut scopes = trio();
+    scopes[1].account = Some("resets in hand 1".to_owned());
+    let lines = texts(&scopes, 50, true);
     assert_eq!(
         lines,
         [
@@ -146,8 +148,8 @@ fn short_notes_and_elided_names_hold_the_floor() {
             "claude · cc   fable opus55x",
             "  Session 5h     31%                         2h10m",
             "  Weekly Fabl…   88%           low · stale  3d 20h",
-            "codex · cx   sol61x",
-            "  codex pro 5h   97%  → 48.5%  1 reset       1h35m",
+            "codex · cx   sol61x   · resets in hand 1",
+            "  codex pro 5h   97%  → 48.5%                1h35m",
         ]
     );
     assert!(lines.iter().all(|line| line.chars().count() <= 50));

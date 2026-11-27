@@ -11,8 +11,9 @@ use std::path::Path;
 
 use super::pace::PaceTable;
 use super::{
-    Credits, Derived, Effective, Group, Policy, RolloutSummary, Row, Status, collect_notes,
-    derived, manual_refresh_hint, placeholder, row_percent, scope_name, stated_observed_at,
+    Credits, Derived, Effective, Group, Policy, ResetExpiryAdvisory, RolloutSummary, Row, Status,
+    claim_resets, collect_notes, derived, manual_refresh_hint, placeholder, row_percent,
+    scope_name, stated_observed_at,
 };
 use crate::json::Value;
 
@@ -65,6 +66,28 @@ fn credits(policy: &Policy) -> Value {
         }
     };
     Value::obj([("state", Value::str(state)), ("balance", balance)])
+}
+
+/// The active declaration that supplies the table's RESETS-IN-HAND cell.
+fn manual_resets(policy: &Policy, now: i64) -> Value {
+    let Some(count) = policy.reset_count() else {
+        return Value::Null;
+    };
+    let expiries = policy.reset_expiries();
+    let next_expiry = expiries.first().map_or(Value::Null, |&expiry| {
+        Value::obj([
+            ("expires_at", Value::Num(expiry)),
+            ("remaining_secs", Value::Num(expiry.saturating_sub(now))),
+        ])
+    });
+    Value::obj([
+        ("count", Value::Num(i64::from(count))),
+        ("next_expiry", next_expiry),
+        (
+            "expiry_times",
+            Value::Arr(expiries.iter().copied().map(Value::Num).collect()),
+        ),
+    ])
 }
 
 /// How the judged percentage got there; `null` when nothing was derived.
@@ -161,9 +184,11 @@ pub(super) fn document<'a>(
     pace: &PaceTable,
     home: Option<&Path>,
     now: i64,
+    advisories: &[ResetExpiryAdvisory],
 ) -> Value {
     let mut notes: Vec<String> = Vec::new();
     let mut claimed = BTreeSet::new();
+    let mut shown_resets = BTreeSet::new();
     let mut scopes = Vec::new();
     for group in groups {
         collect_notes(&mut notes, group);
@@ -207,6 +232,14 @@ pub(super) fn document<'a>(
                 group.summary.as_ref().map_or(Value::Null, summary),
             ),
             ("windows", Value::Arr(windows)),
+            (
+                "manual_resets",
+                if group.summary.is_none() && claim_resets(group, &mut shown_resets) {
+                    manual_resets(&group.policy, now)
+                } else {
+                    Value::Null
+                },
+            ),
         ]));
     }
     Value::obj([
@@ -216,6 +249,20 @@ pub(super) fn document<'a>(
         (
             "notes",
             Value::Arr(notes.into_iter().map(Value::Str).collect()),
+        ),
+        (
+            "reset_expiry_advisories",
+            Value::Arr(
+                advisories
+                    .iter()
+                    .map(|advisory| {
+                        Value::obj([
+                            ("scope", Value::str(&advisory.scope)),
+                            ("expires_at", Value::Num(advisory.expires_at)),
+                        ])
+                    })
+                    .collect(),
+            ),
         ),
     ])
 }
@@ -521,7 +568,7 @@ mod tests {
         );
         let table = render_at(std::slice::from_ref(&declared), None, NOW);
         assert!(table.contains("95%   47.5% x1"), "{table}");
-        let doc = document([&declared], &PaceTable::default(), None, NOW).render();
+        let doc = document([&declared], &PaceTable::default(), None, NOW, &[]).render();
         assert!(
             doc.contains(r#""used_percent":95,"effective_percent":47.5,"derivation":"x1""#),
             "{doc}"
@@ -540,7 +587,8 @@ mod tests {
         );
         claude.tool = ToolKind::Claude;
         claude.clients = vec!["cc".to_owned()];
-        let json = |group: &Group| document([group], &PaceTable::default(), None, NOW).render();
+        let json =
+            |group: &Group| document([group], &PaceTable::default(), None, NOW, &[]).render();
         // The table's own scope cell, the function `render_at` draws it with.
         let label = |group: &Group| scope_label(group, None, NOW);
 
@@ -610,20 +658,22 @@ mod tests {
             status: Some(Status::ReadError),
         });
         hidden.notes = vec!["declared note".to_owned()];
-        let doc = document([&shown, &hidden], &PaceTable::default(), None, NOW).render();
+        let doc = document([&shown, &hidden], &PaceTable::default(), None, NOW, &[]).render();
         assert!(
             doc.starts_with(r#"{"version":1,"now":1800000000,"scopes":[{"profiles":["solx"],"scope":"codex · cx · unidentified (session:lead)","tool":"codex","plan":null,"rollout_owner":"session:lead","credits":{"state":"unreported","balance":null},"summary":null,"windows":[{"bucket":"codex","#),
             "{doc}"
         );
         assert!(
             doc.contains(
-                r#"{"profiles":["solx"],"scope":"codex · cx · unidentified","tool":"codex","plan":null,"rollout_owner":null,"credits":null,"summary":{"hidden_rollouts":3,"unreadable_rollouts":1,"oldest_observed_at":1799992800,"not_read":false,"status":"read-error"},"windows":[]}"#
+                r#"{"profiles":["solx"],"scope":"codex · cx · unidentified","tool":"codex","plan":null,"rollout_owner":null,"credits":null,"summary":{"hidden_rollouts":3,"unreadable_rollouts":1,"oldest_observed_at":1799992800,"not_read":false,"status":"read-error"},"windows":[],"manual_resets":null}"#
             ),
             "{doc}"
         );
         // Each note once, in order, and the control byte escaped by the crate's own writer.
         assert!(
-            doc.ends_with(r#""notes":["declared note","bell\u0007note"]}"#),
+            doc.ends_with(
+                r#""notes":["declared note","bell\u0007note"],"reset_expiry_advisories":[]}"#
+            ),
             "{doc}"
         );
         assert!(!doc.chars().any(char::is_control), "{doc:?}");

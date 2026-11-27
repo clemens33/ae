@@ -1272,13 +1272,8 @@ mod tests {
     fn the_table_draws_pace_and_resets_in_hand_before_the_vendor_reset() {
         let shown = group(vec![row(Some("16.0"), 60, RESET, Status::Fresh)], raw());
         let table = PaceTable::build(std::slice::from_ref(&shown), &history(), NOW);
-        let text = super::super::render_with_pace(
-            std::slice::from_ref(&shown),
-            &table,
-            None,
-            NOW,
-            Vec::new(),
-        );
+        let text =
+            super::super::render_with_pace(std::slice::from_ref(&shown), &table, None, NOW, &[]);
         let header: Vec<&str> = text
             .lines()
             .next()

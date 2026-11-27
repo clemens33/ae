@@ -826,9 +826,14 @@ fn quota_fixture_rows_keep_the_shared_effective_derivation_and_refresh_while_ope
     rig.ready(&pane);
     rig.settings(&pane);
     let screen = rig.wait(&pane, WAIT, "fixture quota window drawn", |s| {
-        s.contains("1 reset in hand")
+        s.contains("resets in hand 1") && s.contains("Session 5h")
     });
-    assert!(screen.contains("claude · c00"), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .any(|line| line.contains("claude · c00") && line.contains("resets in hand 1")),
+        "scope heading states the reset count: {screen}"
+    );
     let header = screen
         .lines()
         .find(|line| line.contains("WINDOW"))
@@ -848,6 +853,7 @@ fn quota_fixture_rows_keep_the_shared_effective_derivation_and_refresh_while_ope
     let label = windows[0];
     assert!(label.contains("66%"), "vendor raw: {label}");
     assert!(label.contains("→ 33%"), "judged counts: {label}");
+    assert!(label.contains("resets in hand 1"), "window note: {label}");
     assert!(
         label.contains("###....."),
         "ascii bar of the judged: {label}"
@@ -881,7 +887,7 @@ fn settings_scroll_keys_and_wheel_use_the_panel_body_and_reset_on_tab_switch() {
     rig.ready(&pane);
     rig.settings(&pane);
     let first = rig.wait(&pane, WAIT, "scrollable fixture quota body drawn", |s| {
-        s.contains("1 reset in hand")
+        s.contains("resets in hand 1")
     });
     let top = first.lines().nth(3).expect("first body row").to_owned();
     for (down, up) in [("j", "k"), ("Down", "Up"), ("PageDown", "PageUp")] {

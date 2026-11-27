@@ -161,7 +161,7 @@ fn ae_quota_renders_fixture_caches_missing_scopes_and_unsupported_clients() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-fn run_quota_json(root: &std::path::Path) -> String {
+fn run_quota_json(root: &std::path::Path, now: i64) -> String {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = ae::quota::run_as(
@@ -170,7 +170,7 @@ fn run_quota_json(root: &std::path::Path) -> String {
             global: Some(&root.join("config")),
             local: None,
             sessions: Some(&root.join("sessions")),
-            now: NOW,
+            now,
         },
         ae::quota::Format::Json,
         &mut stdout,
@@ -189,12 +189,129 @@ fn items(value: Option<&ae::json::Value>) -> &[ae::json::Value] {
     }
 }
 
+const RESET_TOMORROW: &str = "2026-09-09T10:10+01:00";
+const RESET_NEXT_DAY: &str = "2026-09-10T09:10+00:00";
+
+fn declared_reset_json(declaration: &str, now: i64) -> ae::json::Value {
+    let root = rig("json-reset-expiry");
+    std::fs::write(
+        root.join("config"),
+        format!(
+            "[clients]\ncx = codex manual_resets={declaration}\n[profiles]\nastrax = cx --model astra\nsolx = cx --model sol\n"
+        ),
+    )
+    .expect("declared config");
+    let text = run_quota_json(&root, now);
+    let _ = std::fs::remove_dir_all(root);
+    ae::json::parse(&text).expect("quota JSON")
+}
+
+fn declared_resets(document: &ae::json::Value) -> &ae::json::Value {
+    items(document.get("scopes"))[0]
+        .get("manual_resets")
+        .expect("scope states its manual reset declaration")
+}
+
+#[test]
+fn ae_quota_json_states_the_declared_reset_count() {
+    let document = declared_reset_json(&format!("{RESET_TOMORROW},{RESET_NEXT_DAY}"), NOW);
+    assert_eq!(
+        declared_resets(&document).get("count"),
+        Some(&ae::json::Value::Num(2))
+    );
+    let scopes = items(document.get("scopes"));
+    assert_eq!(scopes.len(), 2, "two rollout groups for one account");
+    assert_eq!(scopes[1].get("manual_resets"), Some(&ae::json::Value::Null));
+}
+
+#[test]
+fn ae_quota_json_states_the_next_reset_expiry_at_its_utc_instant() {
+    let document = declared_reset_json(&format!("{RESET_NEXT_DAY},{RESET_TOMORROW}"), NOW);
+    let next = declared_resets(&document)
+        .get("next_expiry")
+        .expect("next expiry");
+    assert_eq!(
+        next.get("expires_at"),
+        Some(&ae::json::Value::Num(1_788_945_000))
+    );
+}
+
+#[test]
+fn ae_quota_json_states_the_seconds_until_the_next_reset_expiry() {
+    let document = declared_reset_json(&format!("{RESET_TOMORROW},{RESET_NEXT_DAY}"), NOW + 1);
+    let next = declared_resets(&document)
+        .get("next_expiry")
+        .expect("next expiry");
+    assert_eq!(
+        next.get("remaining_secs"),
+        Some(&ae::json::Value::Num(86_399))
+    );
+}
+
+#[test]
+fn ae_quota_json_lists_all_unexpired_reset_expiries_including_duplicates() {
+    let declaration = format!("{RESET_NEXT_DAY},{RESET_TOMORROW},{RESET_TOMORROW}");
+    let document = declared_reset_json(&declaration, NOW);
+    assert_eq!(
+        items(declared_resets(&document).get("expiry_times")),
+        [1_788_945_000, 1_788_945_000, 1_789_031_400].map(ae::json::Value::Num)
+    );
+}
+
+#[test]
+fn ae_quota_json_states_each_due_reset_advisory_with_its_scope_and_expiry() {
+    let document = declared_reset_json(RESET_TOMORROW, NOW);
+    let advisories = items(document.get("reset_expiry_advisories"));
+    assert_eq!(advisories.len(), 1, "one advisory for both rollouts");
+    assert_eq!(advisories[0].get_str("scope"), Some("codex · cx"));
+    assert_eq!(
+        advisories[0].get("expires_at"),
+        Some(&ae::json::Value::Num(1_788_945_000))
+    );
+
+    // The fixture's weekly reset is 2026-09-15T10:00:00Z, before this expiry.
+    let document = declared_reset_json("2026-09-16T09:10+00:00", NOW);
+    assert!(items(document.get("reset_expiry_advisories")).is_empty());
+}
+
+#[test]
+fn ae_quota_json_states_an_undated_reset_count_with_no_expiry() {
+    let document = declared_reset_json("4", NOW);
+    let expected = ae::json::parse(r#"{"count":4,"next_expiry":null,"expiry_times":[]}"#)
+        .expect("expected JSON");
+    assert_eq!(declared_resets(&document), &expected);
+    assert!(items(document.get("reset_expiry_advisories")).is_empty());
+}
+
+#[test]
+fn ae_quota_json_drops_a_dated_reset_at_its_exact_expiry() {
+    let declaration = format!("{RESET_TOMORROW},{RESET_NEXT_DAY}");
+    for (now, expected) in [
+        (
+            1_788_944_999,
+            r#"{"count":2,"next_expiry":{"expires_at":1788945000,"remaining_secs":1},"expiry_times":[1788945000,1789031400]}"#,
+        ),
+        (
+            1_788_945_000,
+            r#"{"count":1,"next_expiry":{"expires_at":1789031400,"remaining_secs":86400},"expiry_times":[1789031400]}"#,
+        ),
+        (
+            1_789_031_400,
+            r#"{"count":0,"next_expiry":null,"expiry_times":[]}"#,
+        ),
+    ] {
+        let document = declared_reset_json(&declaration, now);
+        let expected = ae::json::parse(expected).expect("expected JSON");
+        assert_eq!(declared_resets(&document), &expected, "at {now}");
+    }
+}
+
 /// The fixture's known numbers, authored by hand in `expected.json`: the two Codex rollouts, the
 /// default and the custom Claude home, and the three clients with no local quota source.
 #[test]
 fn ae_quota_json_states_every_table_row_as_data() {
     let root = rig("json-golden");
-    let text = run_quota_json(&root);
+    let text = run_quota_json(&root, NOW);
     assert!(
         text.ends_with("}\n") && text.matches('\n').count() == 1,
         "one document on one line: {text}"
@@ -261,7 +378,7 @@ fn ae_quota_json_states_a_reported_plan_as_a_name_and_a_moment() {
         include_bytes!("../fixtures/quota/claude-plan.json"),
     )
     .expect("plan cache");
-    let text = run_quota_json(&root);
+    let text = run_quota_json(&root, NOW);
     let _ = std::fs::remove_dir_all(&root);
 
     let got = ae::json::parse(&text).expect("the document parses");
@@ -323,7 +440,7 @@ fn ae_quota_json_states_declared_resets_credits_and_a_spend_cap() {
         &root,
         "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.50\"},\"spend_control_reached\":false",
     );
-    let scope = first_scope(&run_quota_json(&root));
+    let scope = first_scope(&run_quota_json(&root, NOW));
     // A fresh balance outranks the declared reset: the window runs on credits,
     // so no threshold binds it, and the balance reads normalized, never rounded.
     assert_eq!(
@@ -356,7 +473,7 @@ fn ae_quota_json_states_declared_resets_credits_and_a_spend_cap() {
         &capped,
         "\"credits\":{\"has_credits\":false,\"unlimited\":false,\"balance\":\"0\"},\"spend_control_reached\":true",
     );
-    let scope = first_scope(&run_quota_json(&capped));
+    let scope = first_scope(&run_quota_json(&capped, NOW));
     assert_eq!(
         scope.get("credits"),
         ae::json::parse(r#"{"state":"spend-cap","balance":null}"#)

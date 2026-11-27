@@ -62,7 +62,7 @@ fn dialog_note_lists_runs_on_credits() {
         "docs/reference/commands.md",
         &["(`1 reset in hand`, `credits unlimited`, `spend cap reached`)"],
         &[
-            "(`1 reset in hand`, `credits unlimited`, `runs on credits`, `spend cap reached`)",
+            "(`resets in hand 1`, `credits unlimited`, `runs on credits`, `spend cap reached`)",
             "A window running on a credit balance keeps its vendor percentage, so `COUNTS` stays absent and `NOTE` carries `runs on credits`.",
         ],
     );
