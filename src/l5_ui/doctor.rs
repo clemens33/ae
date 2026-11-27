@@ -273,6 +273,8 @@ pub struct Facts {
     /// Why that line could not be read at all, when it could not — a BROKEN LINE
     /// loses the whole key, and silence reads like choosing no order.
     pub fleet_order_error: Option<String>,
+    /// The global reserved systems and organisation, and each key refused.
+    pub reserved: crate::config::Reserved,
     /// The profile inventory, sorted by key.
     pub profiles: Vec<ProfileFacts>,
     /// When this host booted, epoch seconds — the other half of that evidence.
@@ -295,6 +297,35 @@ pub struct Facts {
     pub reseat_cover: ReseatCover,
     /// What the lead floor's config says (#309).
     pub reseat_floor: ReseatFloor,
+}
+
+/// The `workspace.reserved` rows: what the launch context's reserved guard
+/// names, or one WARN per key ae refused, whose generic words stand then.
+fn reserved_rows(reserved: &crate::config::Reserved, out: &mut Report) {
+    const LABEL: &str = "workspace.reserved";
+    for (key, why) in &reserved.refused {
+        let detail = format!("{key}: {why}; the generic reserved guard stands");
+        out.push(Level::Warn, LABEL, &detail);
+    }
+    if !reserved.refused.is_empty() {
+        return;
+    }
+    if reserved.systems.is_empty() && reserved.organisation.is_none() {
+        out.push(
+            Level::Ok,
+            LABEL,
+            "no reserved system or organisation named — the generic reserved guard stands",
+        );
+        return;
+    }
+    let systems = if reserved.systems.is_empty() {
+        "none named".to_owned()
+    } else {
+        reserved.systems.join(", ")
+    };
+    let organisation = reserved.organisation.as_deref().unwrap_or("none named");
+    let detail = format!("systems: {systems}; organisation: {organisation}");
+    out.push(Level::Ok, LABEL, &detail);
 }
 
 /// The `workspace.fleet_order` row: the human's chosen strip order, and the ONE
@@ -553,6 +584,7 @@ fn install_rows(facts: &Facts, out: &mut Report) {
     }
 
     fleet_order_row(facts, out);
+    reserved_rows(&facts.reserved, out);
 
     if facts.profiles.is_empty() {
         out.push(Level::Fail, "profiles", "no [profiles] entries found");
@@ -1123,6 +1155,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
             Ok(value) => (value.unwrap_or_default(), None),
             Err(why) => (String::new(), Some(why)),
         };
+    let reserved = crate::config::global_reserved(Some(&config));
     let sessions = session_facts(root);
     let seats = seat_facts(root, &sessions);
     let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
@@ -1167,6 +1200,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         workers: identity.workers.filter(|value| !value.is_empty()),
         fleet_order,
         fleet_order_error,
+        reserved,
         profiles,
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
@@ -1935,6 +1969,7 @@ mod tests {
             workers: Some("colead".to_owned()),
             fleet_order: String::new(),
             fleet_order_error: None,
+            reserved: crate::config::Reserved::default(),
             profiles: vec![ProfileFacts {
                 profile: "cl".to_owned(),
                 command: "claude --dangerously-skip-permissions".to_owned(),
@@ -2353,6 +2388,61 @@ mod tests {
                 .contains("could not determine executable from 'FOO=bar'"),
             "{}",
             report(&input).render()
+        );
+    }
+
+    #[test]
+    fn doctor_says_what_the_reserved_guard_names_and_which_key_it_refused() {
+        let named = |systems: &[&str], organisation: Option<&str>| crate::config::Reserved {
+            systems: systems.iter().map(|&name| name.to_owned()).collect(),
+            organisation: organisation.map(str::to_owned),
+            refused: Vec::new(),
+        };
+        let rows = |reserved| {
+            let mut input = facts();
+            input.reserved = reserved;
+            let text = report(&input).render();
+            text.lines()
+                .filter(|line| line.contains("workspace.reserved"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(named(&[], None)),
+            [
+                "OK    workspace.reserved no reserved system or organisation named — the generic \
+                 reserved guard stands"
+            ]
+        );
+        assert_eq!(
+            rows(named(&["Payments", "Billing"], Some("Example Corp"))),
+            ["OK    workspace.reserved systems: Payments, Billing; organisation: Example Corp"]
+        );
+        assert_eq!(
+            rows(named(&["Payments"], None)),
+            ["OK    workspace.reserved systems: Payments; organisation: none named"]
+        );
+        assert_eq!(
+            rows(named(&[], Some("Example Corp"))),
+            ["OK    workspace.reserved systems: none named; organisation: Example Corp"]
+        );
+        // A refusal replaces the summary: one WARN per refused key, each naming it.
+        let mut refused = named(&[], Some("Example Corp"));
+        refused.refused = vec![
+            ("reserved_systems", "a name is empty".to_owned()),
+            (
+                "reserved_organisation",
+                "it is set more than once".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            rows(refused),
+            [
+                "WARN  workspace.reserved reserved_systems: a name is empty; the generic reserved \
+                 guard stands",
+                "WARN  workspace.reserved reserved_organisation: it is set more than once; the \
+                 generic reserved guard stands"
+            ]
         );
     }
 

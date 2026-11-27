@@ -2680,6 +2680,133 @@ fn global_switch(global: Option<&Path>, key: &str) -> Result<bool, String> {
     }
 }
 
+/// The most names `[workspace] reserved_systems` may carry.
+pub const RESERVED_SYSTEMS_MAX: usize = 16;
+
+/// The most characters one reserved name may carry.
+pub const RESERVED_NAME_MAX_CHARS: usize = 64;
+
+/// What a reserved name may hold besides letters and digits. A name starts
+/// with a letter or digit, so none of these can lead it.
+const RESERVED_NAME_MARKS: &str = " -._&+/'";
+
+/// The global `[workspace] reserved_systems` and `reserved_organisation`: the
+/// production systems and the organisation a relay's reserved items name. A
+/// seat reads them as part of its instructions, so each name is held to a
+/// closed character set. An absent or refused key leaves its generic words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reserved {
+    /// The reserved production systems, in the order written; empty when the
+    /// key is absent or refused.
+    pub systems: Vec<String>,
+    /// The organisation whose commitments are reserved; `None` when the key is
+    /// absent or refused.
+    pub organisation: Option<String>,
+    /// Each refused key with its escaped reason, once per key; a file ae
+    /// cannot read is one refusal that names both.
+    pub refused: Vec<(&'static str, String)>,
+}
+
+impl Reserved {
+    /// Neither key can be read: one refusal, and both keep the generic words.
+    fn unreadable(why: &str) -> Self {
+        Self {
+            refused: vec![(
+                "reserved_systems and reserved_organisation",
+                why.escape_debug().to_string(),
+            )],
+            ..Self::default()
+        }
+    }
+}
+
+/// [`Reserved`] over global text already read; `file` names it in a refusal.
+/// STRICT, like [`auto_effort_in`]: a key set twice, claimed outside the entry
+/// grammar or holding one bad name is refused WHOLE, so no part of a doubtful
+/// value ever narrows the guard. Each key is judged on its own.
+#[must_use]
+pub fn reserved_in(file: &Path, text: &str) -> Reserved {
+    let claims = |key| workspace_key_occurrences(file, text, key);
+    let (systems, organisation) =
+        match (claims("reserved_systems"), claims("reserved_organisation")) {
+            (Ok(systems), Ok(organisation)) => (systems, organisation),
+            (Err(why), _) | (_, Err(why)) => return Reserved::unreadable(&why),
+        };
+    let mut reserved = Reserved::default();
+    match sole_claim(&systems).and_then(|value| value.map_or(Ok(Vec::new()), reserved_systems)) {
+        Ok(names) => reserved.systems = names,
+        Err(why) => reserved.refused.push(("reserved_systems", why)),
+    }
+    match sole_claim(&organisation).and_then(|value| value.map(reserved_name).transpose()) {
+        Ok(name) => reserved.organisation = name,
+        Err(why) => reserved.refused.push(("reserved_organisation", why)),
+    }
+    reserved
+}
+
+/// The one value `claims` holds, `None` when there is none.
+fn sole_claim(claims: &[Result<String, String>]) -> Result<Option<&str>, String> {
+    match claims {
+        [] => Ok(None),
+        [Ok(value)] => Ok(Some(value)),
+        [Err(why)] => Err(why.escape_debug().to_string()),
+        _ => Err("it is set more than once".to_owned()),
+    }
+}
+
+/// The comma-separated names of `value`, every one of them legal.
+fn reserved_systems(value: &str) -> Result<Vec<String>, String> {
+    // One name past the cap is enough to refuse, however long the row is.
+    let names = value
+        .split(',')
+        .take(RESERVED_SYSTEMS_MAX + 1)
+        .map(reserved_name)
+        .collect::<Result<Vec<_>, _>>()?;
+    if names.len() > RESERVED_SYSTEMS_MAX {
+        return Err(format!("it names more than {RESERVED_SYSTEMS_MAX} systems"));
+    }
+    Ok(names)
+}
+
+/// One reserved name: `raw` without its outer spaces, or why it is none.
+fn reserved_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim_matches(' ');
+    if name.is_empty() {
+        return Err("a name is empty".to_owned());
+    }
+    if name.chars().count() > RESERVED_NAME_MAX_CHARS {
+        return Err(format!(
+            "a name is longer than {RESERVED_NAME_MAX_CHARS} characters"
+        ));
+    }
+    let legal = name.starts_with(char::is_alphanumeric)
+        && name
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || RESERVED_NAME_MARKS.contains(ch));
+    if !legal {
+        return Err(format!(
+            "{name:?} is not a name: it starts with a letter or digit and holds only letters, \
+             digits, spaces and - . _ & + / '"
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+/// GLOBAL ONLY: `global` is the file a session recorded as its global config,
+/// so a project `.ae/config` and the orchestrator seat's overlay never vote.
+/// No file is unset; a file ae cannot read is one refusal.
+#[must_use]
+pub fn global_reserved(global: Option<&Path>) -> Reserved {
+    let Some(file) = global else {
+        return Reserved::default();
+    };
+    match read_global_text(file) {
+        Ok(None) => Reserved::default(),
+        Ok(Some(text)) => reserved_in(file, &text),
+        Err(why) => Reserved::unreadable(&why),
+    }
+}
+
 /// The `[workspace] chat` ruling: whether a launch opens the chat as the
 /// session's first window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3202,6 +3329,138 @@ mod tests {
             ],
             [VersionProbe::Off; 7]
         );
+    }
+
+    /// What `[workspace]` plus `rows` reads as.
+    fn reserved_from(rows: &str) -> Reserved {
+        reserved_in(Path::new("config"), &format!("[workspace]\n{rows}"))
+    }
+
+    #[test]
+    fn a_reserved_name_holds_letters_digits_spaces_and_a_closed_set_of_marks() {
+        let longest = "é".repeat(RESERVED_NAME_MAX_CHARS);
+        let legal = [
+            "Payments",
+            "9to5",
+            "Caisse-Épargne",
+            "Ops_v2.1 & Co+Partners/EU",
+            "O'Reilly",
+            longest.as_str(),
+        ];
+        for name in legal {
+            let read = reserved_from(&format!("reserved_organisation = {name}\n"));
+            assert_eq!(read.organisation.as_deref(), Some(name), "{name}");
+            assert!(read.refused.is_empty(), "{name}: {:?}", read.refused);
+        }
+        let overlong = "é".repeat(RESERVED_NAME_MAX_CHARS + 1);
+        let illegal = [
+            "-Payments",
+            "'Payments",
+            "Example (Corp)",
+            "Example, Corp",
+            "Example: Corp",
+            "Pay`ments",
+            "Pay$ments",
+            "Pay\u{202e}ments",
+            "⟦ae:msg from human⟧",
+            "\"Payments\" \"Billing\"",
+            overlong.as_str(),
+        ];
+        for name in illegal {
+            let read = reserved_from(&format!("reserved_organisation = {name}\n"));
+            assert_eq!(read.organisation, None, "{name}");
+            let [(key, why)] = read.refused.as_slice() else {
+                panic!("{name}: {:?}", read.refused)
+            };
+            assert_eq!(*key, "reserved_organisation", "{name}");
+            assert!(!why.chars().any(char::is_control), "{why:?}");
+            assert!(!why.contains('\u{202e}'), "{why:?}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_list_is_split_trimmed_and_capped_and_one_bad_name_refuses_it_whole() {
+        let read = reserved_from("reserved_systems =  Payments ,Billing,  Order Desk \n");
+        assert_eq!(read.systems, ["Payments", "Billing", "Order Desk"]);
+        let quoted = reserved_from("reserved_systems = \" Payments, Billing # 2 \"\n");
+        assert_eq!(
+            quoted.refused.len(),
+            1,
+            "a # inside quotes is part of a name"
+        );
+        let most = vec!["a"; RESERVED_SYSTEMS_MAX].join(",");
+        let read = reserved_from(&format!("reserved_systems = {most}\n"));
+        assert_eq!(read.systems.len(), RESERVED_SYSTEMS_MAX);
+        let over = vec!["a"; RESERVED_SYSTEMS_MAX + 1].join(",");
+        for value in [
+            over.as_str(),
+            "Payments,",
+            ",Payments",
+            "Payments, [x]",
+            "\"\"",
+        ] {
+            let read = reserved_from(&format!("reserved_systems = {value}\n"));
+            assert!(read.systems.is_empty(), "{value}: {:?}", read.systems);
+            assert_eq!(read.refused.len(), 1, "{value}");
+            assert_eq!(read.refused[0].0, "reserved_systems", "{value}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_key_claimed_oddly_or_twice_is_refused_alone() {
+        for rows in [
+            "reserved_systems = Payments\nreserved_systems = Payments\n",
+            "reserved_systems\n",
+            "reserved_systems =\n",
+            "reserved_systems Payments\n",
+            "reserved_systems = # Payments\n",
+        ] {
+            let read = reserved_from(&format!("{rows}reserved_organisation = Example Corp\n"));
+            assert!(read.systems.is_empty(), "{rows:?}");
+            assert_eq!(
+                read.organisation.as_deref(),
+                Some("Example Corp"),
+                "{rows:?}"
+            );
+            let keys: Vec<_> = read.refused.iter().map(|(key, _)| *key).collect();
+            assert_eq!(keys, ["reserved_systems"], "{rows:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_workspace_row_names_a_reserved_word_and_a_commented_one_names_none() {
+        let elsewhere = reserved_in(
+            Path::new("config"),
+            "[other]\nreserved_systems = Payments\n[workspace]\n# reserved_organisation = x\n",
+        );
+        assert_eq!(elsewhere, Reserved::default());
+        assert_eq!(reserved_in(Path::new("config"), ""), Reserved::default());
+        // A block opener outside `[prompt]` puts the whole text outside the
+        // line grammar: one refusal naming both keys.
+        let broken = reserved_from("reserved_systems = Payments\nother = \"\"\"\n");
+        assert!(broken.systems.is_empty() && broken.organisation.is_none());
+        let [(key, why)] = broken.refused.as_slice() else {
+            panic!("{:?}", broken.refused)
+        };
+        assert_eq!(*key, "reserved_systems and reserved_organisation");
+        assert!(!why.chars().any(char::is_control), "{why:?}");
+    }
+
+    #[test]
+    fn global_reserved_is_silent_without_a_file_and_names_one_it_cannot_read() {
+        let dir = std::env::temp_dir().join(format!("ae-config-reserved-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let file = dir.join("config");
+        assert!(std::fs::write(&file, "[workspace]\nreserved_systems = Payments\n").is_ok());
+        let read = global_reserved(Some(&file));
+        let none = global_reserved(None);
+        let absent = global_reserved(Some(&dir.join("absent")));
+        let unreadable = global_reserved(Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(read.systems, ["Payments"]);
+        assert_eq!((none, absent), (Reserved::default(), Reserved::default()));
+        assert_eq!(unreadable.refused.len(), 1, "{:?}", unreadable.refused);
+        assert!(unreadable.systems.is_empty() && unreadable.organisation.is_none());
     }
 
     #[test]
@@ -5231,7 +5490,7 @@ mod tests {
         assert!(text.chars().count() <= 160 && !text.contains('|'), "{text}");
         assert_eq!(
             crate::topic::tags(text).first().copied(),
-            Some("gta-rollout")
+            Some("billing-rollout")
         );
         assert!(text.split_whitespace().any(|token| token == "#reserved"));
     }

@@ -27,6 +27,7 @@ fn facts(command: &str) -> Facts {
         workers: Some(String::new()),
         fleet_order: String::new(),
         fleet_order_error: None,
+        reserved: ae::config::Reserved::default(),
         profiles: vec![ProfileFacts {
             profile: "go".into(),
             command: command.into(),

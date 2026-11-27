@@ -543,6 +543,14 @@ copilot_token_file = ~/.credentials/copilot  # 0600 token file; display-only pre
 muse_quota = off           # on: ae quota asks Muse once per 30 min (a model call, ~32K input tokens) for its allowance; global only
 version_probe = off        # on: every seat start runs `<bin> --version` (3 s at most), records `version.<slot>`; ae list and ae doctor show it; absent or anything but exact `on` asks nothing (a new install writes it on); global only
 relay_replies = off        # on: the orchestrator chat and the phone also get the raw relay answer line (`reply <nonce> from <seat>: …`); global only
+reserved_systems = Payments, Billing  # production systems whose production effects are reserved: each needs the
+                           # human's direct approval or bound owner words verified (`owner ingress`) for that
+                           # exact act; named in the lead's launch context; absent or refused reserves a system
+                           # the human named, or every production system when none is named; global only
+reserved_organisation = Example Corp  # whose commitments are reserved the same way; absent or refused reads
+                           # `the human's employer`; global only. Both keys: a name is 1-64 characters, starts
+                           # with a letter or digit, holds letters, digits, spaces and - . _ & + / ' (1-16
+                           # systems); a bad name, a second or a malformed row refuses that whole key
 palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*

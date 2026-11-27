@@ -1310,6 +1310,13 @@ fn launch(
             "Note: [workspace] chat: {why}; the chat window opens, as when it is unset."
         )?;
     }
+    // Every seat of this launch renders the generic words for a refused key.
+    for (key, why) in config::global_reserved(env.global.as_deref()).refused {
+        writeln!(
+            err,
+            "Note: [workspace] {key}: {why}; the launch context keeps the generic reserved guard."
+        )?;
+    }
     let mut shape = Session {
         name: session.clone(),
         mode: copy.mode,

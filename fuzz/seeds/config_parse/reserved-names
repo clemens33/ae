@@ -1,0 +1,3 @@
+[workspace]
+reserved_systems = Payments, Billing, Caisse-Épargne
+reserved_organisation = "Example Corp"

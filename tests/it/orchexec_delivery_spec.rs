@@ -11,13 +11,28 @@ use super::o2guard_p2_spec::{received, uuid_of};
 use super::relay_chat_spec::{Rig, events, words};
 use std::fs;
 
-const LEGACY_OVERLAY: &str = include_str!("../fixtures/orchestrator/orchexec-v2026.11.98.config");
+const TEMPLATE: &str = include_str!("../../contrib/aeorchestrator/orchestrator.config");
+/// The charter sentences of versions 2 to 5: an overlay without them carries
+/// the bound owner words and nothing newer.
+const CHARTER_MARKERS: [&str; 4] = [
+    "You are the owner's chief of staff across the ae fleet",
+    "never end a session whose seats hold or wait for a build or test lane claim",
+    "queues a move of this seat to another model or account of the same tool",
+    "Begin every reply about one topic with that topic's `#<slug>`",
+];
 
 #[test]
-fn the_released_v2026_11_98_dispatcher_overlay_can_still_relay() {
+fn a_charter_1_dispatcher_overlay_with_the_owner_words_can_still_relay() {
     let rig = Rig::dispatcher("execlegacy");
     let config = rig.world.root.join("orchestrator.config");
-    fs::write(&config, LEGACY_OVERLAY).expect("v2026.11.98 overlay, byte exact");
+    // Synthetic: the current template without every later charter sentence.
+    let older = CHARTER_MARKERS
+        .iter()
+        .fold(TEMPLATE.to_owned(), |text, marker| {
+            assert!(text.contains(marker), "the template carries {marker:?}");
+            text.replace(marker, "an older sentence")
+        });
+    fs::write(&config, &older).expect("a charter 1 overlay");
     let state = rig.world.run(
         Some(&rig.caller.pane),
         &[
@@ -37,7 +52,7 @@ fn the_released_v2026_11_98_dispatcher_overlay_can_still_relay() {
     );
     assert_eq!(
         fs::read_to_string(config).expect("legacy overlay remains readable"),
-        LEGACY_OVERLAY
+        older
     );
 }
 

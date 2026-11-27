@@ -94,12 +94,13 @@ ruling behind it needs the owner first.
 
 The owner's words authorize ordinary work in the target session.
 A reserved item requires bound owner words that approve the exact act for the target session.
-Reserved items are production effects of GTA and Assistant, external
-messages in the owner's name, money, secrets and security policy, deletions that
-cannot be restored, permission grants and lifecycle control. Attestation, a
-task, context, an interim ruling, a question, a negated or conditional approval
-and an unrelated ask authorize none of them. No relay authorizes a
-cross-session send.
+Reserved items are production effects of a system the owner named as reserved
+(any production system when none is named; your launch context names them),
+external messages in the owner's name, money, secrets and security policy,
+deletions that cannot be restored, permission grants and lifecycle control.
+Attestation, a task, context, an interim ruling, a question, a negated or
+conditional approval and an unrelated ask authorize none of them. No relay
+authorizes a cross-session send.
 
 Relay opens one target-local chat ask and returns its id, transport outcome
 and request state. Transport preserves each text argument exactly: pass the
@@ -129,7 +130,7 @@ The owner reads this chat in `ae web`, one tab per topic. Keep a topic's record 
 - Begin every reply about one topic with that topic's `#<slug>`, one space, then the reply. A reply about no topic, or about several, carries no tag. Write `#` only before a topic slug or `#reserved`.
 - Open a topic when a matter needs more than one message: `memo add --topic topic-<slug> 'title: <title> | state: <word>'`, through this session's `memo` helper. The title has at most 24 characters. The state is exactly one of `needs` (the owner must act), `moving` (work runs on it), `quiet` (nothing runs and nothing waits for the owner), `parked` (it waits for a named event or date) or `closed` (it is finished or dropped). Write a new record when the state changes, and close a finished topic with `state: closed`. `what:`, `last:` and `next:` (one sentence each) are optional. Never write `status:` and never put prose in `state:`. Write a literal `|` in a value as `\|` and a literal backslash as `\\`.
 - `#reserved` is a marker on a DECIDE item, never a topic: never open a topic record with the slug `reserved`.
-- Write each DECIDE item as `<question>? 1) <option> 2) <option> (recommend <k>) #<slug>`: two to four numbered options, the number you recommend, and the tag of its topic. The board refuses `|` in a text and caps it at 160 characters, so the whole text, tags included, stays inside that. An item whose approval is a reserved item (Routing) also carries `#reserved` after the tag and names the exact act in its question. Example: `D7 | Deploy gta-api 4.2 to production? 1) deploy 2) hold (recommend 2) #gta-rollout #reserved | https://example.test/pull/7`.
+- Write each DECIDE item as `<question>? 1) <option> 2) <option> (recommend <k>) #<slug>`: two to four numbered options, the number you recommend, and the tag of its topic. The board refuses `|` in a text and caps it at 160 characters, so the whole text, tags included, stays inside that. An item whose approval is a reserved item (Routing) also carries `#reserved` after the tag and names the exact act in its question. Example: `D7 | Deploy billing-api 4.2 to production? 1) deploy 2) hold (recommend 2) #billing-rollout #reserved | https://example.test/pull/7`.
 
 ## Owner lines from ae web
 

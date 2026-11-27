@@ -9,7 +9,9 @@ use libfuzzer_sys::fuzz_target;
 // `[model_tiers]` rows too), and so does the strict effort switch. The
 // approved-pair list is hand-edited global text read through
 // `section_entries`, so its pure entry takes the same bytes. Telegram also
-// reads the global text before opening its token file.
+// reads the global text before opening its token file. The reserved-guard keys
+// write into every lead seat's instructions, so the target also puts the input
+// after each key and judges what the parser accepts.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
@@ -61,6 +63,26 @@ fuzz_target!(|data: &[u8]| {
         std::path::Path::new("config"),
         &text,
     ));
+    for global in [
+        text.to_string(),
+        format!("[workspace]\nreserved_systems = {text}\n"),
+        format!("[workspace]\nreserved_organisation = {text}\n"),
+    ] {
+        let reserved = ae::config::reserved_in(std::path::Path::new("config"), &global);
+        assert!(reserved.systems.len() <= ae::config::RESERVED_SYSTEMS_MAX);
+        for name in reserved.systems.iter().chain(&reserved.organisation) {
+            assert!(!name.is_empty());
+            assert!(name.chars().count() <= ae::config::RESERVED_NAME_MAX_CHARS);
+            assert!(
+                name.chars()
+                    .all(|ch| ch.is_alphanumeric() || " -._&+/'".contains(ch)),
+                "{name:?}"
+            );
+        }
+        for (_, why) in &reserved.refused {
+            assert!(!why.chars().any(char::is_control), "{why:?}");
+        }
+    }
     let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
     let _ = std::hint::black_box(pairs.judge("opus55x", "cc-work"));
     let _ = std::hint::black_box(ae::telegram::validate_settings_in(

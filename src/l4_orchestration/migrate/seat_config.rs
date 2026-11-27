@@ -8,7 +8,8 @@
 //! `[prompt]` stanza, with the current template last: a publish recognises what
 //! an earlier ae wrote without git, a network or the old files. A change to the
 //! template appends its row in the same commit, and a guard test fails without
-//! it.
+//! it. A digest-only row has no test fixture; its comment names the release tag
+//! whose template is its preimage.
 //!
 //! **The verdict.** [`classify`] reads one file's text and answers, in order: the
 //! current template (nothing to do), a whole earlier template (replace the file:
@@ -143,40 +144,59 @@ const LEDGER: &[Released] = &[
         file: "d94f74dca9e9da4debe36f17e0e379f66fd11de0d7580ba05310bca314d6a808",
         stanza: Some("01e290210f2b3142746bd33e3383b2d453201d54368819d5428b752bc878b1ab"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.94.
     Released {
         tag: "v2026.11.94",
         file: "a5b22eefb74cfcca57e5b521ec0be9ef16820c5e74efe12a056ebd8e956a8540",
         stanza: Some("c516017d3caef922239317b06ee5b72933ba4f78983c57e3317693a850817911"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.100.
     Released {
         tag: "v2026.11.100",
         file: "ba40b53d3e210fb82cd5f8ad28b6ce2c13cd53d81ed531cacfe218df9a91f808",
         stanza: Some("493c14e1281a99e67352d58b6ff2584e8ddb287849cfa479e9d0bce44d9e2e58"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.101.
     Released {
         tag: "v2026.11.101",
         file: "bd9362fc5be863a7c93fbac6c73ea0b18a710200ede0efdb4779157e1164334f",
         stanza: Some("da7ed4af79a961e45a241d329339c871f4eb463a5d5f90ed488e5d60afefb95b"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.102.
     Released {
         tag: "v2026.11.102",
         file: "7521c7b364d38d1a993a64b8fc0559c6c69a02a72b76211f9943af347fac0e6a",
         stanza: Some("1e20c028c1964bf25f7929e23f543b2c15fd8e6945e4bfe6f157d410822a10eb"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.103.
     Released {
         tag: "v2026.11.103",
         file: "44f69983ac246b53cff9fc5e662d03fa4946081a02de020653b94bf45057fa74",
         stanza: Some("c2c1aa8290d28afdc62abcbca387b17610e7eecbf0cc97bd0f9c6282c73f910f"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.117.
     Released {
         tag: "v2026.11.117",
         file: "cf59e6550b31d7eb0c0cdec458449c42dc458e842340f2dd1782aac1e4529935",
         stanza: Some("6b3cf5c2babb8776722f8417b0f707975d2798277a7ca64bd60b1c6d8a1202f0"),
     },
+    // Digest only, no fixture. Preimage: contrib/aeorchestrator/orchestrator.config
+    // at tag v2026.11.121.
     Released {
         tag: "v2026.11.121",
         file: "89fb726123f98aa72c7a62fb29df7aec73ef182864807056aa7e49da93f1b331",
         stanza: Some("95b4bf75b139fc0f47e1411fc7d481b2ba1375ed95e9b067f1e23d7aecce5762"),
+    },
+    Released {
+        tag: "v2026.11.TAG",
+        file: "644ef7e27084a5d52700ba9c8737cc0bc265a61362a6384d43efa6a1cfac7b7e",
+        stanza: Some("0c2862ecdc0b53cb0ab526982ee93b57c2d4d2b027ed939a8f0a51f10cb7d1cf"),
     },
 ];
 
@@ -578,9 +598,6 @@ mod tests {
                 let stem = path.file_stem().expect("stem").to_string_lossy();
                 let tag = match stem.as_ref() {
                     "s1a-previous" => "v2026.11.32".to_owned(),
-                    // The executor acceptance's released overlay: v2026.11.98
-                    // still seeded the template v2026.11.94 first carried.
-                    "orchexec-v2026.11.98" => "v2026.11.94".to_owned(),
                     _ => stem.into_owned(),
                 };
                 (tag, std::fs::read_to_string(&path).expect("fixture text"))
@@ -590,8 +607,42 @@ mod tests {
         found
     }
 
+    /// The earlier rows without a fixture. Their templates are not kept in the
+    /// tree; each one's preimage is the template at the release tag its row's
+    /// comment names, so `git show <tag>:<path>` re-derives the digests.
+    const DIGEST_ONLY: [&str; 7] = [
+        "v2026.11.94",
+        "v2026.11.100",
+        "v2026.11.101",
+        "v2026.11.102",
+        "v2026.11.103",
+        "v2026.11.117",
+        "v2026.11.121",
+    ];
+
     fn digest(text: &str) -> String {
         sha256_hex(text.as_bytes())
+    }
+
+    /// A seat config whose prompt stopped at charter `version`: the current
+    /// template without the marker sentences of the later versions. A synthetic
+    /// stand-in, never a released file, so it is no ledger row.
+    fn older_charter(version: u32) -> String {
+        let markers = [
+            crate::config::SEAT_CHARTER_MARKER,
+            crate::config::SEAT_CHARTER_3_MARKER,
+            crate::config::SEAT_CHARTER_4_MARKER,
+            crate::config::SEAT_CHARTER_5_MARKER,
+        ];
+        let mut text = SEAT_TEMPLATE.to_owned();
+        for marker in markers.into_iter().skip(version as usize - 1) {
+            assert!(text.contains(marker), "the template carries {marker:?}");
+            text = text.replace(marker, "an older sentence");
+        }
+        assert_eq!(seat_prompt_charter(&text), version);
+        assert!(seat_prompt_is_current(&text));
+        assert!(LEDGER.iter().all(|row| row.file != digest(&text)));
+        text
     }
 
     struct Scratch(PathBuf);
@@ -680,13 +731,21 @@ mod tests {
             }
         }
         assert!(report.is_empty(), "ledger rows to write:\n{report}");
-        // Every earlier row has its template here, so no row stands without a file to prove it.
+        // Every earlier row has its template here or is named as digest only,
+        // so no row stands without a way to prove it.
         let tags: Vec<&str> = held.iter().map(|(tag, _)| tag.as_str()).collect();
         let (_, earlier) = LEDGER.split_last().expect("a ledger");
         for row in earlier {
-            assert!(tags.contains(&row.tag), "no fixture for {}", row.tag);
+            assert!(
+                tags.contains(&row.tag) != DIGEST_ONLY.contains(&row.tag),
+                "{} needs exactly one of a fixture and a digest-only entry",
+                row.tag
+            );
         }
-        assert_eq!(held.len(), earlier.len());
+        for tag in DIGEST_ONLY {
+            assert!(earlier.iter().any(|row| row.tag == tag), "no row {tag}");
+        }
+        assert_eq!(held.len() + DIGEST_ONLY.len(), earlier.len());
     }
 
     #[test]
@@ -723,7 +782,7 @@ mod tests {
 
     #[test]
     fn a_web_charter_repair_names_the_fifth_marker_for_an_edited_v4_prompt() {
-        let v4 = include_str!("../../../tests/fixtures/orchestrator/v2026.11.117.config");
+        let v4 = older_charter(4);
         let (body, tail) = v4.rsplit_once("\n\"\"\"").expect("the v4 prompt block");
         let edited = format!("{body}\nAn owner note.\n\"\"\"{tail}");
         assert_eq!(seat_prompt_charter(&edited), 4);
@@ -1061,25 +1120,21 @@ mod tests {
         );
     }
 
-    /// The v2026.11.94 template, byte for byte: the last one before the
-    /// chief-of-staff charter, which carries the bound owner words.
-    const BEFORE_CHARTER: &str =
-        include_str!("../../../tests/fixtures/orchestrator/orchexec-v2026.11.98.config");
-
     #[test]
     fn an_edited_older_charter_repair_names_its_first_missing_marker() {
-        for (tag, fixture, missing) in [
+        for (tag, version, missing) in [
             (
                 "repair-v2",
-                include_str!("../../../tests/fixtures/orchestrator/v2026.11.101.config"),
+                2,
                 "never end a session whose seats hold or wait for a build or test lane claim",
             ),
             (
                 "repair-v3",
-                include_str!("../../../tests/fixtures/orchestrator/v2026.11.103.config"),
+                3,
                 "queues a move of this seat to another model or account of the same tool",
             ),
         ] {
+            let fixture = older_charter(version);
             let (body, tail) = fixture
                 .rsplit_once("\n\"\"\"")
                 .expect("the template's prompt block");
@@ -1095,7 +1150,8 @@ mod tests {
 
     #[test]
     fn an_owner_prompt_with_the_owner_words_but_no_charter_is_left_alone_and_named() {
-        let (body, tail) = BEFORE_CHARTER
+        let before_charter = older_charter(1);
+        let (body, tail) = before_charter
             .rsplit_once("\n\"\"\"")
             .expect("the template's prompt block");
         let edited = format!("{body}\nAn owner note.\n\"\"\"{tail}");
@@ -1131,17 +1187,10 @@ mod tests {
 
     #[test]
     fn a_migration_that_raises_the_charter_names_the_charter_update_turn() {
-        for (tag, old) in [
-            (
-                "v2026.9.61",
-                fixtures()
-                    .into_iter()
-                    .find(|(tag, _)| tag == "v2026.9.61")
-                    .expect("fixture")
-                    .1,
-            ),
-            ("v2026.11.94", BEFORE_CHARTER.to_owned()),
-        ] {
+        for (tag, old) in ["v2026.9.61", "v2026.11.32"].map(|wanted| {
+            let found = fixtures().into_iter().find(|(tag, _)| tag == wanted);
+            (wanted, found.expect("fixture").1)
+        }) {
             let scratch = root_with(&format!("raised-{tag}"), Some(old.as_bytes()));
             let path = scratch.0.join("orchestrator.config");
             let line = reconcile(&scratch.0, "9.9").unwrap_or_else(|| panic!("{tag}: a line"));

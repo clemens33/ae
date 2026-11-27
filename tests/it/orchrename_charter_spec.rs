@@ -21,14 +21,28 @@ use std::process::Stdio;
 const HEAD: &str = "CHARTER UPDATE (ae ";
 const MARKER: &str = "You are the owner's chief of staff across the ae fleet";
 const OVERLAY_LINE: &str = "The waiting-user fixture sentence comes from the running seat overlay.";
-const RELEASE_100: &str = include_str!("../fixtures/orchestrator/v2026.11.100.config");
-/// The last released overlay that teaches charter 3, before the self-reseat
-/// sentence raised it to 4.
-const RELEASE_103: &str = include_str!("../fixtures/orchestrator/v2026.11.103.config");
+const TEMPLATE: &str = include_str!("../../contrib/aeorchestrator/orchestrator.config");
+/// The charter sentences of versions 3, 4 and 5, which an older prompt lacks.
+const LATER_MARKERS: [&str; 3] = [
+    "never end a session whose seats hold or wait for a build or test lane claim",
+    "queues a move of this seat to another model or account of the same tool",
+    "Begin every reply about one topic with that topic's `#<slug>`",
+];
 const BUSY: &str = "• Working (3s · esc to interrupt)";
 const IDLE: &str = "• Fixture finished";
 const PLACEHOLDER: &str = "Ask Codex to do anything";
 const FOOTER: &str = "  gpt-6-sol high · ~/x";
+
+/// A synthetic overlay that teaches charter `version` (2 or 3): the current
+/// template without the sentences of the later versions.
+fn older_charter(version: usize) -> String {
+    let mut overlay = TEMPLATE.to_owned();
+    for marker in &LATER_MARKERS[version - 2..] {
+        assert!(overlay.contains(marker), "the template carries {marker:?}");
+        overlay = overlay.replace(marker, "an older sentence");
+    }
+    overlay
+}
 
 pub(super) fn turn_fixture(rig: &Rig) {
     // Use the delivery fixture's submit recorder and style-delimited composer.
@@ -246,7 +260,7 @@ fn waiting_user_refreshes_once_when_the_same_launch_is_idle_and_empty() {
 
     let overlay = rig.root.join("orchestrator.config");
     let updated = read(&overlay);
-    fs::write(&overlay, RELEASE_103).expect("the old on-disk charter stays at version 3");
+    fs::write(&overlay, older_charter(3)).expect("the old on-disk charter stays at version 3");
     stepper.step();
     assert_held(&rig);
     fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 5");
@@ -257,10 +271,11 @@ fn waiting_user_refreshes_once_when_the_same_launch_is_idle_and_empty() {
 }
 
 #[test]
-fn the_released_v2026_11_100_overlay_still_relays_while_waiting_user() {
+fn an_overlay_at_charter_2_still_relays_while_waiting_user() {
     let rig = Relay::dispatcher("orchrenamecompat");
     let overlay = rig.world.root.join("orchestrator.config");
-    fs::write(&overlay, RELEASE_100).expect("byte-exact previously released overlay");
+    let older = older_charter(2);
+    fs::write(&overlay, &older).expect("an overlay that stopped at charter 2");
     let state = rig.world.run(
         Some(&rig.caller.pane),
         &[
@@ -273,7 +288,7 @@ fn the_released_v2026_11_100_overlay_still_relays_while_waiting_user() {
         &[],
     );
     assert_eq!(state.0, Some(0), "{}", words(&state));
-    let text = "This quote still reaches the target with the v2026.11.100 prompt installed.";
+    let text = "This quote still reaches the target with the charter 2 prompt installed.";
     let id = rig.ask(text);
     assert!(rig.sent().contains(text));
     assert!(
@@ -281,7 +296,7 @@ fn the_released_v2026_11_100_overlay_still_relays_while_waiting_user() {
             .iter()
             .any(|row| row.reference.as_deref() == Some(id.as_str()))
     );
-    assert_eq!(read(&overlay), RELEASE_100);
+    assert_eq!(read(&overlay), older);
 }
 
 #[test]
