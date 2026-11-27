@@ -35,7 +35,7 @@ pub(super) fn split_seat_override(value: &str) -> Result<(String, Option<String>
     split_profile_client(value).ok_or_else(|| {
         format!(
             "Error: --seat selection '{value}' is not <profile> or <profile>@<client> \
-             (e.g. --seat lead=solx, --lead fablex@cc-mic)."
+             (e.g. --seat lead=solx, --lead fablex@cc-work)."
         )
     })
 }

@@ -304,7 +304,7 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
     // profile.
     let Some((profile, client)) = crate::session_launch::split_profile_client(&profile) else {
         return Err(format!(
-            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-mic)."
+            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-work)."
         ));
     };
     Ok(Parsed {

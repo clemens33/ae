@@ -147,7 +147,7 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
     // profile from its client, so every later row carries the bare profile.
     let Some((profile, client)) = crate::session_launch::split_profile_client(&profile) else {
         return Err(format!(
-            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-mic)."
+            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-work)."
         ));
     };
     if let Some(dir) = dir.as_deref().filter(|dir| !Path::new(dir).is_absolute()) {
