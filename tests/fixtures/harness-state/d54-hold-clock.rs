@@ -13,7 +13,9 @@ use crate::dictate::{
     settle,
 };
 
-const IDLE: &str = include_str!("claude-voice-idle-2.1.332-120x40.txt");
+const IDLE: &str = include_str!("claude-voice-startup-effort-2.1.332-120x40.txt");
+const NOTICE_IDLE: &str = include_str!("claude-voice-startup-notices-2.1.332-120x41.txt");
+const BUSY: &str = include_str!("claude-busy-167x40.txt");
 const WARM: &str = include_str!("claude-voice-warming-2.1.332-120x40.txt");
 const HOLD: &str = include_str!("claude-voice-holding-2.1.332-120x41.esc");
 const PLAIN_HOLD: &str = include_str!("claude-voice-holding-2.1.332-120x41.txt");
@@ -380,6 +382,45 @@ fn a_stalled_initial_idle_frame_cannot_authorize_the_start_probe() {
     script.reads[0] = Sample::frame(IDLE).delayed(151);
     let _ = script.run(Duration::from_secs(1));
     assert_eq!(script.spaces(), 0);
+}
+
+#[test]
+fn captured_startup_chrome_preserves_the_idle_proof() {
+    for frame in [IDLE, NOTICE_IDLE] {
+        let mut script = Circuit::start_with([]);
+        script.reads[0] = Sample::frame(frame);
+        let _ = script.run(Duration::from_secs(1));
+        assert_eq!(script.spaces(), 5, "the captured startup is idle: {frame}");
+    }
+}
+
+#[test]
+fn unfamiliar_rows_and_a_spinner_behind_notices_cannot_prove_idle() {
+    let spinner = BUSY
+        .lines()
+        .find(|row| row.starts_with('✻'))
+        .expect("captured busy row");
+    let busy = NOTICE_IDLE.replacen(
+        "⚠ Your login expires",
+        &format!("{spinner}\n⚠ Your login expires"),
+        1,
+    );
+    assert_ne!(busy, NOTICE_IDLE);
+    let unfamiliar = IDLE.replacen("◐ medium · /effort", "Unrecognized vendor state", 1);
+    assert_ne!(unfamiliar, IDLE);
+    let notices_alone = NOTICE_IDLE
+        .find("⚠ Your login expires")
+        .map(|start| &NOTICE_IDLE[start..])
+        .expect("the notices without the captured startup banner");
+    for frame in [&busy, &unfamiliar, notices_alone] {
+        let mut script = Circuit::start_with([]);
+        script.reads[0] = Sample::frame(frame);
+        assert!(matches!(
+            script.run(Duration::from_secs(1)),
+            HoldOutcome::Refused(_)
+        ));
+        assert_eq!(script.spaces(), 0, "no positive idle witness: {frame}");
+    }
 }
 
 #[test]

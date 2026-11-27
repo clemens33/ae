@@ -515,6 +515,59 @@ fn mic_refuses_an_unread_voice_frame_even_with_a_proved_launch() {
 }
 
 #[test]
+fn mic_refuses_an_unrecognized_pane_state_with_a_clear_voice_footer() {
+    use ae::harness_state::{Dictation, HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    const REFUSAL: &str = "the orchestrator pane state is not recognized; no key was sent";
+    let unfamiliar = IDLE.replacen(
+        "✻ Crunched for 16s · done 4:01 PM",
+        "Unrecognized vendor state",
+        1,
+    );
+    assert_ne!(unfamiliar, IDLE);
+    assert_eq!(dictation(&unfamiliar, ToolKind::Claude), Dictation::Clear);
+    assert_eq!(
+        classify(&unfamiliar, ToolKind::Claude),
+        HarnessState::Unknown
+    );
+    let rig = orchestrator(
+        "voice-unknown-pane",
+        "claude",
+        &composer_cursor(&unfamiliar, 3),
+    );
+    record_hold_launch(&rig);
+    let sibling = active_sibling(&rig);
+    let api = rig_world(&rig).session("api", "tui", "");
+    let pane = app(&rig, "api");
+    let shown = until_screen(&rig, &pane, "the mic is visible for the bound pane", |s| {
+        mic(panel_header(s)).is_some()
+    });
+    assert!(!shown.contains("the orchestrator pane state is not recognized"));
+    press_mic(&rig, &pane, &shown);
+    until_screen(
+        &rig,
+        &pane,
+        "the click explains the unrecognized pane state",
+        |s| {
+            let panel = s
+                .lines()
+                .filter_map(|row| row.rsplit_once(['│', '┃']))
+                .map(|(_, row)| row.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            panel.contains(REFUSAL)
+        },
+    );
+    assert!(
+        rig.wire().is_empty(),
+        "an unrecognized state receives no input"
+    );
+    untouched(&rig, &sibling);
+    untouched(&rig, &api);
+}
+
+#[test]
 fn no_warmup_leaves_the_two_probe_spaces_untouched() {
     let idle = composer_cursor(IDLE, 3);
     let rig = orchestrator("voice-no-warmup", "claude", &idle);

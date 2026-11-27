@@ -1,0 +1,41 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Fable 5.2 with medium effort · Claude Ultra
+ ▝▝   ▝▝   /private/tmp/d54o/cwd
+
+⚠ Your login expires in 3 days · run /login to renew
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+           You've used 84% of your weekly limit · resets Nov 30 at 3am (Europe/Vienna) · try /model opus · more runway
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  🧠 Fable 5.2 (medium)  📁 cwd  $0.00
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
