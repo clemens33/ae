@@ -580,3 +580,10 @@ path = "fuzz_targets/web_decide_choices.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "control_stream"
+path = "fuzz_targets/control_stream.rs"
+test = false
+doc = false
+bench = false

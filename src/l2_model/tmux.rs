@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::inventory::{QueryFailed, ServerId};
 use crate::meta::Selector;
 use crate::theme::Mark;
+pub mod control;
 mod options;
 use options::{DISPLAY_MESSAGE_MS, option_target, set_option_words, unset_option_words};
 pub use options::{
@@ -91,8 +92,12 @@ pub(crate) use fleet::{is_decimal, pane_id_is_valid, session_id_is_valid};
 /// The format `list-sessions` is asked for: one exact session name per line.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
 
-/// What an untargeted attach chooses by: clients attached, last activity, name.
-pub const SESSION_CHOICE_FORMAT: &str = "#{session_attached} #{session_activity} #{session_name}";
+/// What an untargeted attach chooses by: human clients attached, last
+/// activity, name. ae's dictation sidecar is no viewer.
+pub const SESSION_CHOICE_FORMAT: &str = concat!(
+    control::human_attached!(),
+    " #{session_activity} #{session_name}"
+);
 
 /// The full argument list for reading what an untargeted attach chooses by.
 #[must_use]
@@ -1163,9 +1168,10 @@ pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchP
     Some(panes)
 }
 
-/// The ticker's one observation: identity and whether anybody is attached to
-/// the session.
-pub(crate) const MOTION_PANE_FORMAT: &str = "#{pane_id} | #{@ae_agent} | #{session_attached}";
+/// The ticker's one observation: identity and how many human clients are
+/// attached to the session. ae's dictation sidecar is no viewer.
+pub(crate) const MOTION_PANE_FORMAT: &str =
+    concat!("#{pane_id} | #{@ae_agent} | ", control::human_attached!());
 
 /// The number of fields [`MOTION_PANE_FORMAT`] yields.
 const MOTION_PANE_FIELDS: usize = 3;
@@ -1177,7 +1183,8 @@ pub(crate) struct MotionPane {
     pub pane_id: String,
     /// `@ae_agent`, or `None` when unstamped.
     pub agent: Option<String>,
-    /// Clients attached to this session.
+    /// Human clients attached to this session: ae's dictation sidecar is
+    /// not counted.
     pub session_attached: u32,
 }
 
@@ -2153,13 +2160,14 @@ pub fn fenced_switch_client_args(
 /// row; the `-t` scope is the proof of attachment.
 pub const STAMPED_CLIENT_FORMAT: &str = "#{pid} | #{start_time} | #{client_name}";
 
-/// The arguments listing the clients attached to the stamped session alone.
+/// The arguments listing the human clients attached to the stamped session
+/// alone: ae's dictation sidecar is never asked to confirm.
 #[must_use]
 pub fn stamped_clients_args(server: &ServerId, stamp: &SessionStamp) -> Vec<String> {
     let mut args = server_args(server);
     args.extend(["list-clients", "-t"].map(ToOwned::to_owned));
     args.push(stamp.session.id.clone());
-    args.extend(["-F", STAMPED_CLIENT_FORMAT].map(ToOwned::to_owned));
+    args.extend(["-f", control::HUMAN_CLIENT, "-F", STAMPED_CLIENT_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -2532,11 +2540,21 @@ pub struct ObservedClient {
     pub activity: Option<u64>,
 }
 
-/// The full argument list for listing `server`'s attached clients.
+/// The full argument list for listing `server`'s attached human clients: ae's
+/// dictation sidecar is left out.
 #[must_use]
 pub fn list_clients_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-clients", "-F", CLIENT_FORMAT].map(ToOwned::to_owned));
+    args.extend(
+        [
+            "list-clients",
+            "-f",
+            control::HUMAN_CLIENT,
+            "-F",
+            CLIENT_FORMAT,
+        ]
+        .map(ToOwned::to_owned),
+    );
     args
 }
 

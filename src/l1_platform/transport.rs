@@ -550,7 +550,9 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     const POLL: Duration = Duration::from_millis(25);
     fn halt(child: &mut std::process::Child, ended: Ran) -> Ran {
         let _ = child.kill();
-        let _ = child.wait();
+        if let Ok(status) = child.wait() {
+            note_child_reaped(child.id(), status);
+        }
         ended
     }
     let owned = match out {
@@ -577,14 +579,20 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     command.stdout(capture_output(handle, supplied));
     command.stderr(std::process::Stdio::null());
     let started = std::time::Instant::now();
-    let mut child = match command.spawn() {
+    note_spawn(command.get_program(), command.get_args());
+    let spawned = command.spawn();
+    note_child_spawned(spawned.as_ref().ok().map(std::process::Child::id));
+    let mut child = match spawned {
         Ok(child) => child,
         Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ran::Absent,
         Err(_) => return Ran::Failed,
     };
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                note_child_reaped(child.id(), status);
+                break status;
+            }
             Ok(None) => {}
             Err(_) => return halt(&mut child, Ran::Failed),
         }
@@ -1472,6 +1480,22 @@ pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {
     tmux::interpret_session_id(succeeded, &stdout, name)
 }
 
+/// The pane `pane_id` of the session `session_id`, with the process it runs
+/// now: the one proof a dictation sidecar keys against, or `None`.
+#[must_use]
+pub fn observe_pane_proof(
+    server: &ServerId,
+    session_id: &str,
+    pane_id: &str,
+) -> Option<tmux::control::Proven> {
+    if !addressable(server) {
+        return None;
+    }
+    let args = tmux::control::pane_proof_args(server, session_id, pane_id)?;
+    let (succeeded, stdout) = run(PROGRAM, &args);
+    tmux::control::interpret_pane_proof(succeeded, &stdout, session_id, pane_id)
+}
+
 /// The IMMUTABLE identity — the `$<n>` id AND the creation instant — of the
 /// session named EXACTLY `name`, or `None`.
 ///
@@ -1797,6 +1821,41 @@ fn start_wait_client(args: &[String], stdout: std::process::Stdio) -> Option<std
     note_child_spawned(child.as_ref().map(std::process::Child::id));
     child
 }
+
+/// The dictation sidecar: one long-lived tmux control client, built by
+/// [`command_for`] like every child and counted like every child. Its stdin
+/// takes the command lines. `TERM` names it to every client format, and only
+/// this child carries that value.
+///
+/// Its stdout is one end of a socket pair, and the other end comes back with
+/// the child. The tmux server keeps a copy of a control client's stdout, so
+/// killing the client ends no read of a pipe: a shut-down socket end does.
+fn spawn_sidecar(args: &[String]) -> Option<(std::process::Child, std::os::unix::net::UnixStream)> {
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().ok()?;
+    let mut command = command_for(
+        PROGRAM,
+        args,
+        &[("TERM", tmux::control::SIDECAR_TERM)],
+        true,
+    );
+    command.env_remove("TMUX").env_remove("TMUX_PANE");
+    note_spawn(command.get_program(), command.get_args());
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+        theirs,
+    )));
+    command.stderr(std::process::Stdio::null());
+    let child = command.spawn().ok();
+    // The command holds this process's copy of the child's end until it goes.
+    drop(command);
+    note_child_spawned(child.as_ref().map(std::process::Child::id));
+    Some((child?, ours))
+}
+
+/// The dictation sidecar's owner: [`sidecar::Sidecar`].
+mod sidecar;
+
+pub use sidecar::{Sidecar, SidecarLost, SidecarReply};
 
 /// What a waiter printed so far, at most a few lines' worth.
 ///

@@ -613,12 +613,120 @@ from the waveform after it. A finished insert, which Claude draws in the
 default colour, is no recording. A tap recording draws `⏺ REC · tap to send` and
 reads `rec`. `Transcribing…` there reads `…`. The hold label without its bar
 (reduced motion, or a draft in the composer) and any voice word below the
-composer also read `…`. No key starts the mic: `v` stays Peek. In this
-release every click says `refused: ae dictation is not available in this
-version; no key was sent` on the hint row, before any other check, and sends
-no key: no relaunch, tool or pane state changes that. Activation stays off
-until ae can keep a hold recording alive. ae never presses Enter for a
-dictation.
+composer also read `…`. No key starts the mic: `v` stays Peek.
+
+A click on the mic starts a hold-mode dictation in the orchestrator's Claude.
+Each check below refuses with its own line in the panel and sends no key. The
+checks run in this order: the panel's incarnation and its proven main pane, the
+pane's send lock (`refused: another delivery to the orchestrator is in flight;
+no key was sent`), the same proof again under that lock, the seat's tool, and
+this launch's hold-mode proof (`refused: this launch lacks ae's hold-mode
+dictation proof (docs/app.md)`). The proof is the `voice.main` row that ae
+records when it launches Claude with exactly its own hold-mode `--settings`
+layer ([commands](reference/commands.md)). Managed settings outrank that
+layer, and a managed `autoSubmit` can send the transcript on release
+([managed settings](https://code.claude.com/docs/en/managed-settings)). So the
+mic refuses with `managed Claude settings present; ae cannot prove the
+dictation stays unsent; no key was sent` when anything exists at
+`managed-settings.json` or `managed-settings.d` in Claude's managed directory:
+`/Library/Application Support/ClaudeCode` on macOS, `/etc/claude-code` on
+Linux. ae checks existence only and reads neither, and on any other system it
+always refuses. Then one fresh
+capture must show no dictation, an empty composer, a readable voice footer and
+a Claude that the frame grammar reads as idle. A busy Claude refuses with
+`refused: dictation waits until Claude is idle; it is busy now`. A frame that
+the grammar cannot place refuses with `refused: the orchestrator pane state is
+not recognized; no key was sent`. Above the composer the grammar skips only
+Claude's measured startup notices: the login expiry, the weekly limit and
+`◐ medium · /effort`. Any other effort word or notice fails closed.
+
+ae then attaches one tmux control client of its own to the proven
+orchestrator session, with `TERM=ae-dictation` and `-f no-output,ignore-size`.
+Before it attaches, it reads the session's and the global `client-attached`,
+`client-session-changed` and `client-detached` hooks. A `client-detached` hook,
+a global hook on those names, or a session hook without ae's human-client guard
+refuses with `refused: dictation cannot attach safely with these tmux hooks
+(docs/app.md)`. Every read on that client is one capture that tmux prints
+only while the pane belongs to the proved session and runs the proved process.
+Every key is one Space that tmux sends only to that pane, process and live
+pane.
+
+The first read on the client must again show an empty idle composer. Right
+after that read, ae checks the two managed-settings paths once more, and a
+managed node that appeared since the click refuses with the same notice before
+any Space. The start sends two Spaces. Claude's hold warmup must show within 60 ms of the
+first. Three more Spaces follow, then one Space for each fresh frame that
+proves the recording, at least 80 ms apart and at most 150 ms after the one
+before. The hold ends after 5 minutes at the latest. A second click stops it:
+`dictation: stopping; no Space is sent after this`. The stop waits for a Space
+that ae is writing at that moment, and after it returns ae writes no new
+Space. A Space that ae wrote just before the stop can still be on its way to
+Claude when the line shows. ae then only reads, on the
+same client, for at most 15 seconds: Claude's `Transcribing…`, then two equal
+reads of the composer. It says `dictation: the text is in the orchestrator
+input, not sent`, `dictation: no text is visible in the orchestrator input`
+or `ae could not verify the result; check the orchestrator input`. Then it
+closes the client. A slow read, a missed deadline or a key that tmux did not
+acknowledge ends the hold at once: ae kills and reaps the client and reads
+nothing more. Leaving the app, closing the panel or a replaced orchestrator
+does the same. The send lock is held from the start's proof until the client
+is gone, so a delivery to the orchestrator waits for the dictation or gives
+up. ae never presses Enter and never clears the composer for a dictation.
+
+What this leaves:
+
+- Two Spaces. The two start Spaces go out before Claude shows its warmup.
+  When no warmup shows in time, or a second click stops the start first, ae
+  waits 150 ms and reads the pane once more. If that read shows exactly the two
+  Spaces in an otherwise empty composer, ae says `Claude showed no hold
+  warmup; two Spaces may stay in the orchestrator input`. Otherwise, and after
+  a slow read, a missed deadline or an unacknowledged key, where ae reads
+  nothing more, it says `refused: dictation did not start; check the
+  orchestrator input`. It removes nothing.
+- Session recency. The control client's attach updates the session's
+  `session_activity` like any client. A measured dictation moved the
+  orchestrator from 3472 to 3474, past a peer session at 3473. So an attach
+  without a session target can choose the orchestrator afterwards: a plain
+  `tmux attach`, and bare `ae` or `ae --tmux` when they attach without one.
+  ae's own client readers filter the control client from their client lists
+  and attachment counts by `client_control_mode` and its terminal name. That
+  filter does not restore the activity order.
+- Launches without the proof. An ordinary Claude orchestrator that started
+  before v2026.11.125 has no `voice.main` row, so the mic refuses with the
+  missing-proof line. Stop and resume it once to record the row: `ae stop
+  orchestrator && ae orchestrator`. A profile command with its own
+  `--settings` gets no hold-mode layer and no row, so its mic keeps refusing.
+  A managed-settings file refuses the mic even when the row is there.
+- Hooks of a running orchestrator. ae's two client hooks carry the
+  human-client guard from this release on. In a running session, the
+  watchdog rewrites the wake hook on its next cycle. The focus hook changes
+  with the fleet migration of `ae upgrade` and with the restamp of a
+  reattach. Until both changed, the mic refuses with the hook line. Relaunch
+  the orchestrator once to apply both at once: `ae stop orchestrator && ae
+  orchestrator`.
+- Hold length. A real hold with speech is proved for 9.2 s. The voice-off
+  replay proves the controller for 36 scenarios, one of them a 20.09 s hold.
+  A longer real hold is not proved. A frame that the grammar does not know
+  ends the hold early and fails closed with one of the lines above.
+- Early submit. One run measured a redraw lag of 68 ms, 592 ms from the last
+  Space to the visible insert, and 323 ms from the visible `Transcribing…` to
+  the insert. These are single observations, not bounds. A stale redraw that
+  is slow enough, together with a fast insert, can let two Spaces reach Claude
+  after the release and submit the transcript early. This residual is
+  accepted.
+- Managed settings ae cannot see. The managed-settings check looks at two
+  filesystem paths only and reads neither. ae does not inspect a macOS
+  configuration profile for the managed preferences domain
+  `com.anthropic.claudecode`, server-managed settings from the Claude admin
+  console or a gateway, or the computed output of a `policyHelper` that such
+  a profile declares
+  ([policyHelper](https://code.claude.com/docs/en/settings-reference#policyhelper)).
+  Each can set `autoSubmit` above ae's own layer. A `policyHelper` declared in
+  the managed file refuses with that file.
+- Direct typing. Text typed straight into the orchestrator's Claude during or
+  after a dictation can move Claude's insert anchor, and Claude can then drop
+  the transcript. The send lock holds ae's deliveries, not typing, and ae
+  cannot tell spoken text from typed text in the composer.
 
 A dictation in a Claude pane holds ae's deliveries to it. Before each paste,
 Enter and Escape, ae reads the pane once more under its send lock. A frame

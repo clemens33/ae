@@ -450,7 +450,11 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 ),
             };
             args.extend(["set-hook", "-t", pane, FOCUS_HOOK].map(ToOwned::to_owned));
-            args.push(command);
+            // ae's dictation sidecar moves no focus.
+            args.push(format!(
+                "if-shell -F '{}' {{ {command} }}",
+                crate::tmux::control::HUMAN_CLIENT
+            ));
         }
         Op::UnsetClientSessionHook { target } => {
             args.extend(["set-hook", "-u", "-t", target, FOCUS_HOOK].map(ToOwned::to_owned));

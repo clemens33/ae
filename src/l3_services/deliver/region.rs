@@ -387,6 +387,17 @@ pub fn read(region: &str, model: InputModel) -> Reading {
     }
 }
 
+/// The text `region`'s input box holds, its placeholder excluded, or `None`
+/// when no box can be read: the same box [`read`] judges. Two equal answers in
+/// a row say that the box has stopped changing.
+#[must_use]
+pub fn content(region: &str, model: InputModel) -> Option<String> {
+    if region.is_empty() {
+        return None;
+    }
+    gather(&parse(region), model).map(|found| found.text)
+}
+
 /// The verdict alone of [`read`].
 #[must_use]
 pub fn occupancy(region: &str, model: InputModel) -> Occupancy {

@@ -12,6 +12,7 @@ pub mod deskcmd;
 pub mod desklive;
 pub mod deskstore;
 pub mod desktick;
+pub mod dictate;
 pub(crate) mod fleet_read;
 pub mod fleetfeed;
 pub mod go_usage;

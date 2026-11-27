@@ -197,7 +197,12 @@ impl App {
     /// that waited for it. Neither skips the other; whether a frame is due.
     pub(super) fn owed(&mut self) -> bool {
         self.inputs.values_mut().for_each(crate::clipboard::sweep);
-        self.shipped() | self.deliver() | self.land() | self.unpark() | self.image_ready()
+        self.shipped()
+            | self.deliver()
+            | self.land()
+            | self.unpark()
+            | self.image_ready()
+            | self.dictation_heard()
     }
 
     pub(super) fn image_ready(&mut self) -> bool {

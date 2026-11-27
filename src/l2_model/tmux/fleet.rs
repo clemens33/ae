@@ -1,5 +1,6 @@
 //! The fleet's tmux reads: the strip's panes and sessions, the watchdog's listing, and the picker's clients, agents, sessions, panes and pre-draw read.
 
+use super::control::{HUMAN_CLIENT, for_humans};
 use super::{
     FIELD_SEPARATOR, LOOK_FORMAT, LookOptions, Mark, SESSION_NAME_FORMAT, ServerId,
     interpret_display_value, interpret_look, interpret_sessions, is_view_session, server_args,
@@ -294,12 +295,22 @@ pub struct PickerClient {
     pub width: usize,
 }
 
-/// List every attached client once so the picker can resolve its explicit
-/// client to the session whose button owns the open marker.
+/// List every attached human client once so the picker can resolve its
+/// explicit client to the session whose button owns the open marker. ae's
+/// dictation sidecar is left out: it never invokes the picker.
 #[must_use]
 pub fn picker_client_sessions_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-clients", "-F", PICKER_CLIENT_SESSION_FORMAT].map(ToOwned::to_owned));
+    args.extend(
+        [
+            "list-clients",
+            "-f",
+            HUMAN_CLIENT,
+            "-F",
+            PICKER_CLIENT_SESSION_FORMAT,
+        ]
+        .map(ToOwned::to_owned),
+    );
     args
 }
 
@@ -359,11 +370,14 @@ pub struct MenuClient {
     pub width: usize,
 }
 
-/// List every attached client once so a menu can resolve its explicit client.
+/// List every attached human client once so a menu can resolve its explicit
+/// client. ae's dictation sidecar is left out: no menu is drawn on it.
 #[must_use]
 pub fn menu_clients_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-clients", "-F", MENU_CLIENT_FORMAT].map(ToOwned::to_owned));
+    args.extend(
+        ["list-clients", "-f", HUMAN_CLIENT, "-F", MENU_CLIENT_FORMAT].map(ToOwned::to_owned),
+    );
     args
 }
 
@@ -962,7 +976,7 @@ pub fn picker_read_args(server: &ServerId, client: &str) -> Vec<String> {
     let reads: [(char, &[&str], String); 7] = [
         (
             READ_CLIENTS,
-            &["list-clients", "-F"],
+            &["list-clients", "-f", HUMAN_CLIENT, "-F"],
             format!("{READ_STEM}{READ_CLIENTS}|{PICKER_CLIENT_SESSION_FORMAT}"),
         ),
         (
@@ -992,22 +1006,28 @@ pub fn picker_read_args(server: &ServerId, client: &str) -> Vec<String> {
         ),
         // The client-targeted read goes LAST: it is the only command that can
         // fail while the server is alive, and tmux stops the list there, so
-        // nothing that must run waits behind it.
+        // nothing that must run waits behind it. For ae's dictation sidecar it
+        // prints neither its row nor its marker, so the sidecar has no look.
         (
             READ_LOOK,
             &["display-message", "-p", "-c", client],
-            format!("{READ_STEM}{READ_LOOK}|{LOOK_FORMAT}"),
+            for_humans(&format!("{READ_STEM}{READ_LOOK}|{LOOK_FORMAT}")),
         ),
     ];
     let mut queue: Vec<String> = Vec::new();
     for (kind, words, format) in reads {
         let mut command: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
         command.push(format);
-        let done = vec![
-            "display-message".to_owned(),
-            "-p".to_owned(),
-            format!("{READ_DONE_STEM}{kind}"),
-        ];
+        let marker = format!("{READ_DONE_STEM}{kind}");
+        let done: Vec<String> = if kind == READ_LOOK {
+            ["display-message", "-p", "-c", client, &for_humans(&marker)]
+                .map(ToOwned::to_owned)
+                .into()
+        } else {
+            ["display-message", "-p", &marker]
+                .map(ToOwned::to_owned)
+                .into()
+        };
         for words in [command, done] {
             if !queue.is_empty() {
                 queue.push(";".to_owned());

@@ -76,7 +76,12 @@ pub(crate) fn waiter_args(server: &ServerId, session: &str, channel: &str) -> Ve
         "-p".to_owned(),
         "-t".to_owned(),
         option_target(OptionScope::Session, session),
-        format!("{WAIT_READ_STEM}#{{session_attached}}"),
+        // The human count, ae's dictation sidecar left out. A missing session,
+        // which tmux 3.4 and 3.8 still expand, prints no count: Malformed.
+        format!(
+            "{WAIT_READ_STEM}#{{?#{{session_id}},{},}}",
+            super::control::HUMAN_ATTACHED
+        ),
         ";".to_owned(),
         "wait-for".to_owned(),
         channel.to_owned(),
@@ -179,7 +184,11 @@ pub(crate) fn cycle_batch_chunks(
             "-t".to_owned(),
             option_target(OptionScope::Session, session),
             WAKE_HOOK.to_owned(),
-            format!("wait-for -S {channel}"),
+            // ae's dictation sidecar wakes no watchdog.
+            format!(
+                "if-shell -F '{}' {{ wait-for -S {channel} }}",
+                super::control::HUMAN_CLIENT
+            ),
         ]);
         first.push(vec![
             "display-message".to_owned(),

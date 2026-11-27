@@ -4256,7 +4256,7 @@ const HELD_KEYS: [(&str, &str); 4] = [
 ];
 const MOUSE_KEYS: [(&str, &str); 5] = [
     ("click", "select a session, tab, seat or turn"),
-    ("click mic", "panel: Claude dictation; not enabled yet"),
+    ("click mic", "panel: start or stop Claude dictation"),
     ("wheel", "scroll 3 rows (the list: 1 session)"),
     ("drag", "a border resizes a column or the list"),
     (
@@ -8067,7 +8067,11 @@ mod tests {
         };
         row("oo", &["open seat", "panel", "orchestrator pane"]);
         row("O F", &["orchestrator panel", "click pane"]);
-        row("click mic", &["panel", "dictation", "not enabled yet"]);
+        row("click mic", &["panel", "start or stop", "dictation"]);
+        assert!(
+            !rows.iter().any(|r| r.contains("not enabled")),
+            "the activated mic says no inactive word: {rows:?}"
+        );
     }
 
     /// With a seat viewed the keys row says `viewing` and `Esc chat`,

@@ -330,6 +330,38 @@ pub fn boot_time(shape: &Shape) -> Option<i64> {
     resolve_boot(declared, &PROVEN_BOOT, read_host_boot)
 }
 
+/// The extra directory the dictation's managed-settings gate checks beside
+/// the host's own (`dictate::managed_root`): `AE_TEST_CLAUDE_MANAGED_DIR`,
+/// and only in the CHECKOUT shape, so the hermetic suite can plant a managed
+/// file where a test may write. It adds a directory and never replaces the
+/// host's: the gate refuses when either holds a managed node.
+#[must_use]
+pub fn claude_managed_test_root(shape: &Shape) -> Option<PathBuf> {
+    claude_managed_test_root_with(shape, || {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: AE_TEST_CLAUDE_MANAGED_DIR adds a fixture's scratch directory to the dictation's managed-settings gate — the hermetic suite, CHECKOUT only"
+        )]
+        let raw = std::env::var_os("AE_TEST_CLAUDE_MANAGED_DIR");
+        raw
+    })
+}
+
+/// [`claude_managed_test_root`] with its one variable read by `lookup`, which
+/// only the CHECKOUT shape calls. An empty value is no directory.
+#[must_use]
+pub fn claude_managed_test_root_with(
+    shape: &Shape,
+    lookup: impl FnOnce() -> Option<OsString>,
+) -> Option<PathBuf> {
+    if !shape.honours_environment() {
+        return None;
+    }
+    lookup()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 /// What the host proved about its boot, kept for the life of the process.
 static PROVEN_BOOT: OnceLock<i64> = OnceLock::new();
 

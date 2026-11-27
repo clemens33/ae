@@ -486,6 +486,9 @@ struct App {
     queued: Vec<Queued>,
     /// The ask being carried to its seat, until its outcome lands.
     flight: Option<Flight>,
+    /// The panel mic's dictation, from the click that started it until its
+    /// last note lands. Dropping it reaps its control client.
+    dictating: Option<panel::Dictating>,
     /// The outcome word of the last ask, until the lane shows it.
     settling: Option<Settling>,
     /// The long turns this app shows whole, by [`App::fold_key`]. Memory only.
@@ -651,6 +654,7 @@ impl App {
             admitted: None,
             queued: Vec::new(),
             flight: None,
+            dictating: None,
             settling: None,
             expanded: BTreeSet::new(),
             sent: BTreeSet::new(),

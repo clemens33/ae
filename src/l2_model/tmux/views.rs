@@ -527,7 +527,10 @@ pub fn view_return_command(
 pub fn view_client_place_args(server: &ServerId, client: &str) -> Vec<String> {
     let mut args = server_args(server);
     args.extend(["display-message", "-p", "-c", client].map(ToOwned::to_owned));
-    args.push("#{session_id} | #{window_id} | #{pane_id}".to_owned());
+    // ae's dictation sidecar has no place: it prints an empty line.
+    args.push(super::control::for_humans(
+        "#{session_id} | #{window_id} | #{pane_id}",
+    ));
     args
 }
 
@@ -557,16 +560,20 @@ pub fn view_destroy_args(server: &ServerId, view: &str) -> Vec<String> {
     args
 }
 
-/// What [`view_census_args`] reads per session: its id, its name and whether
-/// a client is attached.
-const VIEW_CENSUS_FORMAT: &str = "#{session_id} | #{session_attached} | #{session_name}";
+/// What [`view_census_args`] reads per session: its id, its name and how many
+/// human clients are attached. ae's dictation sidecar views nothing.
+const VIEW_CENSUS_FORMAT: &str = concat!(
+    "#{session_id} | ",
+    super::control::human_attached!(),
+    " | #{session_name}"
+);
 
 /// One session of [`view_census_args`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewCensusRow {
     /// The `$<n>` session id.
     pub id: String,
-    /// Whether any client is attached.
+    /// Whether any human client is attached.
     pub attached: bool,
     /// The session name.
     pub name: String,

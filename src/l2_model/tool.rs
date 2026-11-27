@@ -2062,6 +2062,13 @@ impl ToolKind {
         matches!(self, Self::Claude)
     }
 
+    /// The one tool whose hold-mode dictation ae drives from outside the
+    /// terminal: the panel mic keys and reads only this tool's frames.
+    #[must_use]
+    pub const fn hold_dictation() -> Self {
+        Self::Claude
+    }
+
     /// Canonical diagnostic and metadata spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

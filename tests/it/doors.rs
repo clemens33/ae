@@ -429,6 +429,85 @@ fn run_tool_version_has_exactly_one_product_caller_one_fixed_argument_and_no_com
     );
 }
 
+/// `transport::spawn_sidecar` is the dictation leg of the one process door
+/// (lead grant ae-20261127T091101Z-7da93898): one tmux control client per
+/// dictation, started by `Sidecar::attach` alone. Its stdin is the one pipe
+/// ae writes commands to, its stdout one end of a socket pair ae can shut, and
+/// its stderr is closed. Every read and every key of a dictation goes through
+/// that client, so neither starts a process of its own; the hook preflight's
+/// one bounded `spawn_until` is the only other child an attach starts.
+#[test]
+fn the_dictation_sidecar_has_one_starter_and_no_process_per_read_or_key() {
+    // A scan that found nothing fails here too: the expected lists are not empty.
+    assert_eq!(
+        sorted(src_holders("spawn_sidecar(")),
+        sorted([
+            "src/l1_platform/transport.rs",
+            "src/l1_platform/transport/sidecar.rs"
+        ]),
+        "the dictation process leg gained (or lost) a product holder"
+    );
+    assert_eq!(
+        src_holders("Sidecar::attach("),
+        ["src/l3_services/dictate/worker.rs"],
+        "the dictation client gained (or lost) a starter"
+    );
+    let raw = tree_text("src/l1_platform/transport.rs");
+    let code = structural("src/l1_platform/transport.rs", raw);
+    let range = body_of(&code, "fn spawn_sidecar(");
+    let body = &code[range.clone()];
+    assert!(
+        body.contains("command_for(") && body.contains("PROGRAM"),
+        "the dictation leg no longer rides the one tmux command builder"
+    );
+    assert!(
+        !body.contains("Command::new"),
+        "the dictation leg grew a process site of its own"
+    );
+    assert_eq!(
+        body.matches("Stdio::piped()").count(),
+        1,
+        "stdin alone is a pipe"
+    );
+    assert_eq!(body.matches("Stdio::null()").count(), 1, "stderr is closed");
+    assert!(
+        body.contains("UnixStream::pair()"),
+        "stdout is no longer an end of a socket pair ae can shut"
+    );
+    // Literals are blanked in `code`, so the removed variables are read from the source.
+    for variable in ["\"TMUX\"", "\"TMUX_PANE\""] {
+        assert!(
+            raw[range.clone()].contains(&format!(".env_remove({variable})")),
+            "the dictation client inherits {variable}"
+        );
+    }
+    let file = "src/l1_platform/transport/sidecar.rs";
+    let sidecar = structural(file, tree_text(file));
+    assert_eq!(
+        sidecar.matches("spawn_sidecar(").count(),
+        1,
+        "an attach starts one client"
+    );
+    assert_eq!(
+        sidecar.matches("spawn_until(").count(),
+        1,
+        "the hook preflight is the one other child of an attach"
+    );
+    for leg in [
+        "fn send(",
+        "fn reply(",
+        "fn spaced(",
+        "fn frame(",
+        "fn next_event(",
+    ] {
+        let leg_body = &sidecar[body_of(&sidecar, leg)];
+        assert!(
+            !leg_body.contains("spawn") && !leg_body.contains("run("),
+            "`{leg}` starts a process for a read or a key"
+        );
+    }
+}
+
 /// `transport::run_clipboard_image` is the FIXED-PROGRAM clipboard leg of
 /// the one process door: it chooses the binary and every argument.
 #[test]

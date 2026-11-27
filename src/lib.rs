@@ -80,6 +80,7 @@ pub use l3_services::deskcmd;
 pub use l3_services::desklive;
 pub use l3_services::deskstore;
 pub(crate) use l3_services::desktick;
+pub use l3_services::dictate;
 pub(crate) use l3_services::fleet_read;
 pub use l3_services::fleetfeed;
 pub use l3_services::go_usage;

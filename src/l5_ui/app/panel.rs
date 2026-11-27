@@ -8,15 +8,98 @@ use super::{
     model, overview,
 };
 
-/// Whether this version starts a dictation from the panel mic. Off until ae
-/// can keep a hold recording alive and leave its text in Claude: every click
-/// then says [`DICTATION_INACTIVE`] and sends no key.
-const DICTATION_ACTIVE: bool = false;
+use crate::dictate::worker::{Finish, Note, Start, Worker};
+use crate::dictate::{HoldOutcome, Progress, Refusal as Unkeyed, Settle};
+use crate::transport::SidecarLost;
+
+/// Whether this version starts a dictation from the panel mic: on, since ae
+/// keeps a hold recording alive on its own control client and leaves the
+/// text unsent in Claude (docs/app.md). Off, every click says
+/// [`DICTATION_INACTIVE`] and sends no key.
+const DICTATION_ACTIVE: bool = true;
 
 /// The click's one line while [`DICTATION_ACTIVE`] is off. It names this
 /// version, so it stays true for every launch, tool and pane state.
 const DICTATION_INACTIVE: &str =
     "refused: ae dictation is not available in this version; no key was sent";
+
+/// This version's own refusal, which wins over every other reason, or
+/// `None` while [`DICTATION_ACTIVE`] is on.
+const fn version_refusal() -> Option<&'static str> {
+    if DICTATION_ACTIVE {
+        None
+    } else {
+        Some(DICTATION_INACTIVE)
+    }
+}
+
+/// A launch without ae's recorded hold-mode override (lead ruling).
+const UNPROVED_LAUNCH: &str =
+    "refused: this launch lacks ae's hold-mode dictation proof (docs/app.md)";
+
+/// A dictation whose panel no longer shows its incarnation, said in the flash.
+const LEFT: &str = "dictation: stopped; the panel no longer shows that orchestrator";
+
+/// The second click's line: the stop has returned, so no Space follows it.
+const STOPPING: &str = "dictation: stopping; no Space is sent after this";
+
+/// The result ae could not tell apart from text it did not insert.
+const UNVERIFIED: &str = "ae could not verify the result; check the orchestrator input";
+
+/// The panel's line for a note the dictation sent while it ran.
+const fn progress_line(progress: Progress) -> &'static str {
+    match progress {
+        Progress::Holding => "dictation: recording; click the mic again to stop",
+        Progress::Transcribing => "dictation: transcribing",
+    }
+}
+
+/// The panel's line for how a dictation ended; `None` for an owner that left.
+/// Each says only what ae observed: an insert is left unsent, and nothing is
+/// claimed about text ae did not see.
+const fn finish_line(finish: Finish) -> Option<&'static str> {
+    Some(match finish {
+        Finish::Abandoned => return None,
+        Finish::NotAttached(SidecarLost::Hooks(_)) => {
+            "refused: dictation cannot attach safely with these tmux hooks (docs/app.md)"
+        }
+        Finish::NotAttached(_) => {
+            "refused: dictation could not attach to the orchestrator; no key was sent"
+        }
+        Finish::Held { outcome, settled } => match (outcome, settled) {
+            (HoldOutcome::Refused(Unkeyed::Stopped), _) => "dictation: stopped; no key was sent",
+            (HoldOutcome::Refused(Unkeyed::Stalled), _) => {
+                "refused: dictation read the orchestrator too slowly; no key was sent"
+            }
+            (HoldOutcome::Refused(Unkeyed::NotIdle), _) => {
+                "refused: dictation did not start; no key was sent"
+            }
+            (HoldOutcome::Refused(Unkeyed::ManagedSettings), _) => crate::dictate::MANAGED,
+            (HoldOutcome::Unstarted { visible: true, .. }, _) => {
+                "Claude showed no hold warmup; two Spaces may stay in the orchestrator input"
+            }
+            (HoldOutcome::Unstarted { .. }, _) => {
+                "refused: dictation did not start; check the orchestrator input"
+            }
+            (HoldOutcome::Lapsed { .. }, Some(Settle::Inserted)) => {
+                "dictation: the text is in the orchestrator input, not sent"
+            }
+            (HoldOutcome::Lapsed { .. }, Some(Settle::Empty)) => {
+                "dictation: no text is visible in the orchestrator input"
+            }
+            (HoldOutcome::Lapsed { .. }, Some(Settle::Unproved(_)) | None) => UNVERIFIED,
+        },
+    })
+}
+
+/// The running dictation: its worker, which reaps its control client when it
+/// drops, and the notes it sends.
+pub(super) struct Dictating {
+    worker: Worker,
+    notes: std::sync::mpsc::Receiver<Note>,
+    /// The incarnation it started on: its notes go to no other.
+    pin: String,
+}
 
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
@@ -740,87 +823,218 @@ impl App {
         self.in_panel(|app| app.pane_open(&drawn)).is_some()
     }
 
-    /// The panel header's mic: the same incarnation and seat proof the `pane`
-    /// word makes, then the refusal chain. Until the recording states are
-    /// measured, a click that passes every gate starts nothing either.
+    /// The panel header's mic. While a dictation runs, a click stops it: no
+    /// Space is written once the stop returns. Otherwise the same incarnation
+    /// and seat proof the `pane` word makes, then the refusal chain, then one
+    /// dictation on its own control client.
     pub(super) fn mic_click(&mut self) -> bool {
         let target = (self.orch.panel.as_ref()).and_then(|panel| panel.column.layout.pane.clone());
         let drawn = pane_drawn(target.unwrap_or_default());
         self.in_panel(|app| {
+            if let Some(run) = &app.dictating {
+                run.worker.stop();
+                app.pane_said(STOPPING.to_owned());
+                return;
+            }
             let label = drawn.focused.as_deref().unwrap_or(ORCH).to_owned();
-            let line = app.mic_refusal(&drawn, &label);
-            app.pane_said(line);
+            match app.mic_start(&drawn, &label) {
+                Ok(start) => app.dictate(&drawn.uuid, start),
+                Err(line) => app.pane_said(line),
+            }
         })
         .is_some()
     }
 
-    /// Why the mic starts no dictation now. While [`DICTATION_ACTIVE`] is off,
-    /// this version's own refusal wins over every other reason, so no line
-    /// promises that a relaunch or an idle Claude would help. Once on, each
-    /// gate in its order: the bound incarnation and its proven pane, the
-    /// tool, this launch's hold-mode proof, then one fresh capture: no
-    /// dictation running, an empty composer, an idle Claude, a footer it reads.
-    fn mic_refusal(&self, drawn: &Drawn, label: &str) -> String {
+    /// Start one dictation `start` on the incarnation `pin`: its notes land
+    /// in [`App::dictation_heard`].
+    fn dictate(&mut self, pin: &str, start: Start) {
+        let (tell, notes) = std::sync::mpsc::channel();
+        let started = Worker::start(start, move |note| {
+            let _ = tell.send(note);
+        });
+        match started {
+            Ok(worker) => {
+                self.dictating = Some(Dictating {
+                    worker,
+                    notes,
+                    pin: pin.to_owned(),
+                });
+            }
+            Err(why) => self.pane_said(format!(
+                "refused: dictation could not start its worker ({why}); no key was sent"
+            )),
+        }
+    }
+
+    /// Whether the panel still shows the incarnation `pin` a dictation runs
+    /// on. A closed or rebound panel, or a replaced, absent or stopped
+    /// orchestrator is a loss. A gap in the proof is not, because each read
+    /// and each Space of the worker proves the pane, its session and its
+    /// process again.
+    fn dictation_kept(&self, pin: &str) -> bool {
+        if self.orch.panel.as_ref().and_then(Panel::pin) != Some(pin) {
+            return false;
+        }
+        self.panel_line().is_none() || matches!(self.orch.proof, loader::Proof::Gap(_))
+    }
+
+    /// The notes the running dictation sent since the last frame, each said
+    /// in the panel; the last one ends it. A panel that no longer shows the
+    /// running incarnation, or that closed, ends it first (`dictation_kept`): the worker stops,
+    /// skips its settle and reaps its client, and none of its notes reaches
+    /// another panel. Whether anything changed.
+    pub(super) fn dictation_heard(&mut self) -> bool {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(run) = &self.dictating else {
+            return false;
+        };
+        if !self.dictation_kept(&run.pin) {
+            self.dictating = None;
+            self.flash = Some((LEFT.to_owned(), Instant::now()));
+            return true;
+        }
+        let mut lines = Vec::new();
+        let finished = loop {
+            match run.notes.try_recv() {
+                Ok(Note::Progress(progress)) => lines.push(progress_line(progress).to_owned()),
+                Ok(Note::Finished(finish)) => {
+                    lines.extend(finish_line(finish).map(ToOwned::to_owned));
+                    break true;
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => {
+                    lines.push(UNVERIFIED.to_owned());
+                    break true;
+                }
+            }
+        };
+        if finished {
+            self.dictating = None;
+        }
+        let heard = finished || !lines.is_empty();
+        self.in_panel(|app| {
+            for line in lines {
+                app.pane_said(line);
+            }
+        });
+        heard
+    }
+
+    /// Why the mic starts no dictation now, or the server and the proved
+    /// pane it starts on. While [`DICTATION_ACTIVE`] is off, this version's
+    /// own refusal wins over every other reason, so no line promises that a
+    /// relaunch or an idle Claude would help. Once on, each gate in its
+    /// order: the bound incarnation and its proven pane, the tool, this
+    /// launch's hold-mode proof, then one fresh capture: no dictation running,
+    /// an empty composer, an idle Claude, a footer it reads. Last, the pane's
+    /// process, which every key of the dictation is checked against.
+    fn mic_start(&self, drawn: &Drawn, label: &str) -> Result<Start, String> {
         use crate::harness_state::{Dictation, HarnessState, classify, dictation};
 
-        if !DICTATION_ACTIVE {
-            return DICTATION_INACTIVE.to_owned();
+        if let Some(refusal) = version_refusal() {
+            return Err(refusal.to_owned());
         }
         if let Some(why) = self.pane_refusal() {
-            return why.line(label);
+            return Err(why.line(label));
         }
         let Some(dir) = self.dirs.get(ORCH) else {
             let why = format!("{ORCH} has no record directory ae can read");
-            return Refusal::NoSeat(why).line(label);
+            return Err(Refusal::NoSeat(why).line(label));
         };
         // Inside tmux the app's own server, as `pane` opens it; outside it,
         // the server the session records, as the pane view proves it.
         let server =
             (self.server.clone()).or_else(|| crate::session_launch::recorded_server_resolved(dir));
-        let Some(server) = server.as_ref() else {
-            return Refusal::NoTmux.line(label);
+        let Some(server) = server else {
+            return Err(Refusal::NoTmux.line(label));
         };
-        let target = match super::proven_pane(server, ORCH, &drawn.uuid, dir, drawn.seat()) {
-            Ok(target) => target,
-            Err(why) => return why.line(label),
+        // The pane's send lock, taken without waiting, before any read that
+        // decides the start: no delivery runs from here until the client is
+        // gone. Every proof below is made again under it.
+        let first = super::proven_pane(&server, ORCH, &drawn.uuid, dir, drawn.seat())
+            .map_err(|why| why.line(label))?;
+        let Some(held) = crate::deliver::lock_target(dir, &first.pane, std::time::Duration::ZERO)
+        else {
+            return Err(
+                "refused: another delivery to the orchestrator is in flight; no key was sent"
+                    .to_owned(),
+            );
         };
+        let target = super::proven_pane(&server, ORCH, &drawn.uuid, dir, drawn.seat())
+            .map_err(|why| why.line(label))?;
+        if (&target.pane, &target.session_id) != (&first.pane, &first.session_id) {
+            return Err(
+                "refused: the orchestrator's pane changed while ae checked it; no key was sent"
+                    .to_owned(),
+            );
+        }
         let slot = target.seat.slot.as_str();
-        let tool = match crate::deliver::seat_tool(server, dir, &target.pane, slot) {
+        let tool = match crate::deliver::seat_tool(&server, dir, &target.pane, slot) {
             Some(tool) if tool.dictates() => tool,
             Some(tool) => {
-                return format!(
+                return Err(format!(
                     "refused: dictation is unsupported in {}; only Claude Code has a dictation ae drives",
                     tool.as_str()
-                );
+                ));
             }
-            None => return "refused: dictation unavailable: the seat's tool is unknown".to_owned(),
+            None => {
+                return Err("refused: dictation unavailable: the seat's tool is unknown".to_owned());
+            }
         };
         if !crate::deliver::VoiceGate::of(dir, slot, Some(tool)).proved() {
-            return "refused: this launch lacks ae's hold-mode dictation proof (docs/app.md)"
-                .to_owned();
+            return Err(UNPROVED_LAUNCH.to_owned());
         }
+        // Managed settings outrank this launch's own layer. The extra
+        // directory is read once here; the worker asks again, on both, before
+        // the first Space.
+        let managed = crate::doors::claude_managed_test_root(crate::shape::current());
+        let host = crate::dictate::managed_root();
+        if let Some(line) = crate::dictate::managed_policy_refusal(host, managed.as_deref()) {
+            return Err(line.to_owned());
+        }
+        let refused = |line: &str| Err(line.to_owned());
         let Some(frame) =
-            crate::transport::capture_screen(server, &target.pane, crate::tmux::Styling::Escapes)
+            crate::transport::capture_screen(&server, &target.pane, crate::tmux::Styling::Escapes)
         else {
-            return "refused: dictation could not read the orchestrator's pane".to_owned();
+            return refused("refused: dictation could not read the orchestrator's pane");
         };
         let plain = crate::deliver::region::plain_text(&frame);
         let state = dictation(&frame, tool);
         if state.active() {
-            return "refused: a dictation already runs in the orchestrator's pane".to_owned();
+            return refused("refused: a dictation already runs in the orchestrator's pane");
         }
         let box_read = crate::deliver::region::read(&frame, tool.input_model());
         if box_read.occupancy != crate::deliver::region::Occupancy::Idle {
-            return "refused: dictation starts only on an empty composer; the orchestrator's draft stays as it is"
-                .to_owned();
-        }
-        if classify(&plain, tool) != HarnessState::Idle {
-            return "refused: dictation waits until Claude is idle; it is busy now".to_owned();
+            return refused(
+                "refused: dictation starts only on an empty composer; the orchestrator's draft stays as it is",
+            );
         }
         if state == Dictation::Unread {
-            return "refused: dictation cannot read Claude's voice footer".to_owned();
+            return refused("refused: dictation cannot read Claude's voice footer");
         }
-        "refused: dictation needs the measured voice states; not enabled yet".to_owned()
+        match classify(&plain, tool) {
+            HarnessState::Idle => {}
+            HarnessState::Busy => {
+                return refused("refused: dictation waits until Claude is idle; it is busy now");
+            }
+            _ => {
+                return refused(
+                    "refused: the orchestrator pane state is not recognized; no key was sent",
+                );
+            }
+        }
+        match crate::transport::observe_pane_proof(&server, &target.session_id, &target.pane) {
+            Some(proven) => Ok(Start {
+                server,
+                proven,
+                held,
+                managed,
+            }),
+            None => refused(
+                "refused: dictation could not prove the orchestrator's pane; no key was sent",
+            ),
+        }
     }
 
     /// Why the panel cannot open a pane now, or `None` while it is bound to
@@ -1117,5 +1331,73 @@ pub(super) fn mic_read(
         Some(Dictation::Holding | Dictation::Tapping) => draw::Mic::Recording,
         Some(Dictation::Warming | Dictation::Transcribing) => draw::Mic::Pending,
         Some(Dictation::Clear | Dictation::Unread) | None => draw::Mic::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod dictation_lines {
+    use super::{Finish, HoldOutcome, Settle, SidecarLost, finish_line, version_refusal};
+    use crate::dictate::{Doubt, Lapse};
+    use crate::tmux::control::HookRefusal;
+
+    /// Lead ruling: the activation kills the version gate's `!` mutant with a
+    /// test. This version answers no click with its inactive line.
+    #[test]
+    fn this_version_dictates_past_its_own_refusal() {
+        assert_eq!(version_refusal(), None);
+    }
+
+    /// The oracle is the frozen app acceptance (`tests/it/deliver/d54_voice.rs`)
+    /// and the lead's rulings: each line says only what ae observed.
+    #[test]
+    fn each_ending_says_what_ae_observed_and_nothing_more() {
+        let held = |outcome, settled| finish_line(Finish::Held { outcome, settled });
+        let lapsed = HoldOutcome::Lapsed {
+            why: Lapse::Stopped,
+            spaces: 2,
+        };
+        let line = |line: Option<&str>| line.map(str::to_lowercase).unwrap_or_default();
+        let unstarted = |visible| HoldOutcome::Unstarted {
+            why: Lapse::NotRecording,
+            visible,
+        };
+        assert!(line(held(unstarted(true), None)).contains(
+            "claude showed no hold warmup; two spaces may stay in the orchestrator input"
+        ));
+        assert!(line(held(unstarted(false), None)).starts_with("refused: dictation did not start"));
+        assert_eq!(
+            held(lapsed, Some(Settle::Inserted)),
+            Some("dictation: the text is in the orchestrator input, not sent")
+        );
+        assert!(
+            line(held(lapsed, Some(Settle::Empty)))
+                .contains("no text is visible in the orchestrator input")
+        );
+        for unproved in [Some(Settle::Unproved(Doubt::NoTranscribing)), None] {
+            let said = line(held(lapsed, unproved));
+            assert!(said.contains("ae could not verify the result"), "{said}");
+            assert!(said.contains("check the orchestrator input"), "{said}");
+        }
+        assert_eq!(finish_line(Finish::Abandoned), None);
+        assert_eq!(
+            finish_line(Finish::NotAttached(SidecarLost::Hooks(HookRefusal::Unread))),
+            Some("refused: dictation cannot attach safely with these tmux hooks (docs/app.md)"),
+            "d54-nav's hook notice wording"
+        );
+        assert!(
+            line(finish_line(Finish::NotAttached(SidecarLost::Timeout)))
+                .ends_with("no key was sent")
+        );
+        let every = [
+            held(unstarted(true), None),
+            held(unstarted(false), None),
+            held(lapsed, Some(Settle::Inserted)),
+            held(lapsed, Some(Settle::Empty)),
+            held(lapsed, None),
+        ];
+        for said in every.map(line) {
+            assert!(!said.contains("nothing was sent"), "{said}");
+            assert!(!said.contains("relaunch"), "{said}");
+        }
     }
 }
