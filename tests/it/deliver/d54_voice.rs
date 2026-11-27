@@ -370,10 +370,19 @@ fn wait_for_voice_spaces(rig: &Rig, pane: &str, min: usize) {
 }
 
 fn voice_report(rig: &Rig, pane: &str, before: &str, why: &str, message: &str) -> String {
+    let panel = |screen: &str| {
+        screen
+            .lines()
+            .skip(1)
+            .filter_map(|row| row.rsplit_once(['│', '┃']))
+            .map(|(_, row)| row.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let before = panel(before);
     until_screen(rig, pane, why, |screen| {
-        screen.lines().skip(1).any(|row| {
-            !before.lines().any(|old| old == row) && row.to_lowercase().contains(message)
-        })
+        !before.contains(message) && panel(screen).contains(message)
     })
 }
 
