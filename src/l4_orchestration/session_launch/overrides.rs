@@ -1259,3 +1259,123 @@ mod decided_on_tests {
         assert!(!decided().holds_in(labeled.as_bytes()));
     }
 }
+
+#[cfg(test)]
+mod automatic_identity_tests {
+    use super::{Env, Plan, seat_override_snapshot};
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "ae-autoidentity-unit-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    /// A stopped resume with an explicit `--seat` flag on one seat still takes
+    /// the automatic successor move of the other seat on the recorded GLOBAL
+    /// identity: the dedicated orchestrator overlay redefines the successor
+    /// on another harness, and that legacy row must not refuse the move. The
+    /// explicit flag still resolves on its normal override identity, overlay
+    /// included.
+    #[test]
+    fn a_flagged_resume_decides_the_automatic_move_without_the_orchestrator_overlay() {
+        let root = scratch("overlay");
+        let home = root.join("home");
+        let dir = home.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let global = root.join("config");
+        std::fs::write(
+            &global,
+            "[clients]\nprimary = codex\n[profiles]\nlegacy = \"primary -m old\"\n\
+             next = \"primary -m new\"\nmate-old = \"primary -m mate-old\"\n\
+             mate-new = \"primary -m mate-new\"\n[roster]\nlead = legacy\nmate = mate-old\n\
+             [workspace]\nmain = lead\nworkers = mate\n[profile_successors]\nlegacy = next\n",
+        )
+        .expect("global config");
+        let overlay = home.join(crate::meta::SEAT_CONFIG_FILE);
+        std::fs::write(
+            &overlay,
+            "[profiles]\nnext = \"claude --model new\"\nmate-new = \"primary -m mate-overlay\"\n",
+        )
+        .expect("orchestrator overlay");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+                 started=1\nwork_dir=/w\norigin=/o\nconfig={}\nlocal_config={}\n\
+                 seat.main=lead\nprofile.main=legacy\nagent_bin.main=codex\n\
+                 harness_session.main=sid-main\nseat.worker.0=mate\nprofile.worker.0=mate-old\n\
+                 agent_bin.worker.0=codex\nharness_session.worker.0=sid-mate\n",
+                global.display(),
+                overlay.display()
+            ),
+        )
+        .expect("meta");
+        let env = Env {
+            home: home.clone(),
+            cwd: PathBuf::from("/w"),
+            global: Some(global),
+            local: None,
+            server_kind: String::new(),
+            server_value: String::new(),
+            caller_server: None,
+            inside_tmux: false,
+            attach: true,
+            core: None,
+            core_version: None,
+            no_autostart: true,
+            starter: super::super::Starter::Caller,
+            test_pre_lock_marker: None,
+        };
+        let plan = Plan {
+            name: Some("s".to_owned()),
+            seat_profiles: vec![("mate".to_owned(), "mate-new".to_owned())],
+            ..Plan::default()
+        };
+        let snapshot = seat_override_snapshot(&env, &plan, &dir, true, false);
+        let _ = std::fs::remove_dir_all(&root);
+        let moved: Vec<(String, String, Option<String>, String)> = snapshot
+            .expect("the flagged resume is accepted")
+            .expect("the flag yields a snapshot")
+            .overrides
+            .iter()
+            .map(|seat| {
+                (
+                    seat.agent.clone(),
+                    seat.profile.clone(),
+                    seat.successor_of.clone(),
+                    seat.command
+                        .as_str()
+                        .split_whitespace()
+                        .last()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            moved,
+            vec![
+                (
+                    "mate".to_owned(),
+                    "mate-new".to_owned(),
+                    None,
+                    "mate-overlay".to_owned()
+                ),
+                (
+                    "lead".to_owned(),
+                    "next".to_owned(),
+                    Some("legacy".to_owned()),
+                    "new".to_owned()
+                ),
+            ]
+        );
+    }
+}
