@@ -836,3 +836,81 @@ fn assert_measured_upper_voice_pre_paste_refusal(
     assert_ne!(code, Some(0), "measured dictation refuses overview");
     assert!(why.contains("Claude dictation"), "{why}");
 }
+
+const MEASURED_PASTE_HINT: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-paste-hint-2.1.332-199x38.esc");
+
+fn voicehint_body() -> String {
+    format!("{}Final fixture line.", "Fixture line.\n".repeat(25))
+}
+
+fn voicehint_rig(tag: &str, after_paste: &str) -> Rig {
+    let rig = orchestrator(tag, "claude", IDLE);
+    record_hold_launch(&rig);
+    let gate = ae::deliver::VoiceGate::of(&rig.dir, "main", Some(ae::tool::ToolKind::Claude));
+    assert!(gate.proved(), "the launch requires a voice-readable frame");
+    rig.arm_frame("onpaste", after_paste);
+    rig.arm_frame("onenter", IDLE);
+    rig
+}
+
+fn voicehint_guarded(
+    rig: &Rig,
+    body: &str,
+) -> Result<ae::deliver::Outcome, ae::deliver::EnterFailed> {
+    let server = rig.server();
+    let defer = std::time::Duration::ZERO;
+    let request = rig.guarded(&server, body, defer);
+    ae::deliver::deliver_guarded(&request, || {
+        super::super::prove_lock(&rig.lifecycle_lock_path(), defer)
+    })
+}
+
+#[test]
+fn voicehint_watchdog_send_submits_the_just_pasted_claude_chip() {
+    let rig = voicehint_rig("voicehint-send", MEASURED_PASTE_HINT);
+    let (code, why) = overview(&rig, &voicehint_body(), &[]);
+    assert!(rig.transitions().starts_with("onpaste\n"));
+    assert_eq!(rig.enter_count(), 1, "the pasted chip must submit: {why}");
+    assert!(rig.transitions().contains("onenter\n"));
+    assert_eq!(code, Some(0), "the checked send confirms: {why}");
+    assert!(!rig.events().contains("[unconfirmed]"));
+}
+
+#[test]
+fn voicehint_guarded_submit_accepts_the_just_pasted_claude_chip() {
+    use ae::deliver::{Outcome, SubmitState};
+
+    let rig = voicehint_rig("voicehint-guard", MEASURED_PASTE_HINT);
+    let result = voicehint_guarded(&rig, &voicehint_body());
+    assert!(rig.transitions().starts_with("onpaste\n"));
+    assert_eq!(
+        rig.enter_count(),
+        1,
+        "the pasted chip must submit: {result:?}"
+    );
+    assert!(rig.transitions().contains("onenter\n"));
+    assert!(matches!(result, Ok(Outcome::Sent(SubmitState::Submitted))));
+}
+
+#[test]
+fn voicehint_both_submit_paths_still_hold_for_recording_and_transcribing() {
+    use ae::deliver::{Outcome, SubmitState};
+
+    for (name, frame) in [("rec", super::HOLD), ("trans", super::TRANSCRIBING)] {
+        let body = voicehint_body();
+        let rig = voicehint_rig(&format!("vh-send-{name}"), frame);
+        let (_, why) = overview(&rig, &body, &[]);
+        assert_eq!(rig.transitions(), "onpaste\n", "{name}: {why}");
+        assert_eq!(rig.enter_count(), 0, "{name}: {why}");
+
+        let rig = voicehint_rig(&format!("vh-guard-{name}"), frame);
+        let result = voicehint_guarded(&rig, &body);
+        assert_eq!(rig.transitions(), "onpaste\n", "{name}: {result:?}");
+        assert_eq!(rig.enter_count(), 0, "{name}: {result:?}");
+        assert!(matches!(
+            result,
+            Ok(Outcome::Sent(SubmitState::StillStaged))
+        ));
+    }
+}
