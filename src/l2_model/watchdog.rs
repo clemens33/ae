@@ -1727,6 +1727,10 @@ pub fn quiet_hash(buf: &str) -> u64 {
 /// carries.
 pub const WATCHDOG_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
+/// The final line of every fleet overview turn. The send helper reads it to
+/// know that a reseat continuation carries a joined overview, which waits for
+/// a running turn's boundary like the overview's own turn.
+pub const OVERVIEW_TRAILER: &str = "— overview; declare done.";
 /// The action the orchestrator's fleet-overview prompt carries: its own, so a
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";

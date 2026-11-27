@@ -7,7 +7,7 @@
 use crate::brief::{self, Card, Need};
 
 /// The final line of every overview turn.
-pub const TRAILER: &str = "— overview; declare done.";
+pub const TRAILER: &str = crate::watchdog::OVERVIEW_TRAILER;
 
 /// The maximum width of every rendered agent or collapsed-session line.
 pub const WIDTH: usize = 100;

@@ -747,10 +747,19 @@ fn target_input(request: &Request<'_>, command: &str) -> (TargetInput, Option<To
     let recorded = recorded_binary(&target_meta_dir(request), request.pane_slot);
     let tool = tool_named(&recorded, command);
     let input = TargetInput {
-        turn: tool.filter(|_| request.action == crate::watchdog::SWEEP_NUDGE_ACTION),
+        turn: tool.filter(|_| carries_overview(request.action, request.body)),
         ..choose_input(&recorded, command)
     };
     (input, tool)
+}
+
+/// Whether a delivery carries a fleet overview: the overview's own turn, or a
+/// reseat continuation the watchdog joined one to. Either waits for a running
+/// turn's boundary at the last read before the paste.
+fn carries_overview(action: &str, body: &str) -> bool {
+    action == crate::watchdog::SWEEP_NUDGE_ACTION
+        || (action == crate::watchdog::AUTO_RESEAT_NOTICE_ACTION
+            && body.contains(crate::watchdog::OVERVIEW_TRAILER))
 }
 
 /// The tool a delivery names: the recorded binary, else the live command.
@@ -2025,8 +2034,7 @@ pub fn stage_into_empty(
             })
             .or_else(|| {
                 let running = turn.zip(capture.as_deref()).is_some_and(|(tool, frame)| {
-                    crate::harness_state::classify(&printed_rows(frame), tool)
-                        == crate::harness_state::HarnessState::Busy
+                    crate::harness_state::classify(&printed_rows(frame), tool).is_busy()
                 });
                 running.then_some(StageFailure::Occupied(DeferHeld::TurnRunning))
             })
@@ -2955,6 +2963,23 @@ mod tests {
             defer: super::DEFAULT_DEFER,
             composed: Composed::NONE,
         }
+    }
+
+    #[test]
+    fn only_a_delivery_that_carries_an_overview_waits_for_a_running_turn() {
+        use crate::watchdog::{AUTO_RESEAT_NOTICE_ACTION, OVERVIEW_TRAILER, SWEEP_NUDGE_ACTION};
+        let joined = format!("continue your work\n\nNEEDS YOU\n{OVERVIEW_TRAILER}");
+        assert!(super::carries_overview(SWEEP_NUDGE_ACTION, "fleet"));
+        assert!(super::carries_overview(AUTO_RESEAT_NOTICE_ACTION, &joined));
+        assert!(!super::carries_overview(
+            AUTO_RESEAT_NOTICE_ACTION,
+            "continue your work"
+        ));
+        assert!(
+            !super::carries_overview("send", &joined),
+            "a peer send joins the queue"
+        );
+        assert!(!super::carries_overview("ask", &joined));
     }
 
     #[test]

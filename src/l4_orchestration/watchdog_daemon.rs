@@ -2888,8 +2888,7 @@ impl Cycle<'_> {
                     )
                     .map(|sweep| {
                         sweep.with_turn_running(
-                            crate::harness_state::classify(&capture, tool)
-                                == crate::harness_state::HarnessState::Busy,
+                            crate::harness_state::classify(&capture, tool).is_busy(),
                         )
                     }),
                 own_work: outstanding.of(Seat::new(self.session, &slot, agent)),

@@ -2316,8 +2316,8 @@ is written. Use `--no-attach` to build or reattach without attaching and print t
 command. The generated config
 carries workspace and role prompt only, including `orchestrator = true` and
 `sweep = 300` (a publish that replaces an older generated config keeps its
-explicit `sweep` row, so an existing seat keeps `sweep = 120` until the owner
-changes it); old generated configs with
+explicit `sweep` row, so a seat whose file says `sweep = 120` keeps 120 until
+the owner changes it); old generated configs with
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
 still overlay. `CHARTER.md` is its readable reference,
 not a guessed runtime path.
