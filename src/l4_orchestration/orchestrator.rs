@@ -2551,7 +2551,7 @@ mod tests {
     /// client at the head — the cheapest cell and the last to go.
     #[test]
     fn a_full_label_keeps_the_rung_order_and_clips_client_first() {
-        let agent = cell_agent("cc-work", "Opus 5", "xhigh", "fable5");
+        let agent = cell_agent("cc-alt", "Opus 5", "xhigh", "fable5");
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
         let full = 6 + 6 + 5 + 2;
         assert_eq!(full, 19, "under the cap: the ladder decides");
@@ -2734,7 +2734,7 @@ mod tests {
         let drawn = drawn_v2_roster(
             "v2;2000;60;lead:fable5:working:%10:claude:Fable 5.1:xhigh:;\
              colead:astram:idle:%11:codex:gpt-6-astra:medium:;\
-             acctmove:op5x:working:%12:cc-work:Opus 5:xhigh:!;\
+             acctmove:op5x:working:%12:cc-alt:Opus 5:xhigh:!;\
              senddefer:spark13cm:working:%13:muse:muse-spark-1.3-contributor:max:",
             &panes,
             100,
@@ -2750,7 +2750,7 @@ mod tests {
                 "medium",
                 "no current status",
             ),
-            ("●", "acctmove", "cc-work", "Opus 5", "xhigh!", "working"),
+            ("●", "acctmove", "cc-alt", "Opus 5", "xhigh!", "working"),
             (
                 "●",
                 "senddefer",
@@ -2786,7 +2786,7 @@ mod tests {
         let panes = [pane("$7", "%10"), pane("$7", "%11")];
         let drawn = drawn_v2_roster(
             "v2;2000;60;lead:fable5:working:%10:cc:Fable 5.1:xhigh:;\
-             acct:op5x:working:%11:cc-work:Opus 5::!;\
+             acct:op5x:working:%11:cc-alt:Opus 5::!;\
              new:astram:idle::cx:::",
             &panes,
             52,
@@ -2794,7 +2794,7 @@ mod tests {
         assert_eq!(drawn.items.len(), 4);
         for (index, (glyph, name, client, model, state)) in [
             ("●", "lead", "cc", "Fable 5.1", "working"),
-            ("●", "acct", "cc-work", "Opus 5!", "working"),
+            ("●", "acct", "cc-alt", "Opus 5!", "working"),
             ("·", "new", "cx", "~astram", "no current status"),
         ]
         .into_iter()

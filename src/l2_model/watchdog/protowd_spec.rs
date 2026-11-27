@@ -207,7 +207,7 @@ fn d3_ceiling_scales_with_the_credited_rung_only() {
 
 // ── D4 ────────────────────────────────────────────────────────────────────
 
-const META: &str = "/Users/x/.ae/sessions/aedev/";
+const META: &str = "/Users/x/.ae/sessions/example-run/";
 
 fn check(state: WaitState, escalated: bool, target: Option<&str>) -> WaitCheck<'_> {
     WaitCheck {
@@ -225,7 +225,7 @@ fn d4_diet_text_names_target_and_age_and_strips() {
     assert_eq!(
         META.len(),
         34,
-        "the aedev path the byte budget is pinned on"
+        "the example path the byte budget is pinned on"
     );
     let meta = Path::new(META.trim_end_matches('/'));
     for (state, target, word) in [
