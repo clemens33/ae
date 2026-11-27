@@ -34,8 +34,9 @@
 //! once and then stops until a code is redeemed in its tab. The compose cases
 //! (`web_compose_browser_spec`), the topic tab cases
 //! (`web_topic_tabs_browser_spec`), the tab lifecycle cases
-//! (`web_topic_lifecycle_browser_spec`) and then the side panel cases
-//! (`web_side_panel_browser_spec`) follow, each on listeners of their own.
+//! (`web_topic_lifecycle_browser_spec`), the side panel cases and then the
+//! side panel's accessibility and keyboard cases (both in
+//! `web_side_panel_browser_spec`) follow, each on listeners of their own.
 //!
 //! `AE_WEB_SMOKE_PLANT=focus` serves `app.mjs` without the topic row's
 //! mousedown `preventDefault`. That run must fail at `focus-kept`: `just
@@ -553,8 +554,9 @@ fn live_web_smoke() {
         }
     }
     // The S3a compose cases follow on the same tab, then the topic tab cases, the
-    // tab lifecycle cases and the side panel cases, each only when every earlier
-    // check passed, so a plant that fails an earlier check never reaches them.
+    // tab lifecycle cases, the side panel cases and the side panel's accessibility
+    // and keyboard cases, each only when every earlier check passed, so a plant
+    // that fails an earlier check never reaches them.
     if failure.is_none() {
         let ran = web_compose_browser_spec::check_s3a(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
@@ -571,6 +573,10 @@ fn live_web_smoke() {
         let ran = web_side_panel_browser_spec::check_t4(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
     }
+    if failure.is_none() {
+        let ran = web_side_panel_browser_spec::check_t5(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
+    }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
     tab.close();
@@ -581,7 +587,8 @@ fn live_web_smoke() {
     }
     println!(
         "web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage, the \
-         compose cases, the topic tab cases, the tab lifecycle cases and the side panel cases"
+         compose cases, the topic tab cases, the tab lifecycle cases, the side panel cases and \
+         the side panel's accessibility and keyboard cases"
     );
 }
 
@@ -678,9 +685,9 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
     Ok(())
 }
 
-/// A real click on the All tab, until the draft carries no topic tag.
+/// A real click on the All row, until the draft carries no topic tag.
 fn show_all(tab: &mut Tab, check: &'static str) -> Checked {
-    tab.click_selector(check, "[data-role=tab-all]")?;
+    tab.click_selector(check, "button[data-role=side-all]")?;
     tab.until(
         check,
         "const saw = {chip: !!document.querySelector('[data-role=tag-chip]'), all: \

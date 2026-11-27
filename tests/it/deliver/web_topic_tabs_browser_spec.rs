@@ -8,7 +8,7 @@ use super::{
     Cell, Checked, Failed, PAGE_WAIT, READY, Rig, SEND_WAIT, Tab, ok, smoke_rig, start_listener,
 };
 
-const ALL: &str = "[data-role=tab-all]";
+const ALL: &str = "button[data-role=side-all]";
 const D61: &str = "form.decision-answer[data-item=D61]";
 const QUESTION: &str = "Deploy <b data-t1-hostile>this</b>?";
 const OPTION: &str = "<i data-t1-hostile>Hold</i>";
@@ -132,14 +132,14 @@ fn state_check(tab: &mut Tab) -> Checked {
     wait(
         tab,
         CHECK,
-        "const tabs = [...document.querySelectorAll('[role=tablist] [role=tab]')]; \
+        "const tabs = [...document.querySelectorAll('nav[aria-label=Topics] button:is([data-role=side-all],[data-role=side-row])')]; \
          const first = tabs.shift(); const panel = document.querySelector('[data-panel=all]'); \
          const slugs = tabs.map(t => t.dataset.slug).sort(); \
          const rows = [...(panel?.querySelectorAll('button.row .ln') || [])].map(e => e.textContent); \
          const decisions = panel?.querySelector('[data-section=decisions]'); \
          const all = panel?.textContent || ''; \
-         const saw = {slugs, rows, selected: first?.getAttribute('aria-selected'), all}; \
-         return {ok: first?.dataset.role === 'tab-all' && saw.selected === 'true' && \
+         const saw = {slugs, rows, selected: first?.getAttribute('aria-current'), all}; \
+         return {ok: first?.dataset.role === 'side-all' && saw.selected === 'true' && \
          slugs.join(' ') === 'calm s2-m smoke t1-moving t1-unreadable' && \
          ['s2-z','s2-parked','s2-closed','t1-unreadable'].every(s => rows.some(x => x.split(' ')[0] === '#' + s)) && \
          !!panel.querySelector('.revisit .rv-walk') && !!panel.querySelector('.new-topic') && \
@@ -181,13 +181,13 @@ fn choose(tab: &mut Tab, check: &'static str, slug: &str) -> Checked {
     let selector = if slug.is_empty() {
         ALL.to_owned()
     } else {
-        format!("[data-role=tab][data-slug={slug}]")
+        format!("button[data-role=side-row][data-slug={slug}]")
     };
     tab.click_selector(check, &selector)?;
     wait(
         tab,
         check,
-        "const active = document.querySelector('[role=tab][aria-selected=true]'); \
+        "const active = document.querySelector('nav[aria-label=Topics] button[aria-current=true]'); \
          const saw = active?.dataset.slug || ''; \
          const panel = document.querySelector(want ? '[data-panel=topic]' : '[data-panel=all]'); \
          return {ok: !!active && saw === want && !!panel && (panel.dataset.slug || '') === want, saw};",
@@ -247,7 +247,7 @@ fn tabs_and_filter(tab: &mut Tab, rig: &Rig) -> Checked {
         tab,
         CHECK,
         "const fold = document.querySelector('[data-group=rest]'); \
-         const row = fold?.querySelector('[role=tab][aria-selected=true]'); \
+         const row = fold?.querySelector('button[data-role=side-row][aria-current=true]'); \
          const card = document.querySelector('[data-panel=topic]'); \
          const saw = {expanded: fold?.querySelector('[data-action=toggle-group]')?.getAttribute('aria-expanded'), \
          selected: row?.dataset.slug, card: card?.dataset.slug}; \
@@ -267,12 +267,12 @@ fn tabs_and_filter(tab: &mut Tab, rig: &Rig) -> Checked {
     wait(
         tab,
         CHECK,
-        "const saw = document.querySelector('[role=tab][data-slug=s2-parked]')?.getAttribute('aria-selected'); \
+        "const saw = document.querySelector('button[data-role=side-row][data-slug=s2-parked]')?.getAttribute('aria-current'); \
          return {ok: saw === 'true', saw};",
         "",
     )?;
     choose(tab, CHECK, "")?;
-    tab.holds(CHECK, "const saw = !!document.querySelector('[role=tab][data-slug=s2-parked]'); return {ok: !saw, saw};", "")?;
+    tab.holds(CHECK, "const saw = !!document.querySelector('button[data-role=side-row][data-slug=s2-parked]'); return {ok: !saw, saw};", "")?;
     visible_rows(
         tab,
         CHECK,
@@ -460,7 +460,7 @@ fn send_drafts(tab: &mut Tab, rig: &Rig) -> Checked {
             tab.holds(
                 CHECK,
                 "const saw = {chip: !!document.querySelector(want), \
-                 active: document.querySelector('[role=tab][aria-selected=true]')?.dataset.slug}; \
+                 active: document.querySelector('nav[aria-label=Topics] button[aria-current=true]')?.dataset.slug}; \
                  return {ok: !saw.chip && saw.active === 'smoke', saw};",
                 chip,
             )?;

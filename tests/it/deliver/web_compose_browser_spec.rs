@@ -53,14 +53,14 @@ fn click(tab: &mut Tab, check: &'static str, root: &str, action: &str) -> Checke
 fn at_panel(tab: &mut Tab, check: &'static str, which: &str) -> Checked {
     let (select, panel) = match which {
         "desk" => (
-            "[data-role=tab][data-slug=smoke]",
+            "button[data-role=side-row][data-slug=smoke]",
             "[data-panel=topic][data-slug=smoke]",
         ),
         "card" => (
-            "[data-role=tab][data-slug=calm]",
+            "button[data-role=side-row][data-slug=calm]",
             "[data-panel=topic][data-slug=calm]",
         ),
-        "topic" => ("[data-role=tab-all]", "[data-panel=all]"),
+        "topic" => ("button[data-role=side-all]", "[data-panel=all]"),
         _ => unreachable!("unknown form location"),
     };
     let topics_visible = tab

@@ -81,6 +81,11 @@ wide (220 px below 1100 px) and scrolls on its own. A narrow screen (up to 759 p
 at a time, chosen at the bottom: **Topics** (the panel), **Chat** or **Overview** (with a topic
 selected, **Topic**). The page opens on Chat, and a row press shows the chat.
 
+The **Topics** navigation region gives each group a list named by its heading and marks the
+current row. Tab and Shift+Tab move through the controls. Up and Down on a row move focus
+between visible rows, including across groups. Enter and Space select a focused row or toggle the
+last group when its button has focus.
+
 - **Pins.** The button at the top of a topic's card pins or unpins it. A pinned topic is marked
   with a star and stays out of the last group, whatever its state, until you unpin it. When you
   unpin the selected topic and no group above fits it, it stays selected until you select another
@@ -104,10 +109,6 @@ selected, **Topic**). The page opens on Chat, and a row press shows the chat.
   select scrolls into view, and stays in view when rows move around it. When you scroll away from
   it, the panel does not pull you back. With many topics, **All topics** and its search reach
   every one.
-- **Known limit.** The rows keep the `tab` role inside a vertical `tablist`, which WAI-ARIA gives
-  only tabs to own. The group headings and the fold button sit inside it too, so a screen reader
-  may not announce the groups well.
-
 - **All** shows the whole chat. Its panel holds the new-topic line first, then the Revisit line,
   every DECIDE item under **Decisions**, **All topics** with a search over slug and title, and the
   desk's gaps. A decision that tags no topic is answered there; a tagged one is listed with a link
@@ -380,12 +381,15 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   and 360x740 dark (`t2-*`): the mouse wheel over the panel, the selected row in view and a
   scrolled panel left alone, unread counts across a new conversation, pins across a reload and
   another tab's write, a closed topic's row, and a damaged or hostile stored pin list.
-- Last, the side panel cases run on a listener of their own (`t4-*`): the groups (also under open
+- The side panel cases run on a listener of their own (`t4-*`): the groups (also under open
   asks and after one closes), their order and the fold, newest activity first, a long hostile title
   in two lines, the need colour and its contrast in both schemes, a topic opened from the folded
   group, the columns at 1440, 1000 and 760 px, and the three views at 360x740. The `t4c-*` cases
   end them: the selected topic that closes shows All, and the one whose last wait ends stays
   selected in the folded group.
+- The Topics accessibility cases finish the run (`t5-*`). They check the landmark and named
+  lists in Chrome's accessibility tree, the fold and current row, and keyboard navigation and
+  activation. They check focus when a row moves or leaves and when the draft has focus.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the

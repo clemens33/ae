@@ -197,6 +197,7 @@ helper tests/it/deliver/d54_voice.rs::untouched = deliver::d54_voice::the_bound_
 helper tests/it/deliver/web_compose_browser_spec.rs::check_s3a = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_send_spec.rs::role_rig = deliver::web_send_spec::web_verdict_spec::keep_carries_once_and_waits_for_the_orchestrators_memo_and_reply
 helper tests/it/deliver/web_side_panel_browser_spec.rs::check_t4 = deliver::web_smoke::live_web_smoke
+helper tests/it/deliver/web_side_panel_browser_spec.rs::check_t5 = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_smoke.rs::smoke_rig = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_topic_lifecycle_browser_spec.rs::check_t2 = deliver::web_smoke::live_web_smoke
 helper tests/it/deliver/web_topic_tabs_browser_spec.rs::check_t1 = deliver::web_smoke::live_web_smoke

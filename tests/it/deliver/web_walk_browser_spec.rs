@@ -68,15 +68,15 @@ pub(super) fn check_revisit(tab: &mut Tab, cell: Cell) -> Checked {
             Value::obj([("text", Value::str(draft))]),
         );
         tab.click_selector("revisit", "[data-role=view-topics]")?;
-        tab.click_selector("revisit", "[data-role=tab][data-slug=smoke]")?;
+        tab.click_selector("revisit", "button[data-role=side-row][data-slug=smoke]")?;
         tab.holds(
             "revisit",
-            "const saw = document.querySelector('[data-role=tab][data-slug=smoke]')?.ariaSelected; \
+            "const saw = document.querySelector('button[data-role=side-row][data-slug=smoke]')?.ariaCurrent; \
              return {ok: saw === 'true', saw};",
             "",
         )?;
         tab.click_selector("revisit", "[data-role=view-topics]")?;
-        tab.click_selector("revisit", "[data-role=tab-all]")?;
+        tab.click_selector("revisit", "button[data-role=side-all]")?;
         shown(tab, ".pq", "s2-a")?;
         tab.holds(
             "revisit",
@@ -380,7 +380,7 @@ fn cap_refusal(tab: &mut Tab, cell: Cell) -> Checked {
 
 fn open_card(tab: &mut Tab, slug: &str) -> Checked {
     const CASE: &str = "walk-card";
-    tab.click_selector(CASE, "[data-role=tab-all]")?;
+    tab.click_selector(CASE, "button[data-role=side-all]")?;
     tab.holds(
         CASE,
         "const row = [...document.querySelectorAll('[data-panel=all] button.row')].find(e => \

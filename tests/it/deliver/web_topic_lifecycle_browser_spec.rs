@@ -17,7 +17,7 @@ const NARROW: Cell = Cell {
     height: 740,
     dark: true,
 };
-const ALL: &str = "[data-role=tab-all]";
+const ALL: &str = "button[data-role=side-all]";
 const PIN: &str = "button[data-action=pin]";
 const TOPICS_VIEW: &str = "[data-role=view-topics]";
 const TARGET: &str = "t2-99";
@@ -25,9 +25,9 @@ const CURRENT: &str = "0199c0de-3122-4890-abcd-ef0123456789";
 const NEXT: &str = "0199c0de-3123-4890-abcd-ef0123456789";
 
 const CLIPPED: &str = r#"
-const bar = document.querySelector('[role=tablist]');
-const all = bar.querySelector('[data-role=tab-all][aria-selected=true]');
-const target = bar.querySelector('[role=tab][data-slug="' + want + '"]');
+const bar = document.querySelector('nav[aria-label=Topics]');
+const all = bar.querySelector('button[data-role=side-all][aria-current=true]');
+const target = bar.querySelector('button[data-role=side-row][data-slug="' + want + '"]');
 const edge = bar.getBoundingClientRect().bottom;
 const saw = {all: !!all, allVisible: all?.getBoundingClientRect().bottom <= edge,
   bottom: target?.getBoundingClientRect().bottom, edge, offset: bar.scrollTop,
@@ -37,8 +37,8 @@ return {ok: bar.clientHeight > 0 && saw.all && saw.allVisible && saw.bottom > ed
 "#;
 
 const VISIBLE: &str = r"
-const bar = document.querySelector('[role=tablist]');
-const selected = bar.querySelector('[role=tab][aria-selected=true]');
+const bar = document.querySelector('nav[aria-label=Topics]');
+const selected = bar.querySelector('button[aria-current=true]');
 const outer = bar.getBoundingClientRect();
 const inner = selected?.getBoundingClientRect();
 const saw = {slug: selected?.dataset.slug, top: inner?.top, bottom: inner?.bottom,
@@ -48,7 +48,7 @@ return {ok: inner?.height > 0 && saw.slug === want && saw.offset > 0 &&
 ";
 
 const WHEEL_POINT: &str = r"
-const bar = document.querySelector('[role=tablist]');
+const bar = document.querySelector('nav[aria-label=Topics]');
 const r = bar.getBoundingClientRect();
 const x = Math.floor(r.left + r.width / 2);
 const y = Math.floor(r.top + r.height / 2);
@@ -57,14 +57,14 @@ return {ok: saw.canScroll && bar.contains(document.elementFromPoint(x, y)), x, y
 ";
 
 const WHEEL_MOVED: &str = r"
-const bar = document.querySelector('[role=tablist]');
+const bar = document.querySelector('nav[aria-label=Topics]');
 const saw = {offset: bar.scrollTop, page: scrollY};
 return {ok: saw.offset > 0 && saw.page === 0, saw};
 ";
 
 const SCROLL_STAYS: &str = r"
-const bar = document.querySelector('[role=tablist]');
-const selected = bar.querySelector('[role=tab][aria-selected=true]');
+const bar = document.querySelector('nav[aria-label=Topics]');
+const selected = bar.querySelector('button[aria-current=true]');
 const marker = bar.querySelector('[data-slug=t2-00]');
 const clipped = selected?.getBoundingClientRect().bottom > bar.getBoundingClientRect().bottom + 1;
 const saw = {offset: bar.scrollTop, slug: selected?.dataset.slug, marker: !!marker, clipped};
@@ -72,13 +72,13 @@ return {ok: saw.marker && saw.slug === want && saw.offset < 1 && saw.clipped, sa
 ";
 
 const KNOWN_LATE: &str = r"
-const saw = !!document.querySelector('[role=tab][data-slug=t2-future]');
+const saw = !!document.querySelector('button[data-role=side-row][data-slug=t2-future]');
 return {ok: saw, saw};
 ";
 
 const BADGES: &str = r"
 const [expected, marker] = JSON.parse(want);
-const tabs = [...document.querySelectorAll('[role=tablist] [role=tab]')];
+const tabs = [...document.querySelectorAll('nav[aria-label=Topics] button:is([data-role=side-all],[data-role=side-row])')];
 const badges = Object.fromEntries(tabs.flatMap(t => {
   const count = t.querySelector('[data-role=unread]');
   return count ? [[t.dataset.slug || 'all', count.textContent.trim()]] : [];
@@ -103,7 +103,7 @@ return {ok: saw.includes('prior 1'), saw};
 ";
 
 const SELECTED: &str = r"
-const tab = document.querySelector('[role=tab][aria-selected=true]');
+const tab = document.querySelector('nav[aria-label=Topics] button[aria-current=true]');
 const panel = document.querySelector(want ? '[data-panel=topic]' : '[data-panel=all]');
 const saw = {tab: tab ? tab.dataset.slug || '' : null,
   card: panel ? panel.dataset.slug || '' : null};
@@ -121,7 +121,7 @@ const PIN_STATE: &str = r#"
 const [slug, expected] = JSON.parse(want);
 const panel = document.querySelector('[data-panel=topic][data-slug="' + slug + '"]');
 const button = panel?.querySelector('button[data-action=pin]');
-const tab = document.querySelector('[role=tab][data-slug="' + slug + '"]');
+const tab = document.querySelector('button[data-role=side-row][data-slug="' + slug + '"]');
 const saw = {pressed: button?.getAttribute('aria-pressed'), disabled: button?.disabled,
   pinned: !!tab?.hasAttribute('data-pinned'), height: button?.getBoundingClientRect().height};
 return {ok: saw.pressed === String(expected) && saw.pinned === expected && saw.height >= 44, saw};
@@ -137,14 +137,14 @@ return {ok: Array.isArray(saw) && saw.length === expected.length &&
 
 const CORRUPT: &str = r"
 const saw = {raw: localStorage.getItem('ae-web-pins'), pins: document.querySelectorAll('[data-pinned]').length,
-  all: document.querySelector('[data-role=tab-all]')?.getAttribute('aria-selected')};
+  all: document.querySelector('button[data-role=side-all]')?.getAttribute('aria-current')};
 return {ok: saw.raw === want && saw.pins === 0 && saw.all === 'true', saw};
 ";
 
 const PINNED_STATE: &str = r#"
 const [slug, state] = JSON.parse(want);
 const panel = document.querySelector('[data-panel=topic][data-slug="' + slug + '"]');
-const selected = document.querySelector('[role=tab][aria-selected=true][data-slug="' + slug + '"]');
+const selected = document.querySelector('button[data-role=side-row][aria-current=true][data-slug="' + slug + '"]');
 const fields = [...(panel?.querySelectorAll('.fld p.raw') || [])].map(p => p.textContent);
 const saw = {pinned: !!selected?.hasAttribute('data-pinned'), fields};
 return {ok: saw.pinned && fields.includes(state), saw};
@@ -152,7 +152,7 @@ return {ok: saw.pinned && fields.includes(state), saw};
 
 const CLOSED_DECISION: &str = r#"
 const card = document.querySelector('[data-panel=topic][data-slug="' + want + '"]');
-const selected = document.querySelector('[role=tab][aria-selected=true][data-slug="' + want + '"]');
+const selected = document.querySelector('button[data-role=side-row][aria-current=true][data-slug="' + want + '"]');
 const fields = [...(card?.querySelectorAll('.fld p.raw') || [])].map(p => p.textContent);
 const choice = card?.querySelector('form[data-item=D71]');
 const saw = {selected: !!selected, closed: fields.includes('closed'), choice: !!choice};
@@ -160,8 +160,8 @@ return {ok: saw.selected && saw.closed && saw.choice, saw};
 "#;
 
 const LEFT_BAR: &str = r#"
-const all = document.querySelector('[data-role=tab-all]')?.getAttribute('aria-selected');
-const gone = !document.querySelector('[role=tab][data-slug="' + want + '"]');
+const all = document.querySelector('button[data-role=side-all]')?.getAttribute('aria-current');
+const gone = !document.querySelector('button[data-role=side-row][data-slug="' + want + '"]');
 const saw = {all, gone};
 return {ok: all === 'true' && gone && !!document.querySelector('[data-panel=all]'), saw};
 "#;
@@ -169,7 +169,7 @@ return {ok: all === 'true' && gone && !!document.querySelector('[data-panel=all]
 const CAP: &str = r#"
 const panel = document.querySelector('[data-panel=topic][data-slug="' + want + '"]');
 const button = panel?.querySelector('button[data-action=pin]');
-const pins = [...document.querySelectorAll('[role=tab][data-pinned]')].map(tab => tab.dataset.slug);
+const pins = [...document.querySelectorAll('button[data-role=side-row][data-pinned]')].map(tab => tab.dataset.slug);
 const expected = Array.from({length: 32}, (_, i) => 't2-' + String(i + 10));
 const saw = {pins, disabled: button?.disabled, pressed: button?.getAttribute('aria-pressed')};
 return {ok: saw.disabled === true && saw.pressed === 'false' &&
@@ -190,7 +190,7 @@ fn select(tab: &mut Tab, check: &'static str, slug: &str) -> Checked {
     let selector = if slug.is_empty() {
         ALL.to_owned()
     } else {
-        format!(r#"[role=tab][data-slug="{slug}"]"#)
+        format!(r#"button[data-role=side-row][data-slug="{slug}"]"#)
     };
     tab.click_selector(check, &selector)?;
     wait(tab, check, SELECTED, slug)
@@ -305,7 +305,7 @@ fn overflow(tab: &mut Tab, rig: &Rig) -> Checked {
     script(
         tab,
         SCROLL,
-        "document.querySelector('[role=tablist]').scrollTop = 0",
+        "document.querySelector('nav[aria-label=Topics]').scrollTop = 0",
     )?;
     wait(tab, SCROLL, CLIPPED, TARGET)?;
     tab.click(SCROLL, "panel")?;
@@ -316,7 +316,7 @@ fn overflow(tab: &mut Tab, rig: &Rig) -> Checked {
     script(
         tab,
         SCROLL,
-        "document.querySelector('[role=tablist]').scrollTop = 0",
+        "document.querySelector('nav[aria-label=Topics]').scrollTop = 0",
     )?;
     memo(rig, "t2-00", "title: Newly inserted | state: needs");
     wait(tab, SCROLL, SCROLL_STAYS, TARGET)?;

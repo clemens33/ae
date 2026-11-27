@@ -381,15 +381,14 @@ function sideGroups(desk, pins, turns) {
 
 // One row of the side panel. A press keeps the focus where it was, so a draft
 // being typed stays focused.
-function Tab({ role, slug, label, title, group, pinned, unread, decisions, active, select }) {
+function SideRow({ slug, label, title, group, pinned, unread, decisions, active, select }) {
   return html`<button
     type="button"
-    role="tab"
-    class=${"tab" + (active ? " on" : "")}
-    data-role=${role}
+    class="tab"
+    data-role=${slug ? "side-row" : "side-all"}
     data-slug=${slug || null}
     data-pinned=${pinned ? "" : null}
-    aria-selected=${active ? "true" : "false"}
+    aria-current=${active ? "true" : null}
     title=${title || null}
     onMouseDown=${(press) => press.preventDefault()}
     onClick=${() => select(slug)}
@@ -401,10 +400,25 @@ function Tab({ role, slug, label, title, group, pinned, unread, decisions, activ
   </button>`;
 }
 
+const SIDE_ROWS = "button:is([data-role=side-all],[data-role=side-row])";
+const CURRENT_SIDE_ROW = SIDE_ROWS + "[aria-current=true]";
+
+function moveSideFocus(event) {
+  const { key, target, currentTarget } = event;
+  if ((key !== "ArrowUp" && key !== "ArrowDown") || !target.matches(SIDE_ROWS) ||
+      event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return;
+  }
+  const rows = [...currentTarget.querySelectorAll(SIDE_ROWS)];
+  const step = key === "ArrowUp" ? -1 : 1;
+  event.preventDefault();
+  rows[rows.indexOf(target) + step]?.focus();
+}
+
 // How far the panel has to scroll to show its selected row whole: below zero up,
 // above zero down, zero when the row is in view.
 function cutOff(panel) {
-  const row = panel.querySelector("[aria-selected=true]");
+  const row = panel.querySelector(CURRENT_SIDE_ROW);
   if (!row) {
     return 0;
   }
@@ -425,6 +439,8 @@ function SidePanel({ lists, unread, active, select }) {
   const follow = useRef(true);
   const last = useRef(active);
   const [unfolded, setUnfolded] = useState(false);
+  const focused = document.activeElement;
+  const hadFocus = panel.current?.contains(focused);
   const show = useCallback(() => {
     if (follow.current && panel.current && panel.current.clientHeight) {
       panel.current.scrollTop += cutOff(panel.current);
@@ -436,6 +452,15 @@ function SidePanel({ lists, unread, active, select }) {
       follow.current = true;
     }
     show();
+    // A row can move to a new list and be remounted. Recover focus only if
+    // the render left it on the document and the panel is still visible.
+    const nav = panel.current;
+    if (hadFocus && nav?.clientHeight && document.activeElement === document.body) {
+      const same = focused.dataset.action === "toggle-group"
+        ? nav.querySelector("[data-action=toggle-group]")
+        : [...nav.querySelectorAll(SIDE_ROWS)].find((row) => row.dataset.slug === focused.dataset.slug);
+      (same || nav.querySelector(CURRENT_SIDE_ROW))?.focus({ preventScroll: true });
+    }
   });
   useEffect(() => {
     window.addEventListener("resize", show);
@@ -466,9 +491,7 @@ function SidePanel({ lists, unread, active, select }) {
       open && decisionWords(open),
       count && count + " unread",
     ];
-    return html`<${Tab}
-      key=${"t" + row.slug}
-      role="tab"
+    return html`<li key=${row.slug}><${SideRow}
       slug=${row.slug}
       label=${title}
       title=${words.filter(Boolean).join(" · ")}
@@ -478,37 +501,40 @@ function SidePanel({ lists, unread, active, select }) {
       decisions=${open}
       active=${active === row.slug}
       select=${pick}
-    />`;
+    /></li>`;
   };
   return html`<nav
     class="side"
-    role="tablist"
-    aria-orientation="vertical"
     aria-label="Topics"
     ref=${panel}
     onScroll=${scrolled}
+    onKeyDown=${moveSideFocus}
   >
-    <${Tab} key="all" role="tab-all" slug="" label="All" active=${!active} select=${pick} />
+    <ul><li><${SideRow} slug="" label="All" active=${!active} select=${pick} /></li></ul>
     ${lists.map(({ group, topics }) => {
       const rows = group.fold && !unfolded ? topics.filter(({ row }) => row.slug === active) : topics;
+      const heading = "side-" + group.id + "-head";
+      const list = "side-" + group.id + "-list";
+      const label = html`${group.label} <span>${topics.length}</span>`;
       return html`<div class="sgroup" data-group=${group.id} key=${group.id}>
-        ${group.fold
-          ? html`<button
+        <h2 class=${group.fold ? "sg fold-heading" : "sg"} id=${heading}>
+          ${group.fold ? html`<button
               type="button"
-              class="sg fold"
+              class="sg-fold"
               data-action="toggle-group"
               aria-expanded=${unfolded ? "true" : "false"}
+              aria-controls=${list}
               onMouseDown=${(down) => down.preventDefault()}
               onClick=${() => setUnfolded(!unfolded)}
-            >${group.label} <span>${topics.length}</span></button>`
-          : html`<div class="sg" role="presentation">${group.label} <span>${topics.length}</span></div>`}
-        ${rows.map(topic)}
+            >${label}</button>` : label}
+        </h2>
+        <ul id=${list} aria-labelledby=${heading}>${rows.map(topic)}</ul>
       </div>`;
     })}
   </nav>`;
 }
 
-// The All tab's panel. The new-topic line comes first, above every list that
+// The All row's panel. The new-topic line comes first, above every list that
 // grows on its own, so no control moves under the pointer. Every decision is
 // listed; one that tags no topic is answered here, a tagged one on its topic's card.
 function AllPanel({ desk, open, revisit, lines, route }) {
