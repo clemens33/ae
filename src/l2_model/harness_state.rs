@@ -365,10 +365,12 @@ fn printed_dictation(capture: &str, styled: Option<&[Segment]>) -> Dictation {
     if let Some(state) = footer.iter().find_map(|row| voice_row(row)) {
         return state;
     }
-    let readable = footer.iter().any(|row| row.starts_with('⏵'))
+    let readable = footer
+        .iter()
+        .any(|row| row.starts_with('⏵') || *row == CLAUDE_PASTE_HINT)
         && footer
             .iter()
-            .all(|row| claude_chrome(row) || claude_limit_footer(row));
+            .all(|row| claude_chrome(row) || claude_limit_footer(row) || *row == CLAUDE_PASTE_HINT);
     if readable {
         Dictation::Clear
     } else {
@@ -1121,6 +1123,12 @@ pub fn auto_continue_armed(capture: &str, tool: ToolKind) -> bool {
 
 /// The armed resume's footer row, as Claude Code 2.1.296 and 2.1.317 draw it.
 const CLAUDE_AUTO_CONTINUE: &str = "Continuing automatically at ";
+
+/// The row Claude Code 2.1.332 draws in place of its `⏵` mode row while a
+/// fresh bracketed-paste chip sits in the box (measured 2026-11-27, fixture
+/// `claude-voice-paste-hint-2.1.332-199x38.esc`). It is footer furniture, not a
+/// voice state: a recording or transcribing frame is read before it.
+const CLAUDE_PASTE_HINT: &str = "paste again to expand";
 
 pub(crate) fn claude_border(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| matches!(c, '─' | '━' | '═'))

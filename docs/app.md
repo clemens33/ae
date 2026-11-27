@@ -739,7 +739,9 @@ composer (read on its printed rows, where interim text before the bar reads
 as the label alone), the hold label alone, or a voice word below the composer refuses
 that effect with `Claude dictation on the pane`. On the orchestrator seat that
 a hold-mode launch proved, a frame whose voice footer ae cannot read refuses
-as well. A dictation the human starts after that last read and before the key
+as well. Claude's `paste again to expand` row, drawn in place of the `⏵` mode
+row while a fresh paste chip sits in the box, is a readable footer: without it
+ae's own paste would never get its Enter. A dictation the human starts after that last read and before the key
 lands is not seen: the read narrows the window, it does not close it.
 
 The panel opens on the orchestrator incarnation the last fleet read proved:
