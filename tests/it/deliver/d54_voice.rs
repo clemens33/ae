@@ -9,7 +9,7 @@
 use std::fs;
 use std::mem::ManuallyDrop;
 
-use super::{PANE_WAIT, Rig, await_evidence};
+use super::{PANE_WAIT, Rig, await_evidence, lock_is_free};
 use crate::o2guard_p2_spec::{Seat, World, uuid_of};
 
 mod sidecar;
@@ -1057,9 +1057,93 @@ fn start_owned_dictation(rig: &Rig) -> (String, String, u32) {
 }
 
 #[test]
+fn the_mic_refuses_another_delivery_holding_the_panes_send_lock() {
+    let rig = orchestrator("voice-locked", "claude", &composer_cursor(IDLE, 3));
+    assert_mic_lock_refusal(&rig, |screen| status(screen, "recording"));
+}
+
+#[test]
+fn the_mic_takes_the_send_lock_before_reading_the_composer() {
+    let rig = orchestrator("voice-lock-before-read", "claude", &with_draft(PRIOR_DRAFT));
+    assert_mic_lock_refusal(&rig, |screen| {
+        screen.contains("dictation starts only on an empty composer")
+    });
+}
+
+fn assert_mic_lock_refusal(rig: &Rig, wrong_reason: impl Fn(&str) -> bool) {
+    const REFUSAL: &str = "another delivery to the orchestrator is in flight";
+    record_hold_launch(rig);
+    let _api = rig_world(rig).session("api", "tui", "");
+    let pane = app(rig, "api");
+    let idle = until_screen(rig, &pane, "setup: the proved mic is visible", |screen| {
+        status(screen, "unknown")
+    });
+    assert!(!idle.contains(REFUSAL));
+    let lock = rig.send_lock_path();
+    fs::create_dir_all(lock.parent().expect("the existing send-lock directory"))
+        .expect("prepare the send-lock directory");
+    let _held = ae::store::lock(&lock, std::time::Duration::ZERO).expect("a competing delivery");
+    let last_attached = [
+        "display-message",
+        "-p",
+        "-t",
+        "=orchestrator:",
+        "#{session_last_attached}",
+    ];
+    // The fixture never attaches an orchestrator client. A change here
+    // reveals even a sidecar that already detached by the time we read.
+    let before = checked(rig, &last_attached);
+    arm_voice_start(rig, HOLD);
+    press_mic(rig, &pane, &idle);
+    let result = until_screen(rig, &pane, "the mic answers the click", |screen| {
+        screen.contains(REFUSAL) || wrong_reason(screen)
+    });
+    assert!(
+        result.contains(REFUSAL),
+        "the held send lock must win:\n{result}"
+    );
+    assert_eq!(rig.wire(), b"", "a refused mic must send no pane bytes");
+    assert!(dictation_children(rig).is_empty());
+    assert_eq!(checked(rig, &last_attached), before, "no sidecar attached");
+}
+
+#[test]
 fn the_panel_starts_one_child_and_reaps_it_after_read_only_settle() {
+    const DELIVERY: &str = "A competing send must not touch the dictation.";
     let rig = orchestrator("sidecar-panel-stop", "claude", &composer_cursor(IDLE, 3));
     let (pane, recording, pid) = start_owned_dictation(&rig);
+    let lock = rig.send_lock_path();
+    assert!(
+        !lock_is_free(&lock),
+        "the active worker owns the existing delivery lock"
+    );
+    let mut delivery = super::ae()
+        .env("AE_HOME", &rig.scratch)
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", &rig.pane)
+        .env_remove("AE_SENDER_OVERRIDE")
+        .env("AE_SEND_DEFER_SEC", "0")
+        .arg(ae::cli::SEND)
+        .arg(&rig.dir)
+        .args(["tui", DELIVERY])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start a real send helper while the hold is active");
+    assert!(
+        await_evidence(PANE_WAIT, || {
+            fs::read_dir(rig.dir.join("messages"))
+                .ok()?
+                .flatten()
+                .any(|entry| fs::read_to_string(entry.path()).is_ok_and(|s| s.contains(DELIVERY)))
+                .then_some(())
+        })
+        .is_some(),
+        "the competing send must reach delivery admission"
+    );
+    if let Some(status) = delivery.try_wait().expect("observe the delivery") {
+        assert!(!status.success(), "the admitted delivery cannot send");
+    }
+    assert!(rig.wire().iter().all(|key| *key == b' '));
     press_mic(&rig, &pane, &recording);
     let stopped = voice_report(
         &rig,
@@ -1082,6 +1166,7 @@ fn the_panel_starts_one_child_and_reaps_it_after_read_only_settle() {
         [pid],
         "settle uses the same owned child"
     );
+    assert!(!lock_is_free(&lock), "settle retains the delivery lock");
     let cells = ratatui_core::text::Span::raw(WORDS).width();
     redraw_voice_frame(&rig, &composer_cursor(&with_draft(WORDS), cells + 3));
     voice_report(
@@ -1097,6 +1182,20 @@ fn the_panel_starts_one_child_and_reaps_it_after_read_only_settle() {
             .then_some(()))
         .is_some(),
         "the finished controller must leave no attached client"
+    );
+    let outcome = crate::cli::bounded(delivery, PANE_WAIT).expect("the waiting delivery finishes");
+    assert!(
+        !outcome.status.success(),
+        "the visible dictation is a draft"
+    );
+    let why = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        why.contains("composer occupied") || why.contains("Claude dictation"),
+        "{why}"
+    );
+    assert!(
+        lock_is_free(&lock),
+        "the reaped worker and the finished delivery leave the lock free"
     );
     assert_eq!(rig.wire(), wire, "the read-only settle sent no key");
     assert!(rig.submitted().is_empty());
