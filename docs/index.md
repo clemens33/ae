@@ -9,7 +9,7 @@
 
 ## Why ae
 
-- **One command.** `ae` starts a session, `ae` reattaches. That's the whole workflow.
+- **One command.** `ae` opens the app on your fleet; `ae <name>` starts, resumes or reattaches one session. That's the whole workflow.
 - **Agents talk to each other.** Each agent gets workspace context through its harness's supported launch channel — starting with which agent it is. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **One window to your whole fleet.** The optional [orchestrator seat](reference/commands.md#ae-orchestrator) (`ae orchestrator`) reads the fleet and relays for you — talk to *it* from your phone over [Telegram](reference/telegram.md#talking-to-the-orchestrator) instead of juggling ten panes.

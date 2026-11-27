@@ -34,12 +34,14 @@ Discover installed agent harnesses and write the starting config:
 ae init
 ```
 
-The command only resolves executable files on `PATH`; it does not run a harness, inspect login
-state, access the network, or infer model availability. It asks for the lead's and the
-colead's harness, model and effort in turn (Enter takes the default: lead Claude Code
-`claude-opus-5-5` at `high`, colead Codex `gpt-6.1-sol` at `xhigh`); both stay editable in
-`~/.ae/config`. In a non-interactive shell use `ae init --yes`, or the `--lead-*` and
-`--colead-*` harness, model and effort flags.
+The command resolves only the six supported harness executables (`claude`, `codex`, `grok`,
+`agy`, `opencode`, `gemini`) on `PATH`; it exits 1 when none is found. It does not run a
+harness, inspect login state, access the network, or infer model availability. It asks for the
+lead's and the colead's harness, model and effort, then an orchestrator profile and a palette
+(Enter takes each default; with Claude Code and Codex installed that is lead
+`claude-opus-5-5` at `high` and colead `gpt-6.2-sol` at `xhigh`); all stay editable in
+`~/.ae/config`. In a non-interactive shell pass `ae init --yes`; `--lead-*`, `--colead-*`,
+`--orchestrator` and `--palette` choose the seats without prompting.
 
 ## Build from source
 
@@ -50,6 +52,10 @@ git clone https://github.com/clemens33/ae.git ~/.local/share/ae
 cd ~/.local/share/ae
 just install
 ```
+
+On a Mac with an internal battery (a MacBook), `just install` refuses before it compiles
+anything, unless a human sets `AE_ALLOW_MACBOOK_BUILD=1` for that run. Build on another machine
+or install the release bundle instead.
 
 This runs the same canonical installer from a checkout, publishing a versioned immutable artifact under `~/.ae/versions` and atomically pointing `~/.local/bin/ae` at that version's `ae-core`. It compiles a native binary for this machine; static musl is a property of the CI-built release bundles.
 

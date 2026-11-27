@@ -234,7 +234,7 @@ fn default_choices(found: &[Discovery]) -> Option<Choices> {
         let lead = pick(Role::Lead, if claude { "claude" } else { "codex" })?;
         let colead = pick(Role::Colead, if codex { "codex" } else { "claude" })?;
         let orchestrator = if codex {
-            profile_seat("gpt61solx")
+            profile_seat("gpt62solx")
         } else {
             lead.clone()
         };
@@ -1173,7 +1173,7 @@ mod tests {
         let cases = [
             (
                 vec!["claude", "codex", "grok"],
-                ("opus55-high", Some("sol61-xhigh"), Some("gpt61solx")),
+                ("opus55-high", Some("sol62-xhigh"), Some("gpt62solx")),
             ),
             (
                 vec!["claude"],
@@ -1181,7 +1181,7 @@ mod tests {
             ),
             (
                 vec!["codex"],
-                ("sol61-high", Some("sol61-xhigh"), Some("gpt61solx")),
+                ("sol62-high", Some("sol62-xhigh"), Some("gpt62solx")),
             ),
             (vec!["grok", "agy"], ("grok46", Some("agy"), Some("grok46"))),
             (vec!["grok"], ("grok46", None, Some("grok46"))),
@@ -1365,12 +1365,12 @@ mod tests {
         let (choices, out, accepted) =
             prompted(&["claude", "codex"], "codex\n\n\nclaude\n\n\n\n\n");
         assert!(accepted, "{out}");
-        assert_eq!(choices.lead.name(), "sol61-high");
+        assert_eq!(choices.lead.name(), "sol62-high");
         assert_eq!(
             choices.colead.as_ref().map(Seat::name).as_deref(),
             Some("opus55-xhigh")
         );
-        assert!(out.contains("Lead model [gpt-6.1-sol]"), "{out}");
+        assert!(out.contains("Lead model [gpt-6.2-sol]"), "{out}");
         assert!(out.contains("Colead model [claude-opus-5-5]"), "{out}");
         assert!(
             out.contains("Colead effort [xhigh] (low, medium, high, xhigh, max)"),

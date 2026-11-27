@@ -57,7 +57,7 @@ pub(super) struct Harness {
 // vocabulary, not per-model server eligibility; ids are the ones
 // `src/l3_services/usage/prices.rs` prices, and `fable` is the alias `fablex` pins.
 const CLAUDE: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-// codex 0.165.0 `~/.codex/models_cache.json` (fetched 2026-10-28),
+// codex 0.172.0 `~/.codex/models_cache.json` (fetched 2026-11-27),
 // `supported_reasoning_levels` of each listed row.
 const CODEX: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 // The same cache lists gpt-6-luna without `ultra`.
@@ -89,6 +89,8 @@ pub(super) static HARNESSES: [Harness; 2] = [
         provider: "OpenAI",
         launch: ["codex --yolo", "-m", "-c model_reasoning_effort="],
         models: &[
+            row("gpt-6.2-sol", "sol62", CODEX),
+            row("gpt-6.2-astra", "astra62", CODEX),
             row("gpt-6.1-sol", "sol61", CODEX),
             row("gpt-6.1-terra", "terra61", CODEX),
             row("gpt-6-astra", "astra6", CODEX),
@@ -268,10 +270,25 @@ mod tests {
         let sol = ok(None, Some("gpt-6.1-sol"), None).expect("inferred harness");
         assert_eq!(sol.harness.name, "codex");
         assert_eq!(sol.effort, "high");
+        let colead = Pick::resolve(Role::Colead, "codex", None, None, None).expect("colead");
         assert_eq!(
-            Pick::resolve(Role::Colead, "codex", None, None, None).map(|p| p.name()),
-            Ok("sol61-xhigh".to_owned())
+            (colead.model.id, colead.name()),
+            ("gpt-6.2-sol", "sol62-xhigh".to_owned())
         );
+        let astra = ok(None, Some("gpt-6.2-astra"), Some("ultra")).expect("6.2 astra row");
+        assert_eq!(
+            (astra.harness.name, astra.name()),
+            ("codex", "astra62-ultra".to_owned())
+        );
+        for kept in [
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        ] {
+            assert!(ok(None, Some(kept), None).is_ok(), "{kept} row kept");
+        }
         assert_eq!(
             ok(Some("claude"), Some("gpt-6.1-sol"), None),
             Err("gpt-6.1-sol".into())

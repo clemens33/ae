@@ -8,7 +8,7 @@ ae init
 ae my-app
 ```
 
-`ae init` discovers supported harness executables and proposes a roster before the first session, with a separate harness, model and effort for the lead and the colead.
+`ae init` discovers supported harness executables and proposes a roster before the first session, with a separate harness, model and effort for the lead and the colead, then an orchestrator profile and a palette.
 If you skip it, the first launch still creates the broad default config. Session names are
 explicit, so the same directory can host distinct sessions.
 
@@ -22,12 +22,12 @@ ae mdk-rust --lead solx --colead astrax
 `--seat <agent>=<profile>` and may be repeated. The selection persists when you stop and resume
 the session.
 
-Detach any time with `Ctrl+b d`. Agents keep running.
+Leave the app with `qq` (or `^C`); with `--tmux`, detach with `Ctrl+b d`. Agents keep running.
 
 ## Reattach
 
 ```bash
-ae                # attach to the ae server's most recent session
+ae                # open the app on your fleet
 ae my-app         # reattach this named session
 ae my-feature     # start or reattach another named session
 ```
@@ -57,7 +57,7 @@ ae doctor
 ae my-app
 ```
 
-`ae my-app` starts or reattaches the named session. Detach with `Ctrl+b d`; run it again later to return. The default launch mode is local; a `--worktree` launch additionally needs a Git repository.
+`ae my-app` starts, resumes or reattaches the named session and opens the app on it. Leave with `qq`; run it again later to return. The default launch mode is local; a `--worktree` launch additionally needs a Git repository.
 
 ### Lead and worker panes
 
@@ -125,7 +125,7 @@ Inside a session, `peek <agent>` shows one agent's recent output.
 ## Finish up
 
 ```bash
-ae end my-feature       # commit + push to ae/my-feature branch, archive, then clean up
+ae end my-feature       # archive its memory, then clean up (a --copy/--worktree session commits and pushes to ae/my-feature first)
 ae rm my-experiment     # same as ae end
 ```
 
@@ -155,8 +155,8 @@ ae reboot my-feature              # asks the main agent for a handover first
 ae reboot --digest-only my-feature  # skip the ask; the digest is the handover
 ```
 
-(`ae compact` is the coming in-place seat compaction — not yet available; the
-destructive handover above is `ae reboot`.)
+(`ae compact` is the in-place seat compaction; the destructive handover above is
+`ae reboot`.)
 
 It runs from *outside* the session (it ends the one you would be sitting in), local mode
 only for now, and prints a `Recovery:` line before the relaunch so you can start the fresh
@@ -179,9 +179,14 @@ The optional [watchdog](../internals/watchdog.md) shares that window — when en
 If you want more than one agent up immediately, list workers in config:
 
 ```toml title="~/.ae/config"
+[roster]
+lead = fable5
+reviewer = gpt6astra
+tester = opencode
+
 [workspace]
-main = claude:lead
-workers = codex:reviewer, opencode:tester
+main = lead
+workers = reviewer, tester
 ```
 
 Or just tell your main agent to spawn them once you're attached. Either way, every agent gets the session's workspace context through its harness's supported launch channel.

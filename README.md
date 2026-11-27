@@ -19,7 +19,7 @@ A thin coordination layer over [tmux](https://github.com/tmux/tmux) for several 
 ## What it does
 
 - **Many harnesses.** Claude Code, Codex, OpenCode, Gemini CLI, Antigravity (`agy`), Grok Build and Muse Code have adapters of [differing depth](docs/reference/contract.md#agent-tool-capabilities). Other CLIs run without most integrations.
-- **Your choice of client, harness, model and effort.** A profile is a launch command with its flags; a client is a CLI install, or a second Claude Code or Codex login. `ae init` sets up the lead pair, the `spawn` helper adds agents (`spawn <name> --using <profile>`) and [`ae reseat`](docs/reference/commands.md#ae-reseat-session-agent---using-profileclient---stop-unknown) moves one to another profile.
+- **Your choice of client, harness, model and effort.** A profile is a launch command with its flags; a client is a CLI install, or a second Claude Code or Codex login. `ae init` sets up the lead pair and an orchestrator profile, the `spawn` helper adds agents (`spawn <name> --using <profile>`) and [`ae reseat`](docs/reference/commands.md#ae-reseat-session-agent---using-profileclient---stop-unknown) moves one to another profile.
 - **Effort.** ae does not estimate a task's effort: leads are told to pick the cheapest [profile that fits](docs/reference/delegation.md). Opt-in [`auto_effort`](docs/getting-started/config.md#workspace) can restart an idle Claude Code or Codex agent (lead pair or spawned) one effort level lower when its quota runs high. After recovery it restores the profile's effort, unless you changed it. It needs a matching lower-effort profile and by default steps only from `max` or `xhigh`.
 - **Quota.** [`ae quota`](docs/reference/commands.md#ae-quota) shows each configured account's locally cached quota windows, with `EFFECTIVE` headroom and `PACE`; coverage differs per harness. Leads are told to check it before delegating. Opt-in [`auto_reseat`](docs/internals/reseat.md) moves eligible idle agents off a usage limit, or before they reach one.
 - **A team.** Every agent gets [helpers](docs/reference/helpers.md): `send`, tracked `ask` and `review` with an exact reply command, `spawn` and shared `memo` notes. Leads are told to get significant work reviewed by another model provider; ae does not enforce it.
@@ -42,12 +42,14 @@ For macOS on Apple Silicon and Linux x86_64 (WSL2 too). You need tmux 3.4 or new
 ## First three commands
 
 ```bash
-ae init                  # 1. find your agent CLIs and set up the lead and colead
-ae my-app                # 2. in your project directory: start or reattach the session
+ae init                  # 1. find your agent CLIs and set up the lead, colead and orchestrator
+ae my-app                # 2. in your project directory: start, resume or reattach; opens the app (--tmux: tmux view)
 ae list --needs-attn     # 3. from another shell: which running sessions need you
 ```
 
-Agents keep running when you leave the app or detach from tmux. Ask your lead in plain words, for example *"Get a second agent to review the changes in src/"*. Run `ae doctor` if something looks off.
+`ae init` discovers Claude Code, Codex, Grok, agy, OpenCode and Gemini, and exits 1 when none is on `PATH`; other CLIs need a hand-written config and profile.
+
+Leave the app with `qq` (or `^C`); in the `--tmux` view, detach with `Ctrl+b d`. Agents keep running either way. Ask your lead in plain words, for example *"Get a second agent to review the changes in src/"*. Run `ae doctor` if something looks off.
 
 ## Learn more
 

@@ -199,23 +199,23 @@ clients. Add `config_home` only to a second Claude or Codex client; see the
 
 The lead and the colead each choose a harness, a model of that harness and an effort of that
 model, as three separate choices; the pick renders one `[profiles]` line named
-`<model code>-<effort>` (`opus55-high`, `sol61-xhigh`) and binds the role to it. The default
+`<model code>-<effort>` (`opus55-high`, `sol62-xhigh`) and binds the role to it. The default
 roster is derived from the found harnesses:
 
 | Found set | Lead | Colead | Orchestrator |
 |---|---|---|---|
-| Claude + Codex, with or without others | `claude-opus-5-5` high | `gpt-6.1-sol` xhigh | `gpt61solx` |
+| Claude + Codex, with or without others | `claude-opus-5-5` high | `gpt-6.2-sol` xhigh | `gpt62solx` |
 | Claude, without Codex | `claude-opus-5-5` high | `claude-opus-5-5` xhigh | the default lead pick |
-| Codex, without Claude | `gpt-6.1-sol` high | `gpt-6.1-sol` xhigh | `gpt61solx` |
+| Codex, without Claude | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt62solx` |
 | Neither; Grok + agy, with or without others | `grok46` | `agy` | `grok46` |
 | Neither; other combinations | first found | second found, or solo | first found |
 
 Models and efforts are a dated table in `src/l3_services/init/roles.rs`, not a live probe (init runs no
 child). Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `fable`, each with
 `low` to `max`; that is `claude --help`'s vocabulary for the harness, not a check that a given
-model accepts each level. Codex, as `codex` 0.165.0 listed its model cache: `gpt-6.1-sol`,
-`gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol` take `low` to `max` and `ultra`; `gpt-6-luna` stops
-at `max`. Grok, agy, OpenCode and Gemini have no table and keep their one catalog profile. A
+model accepts each level. Codex, as `codex` 0.172.0 listed its model cache: `gpt-6.2-sol`,
+`gpt-6.2-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol` take `low` to `max`
+and `ultra`; `gpt-6-luna` stops at `max`. Grok, agy, OpenCode and Gemini have no table and keep their one catalog profile. A
 model not in the table is refused; write its profile by hand in the config.
 
 `--lead-harness/--lead-model/--lead-effort` (and `--colead-*`) set one choice each; a model
@@ -2877,13 +2877,15 @@ delivery could not be promised.
 
 Wraps up:
 
-1. Commits any pending changes in the working tree (or worktree).
-2. Pushes to a branch named `ae/<session-name>` on the remote.
+1. A `--copy` or `--worktree` session only: commits any pending changes in its copy or
+   worktree. A local session skips steps 1 and 2 and runs no git.
+2. A `--copy` or `--worktree` session only: pushes to a branch named `ae/<session-name>` on
+   the remote.
 3. Kills the tmux session.
 4. **Archives the session's memory** to `~/.ae/archive/<session-uuid>/` (see
    [Session archives](#session-archives) below).
 5. Removes ae state at `~/.ae/sessions/<name>/`.
-5. **Keeps the per-session Claude / Codex conversation files** (jsonl + rollout) by
+6. **Keeps the per-session Claude / Codex conversation files** (jsonl + rollout) by
    default — they are the only local record of that session's token usage, retained
    for later usage/cost reporting. Purge them with `ae end --purge-history` (or set
    `[workspace] purge_agent_history = true` as the default). Tool detection uses

@@ -55,7 +55,7 @@ fn assert_role(text: &str, role: &str, harness: &str, model: &str, effort: &str)
 
 pub(super) fn assert_defaults(text: &str) {
     assert_role(text, "lead", "claude", "claude-opus-5-5", "high");
-    assert_role(text, "colead", "codex", "gpt-6.1-sol", "xhigh");
+    assert_role(text, "colead", "codex", "gpt-6.2-sol", "xhigh");
 }
 
 fn written(rig: &Rig, args: &[&str]) -> String {
@@ -65,7 +65,7 @@ fn written(rig: &Rig, args: &[&str]) -> String {
 }
 
 #[test]
-fn discovered_pair_defaults_to_opus55_high_and_sol61_xhigh() {
+fn discovered_pair_defaults_to_opus55_high_and_sol62_xhigh() {
     let rig = Rig::new("roles-default", &["claude", "codex"]);
     assert_defaults(&written(&rig, &["init", "--yes"]));
 }
@@ -130,7 +130,7 @@ fn selecting_a_nondefault_model_changes_only_the_requested_role() {
         &["init", "--yes", "--lead-model", "claude-sonnet-5-5"],
     );
     assert_role(&text, "lead", "claude", "claude-sonnet-5-5", "high");
-    assert_role(&text, "colead", "codex", "gpt-6.1-sol", "xhigh");
+    assert_role(&text, "colead", "codex", "gpt-6.2-sol", "xhigh");
 }
 
 #[test]
@@ -236,11 +236,11 @@ fn claude_only_defaults_to_opus55_for_both_roles_with_distinct_efforts() {
 }
 
 #[test]
-fn codex_only_defaults_to_sol61_for_both_roles_with_distinct_efforts() {
+fn codex_only_defaults_to_sol62_for_both_roles_with_distinct_efforts() {
     let rig = Rig::new("roles-codex", &["codex"]);
     let text = written(&rig, &["init", "--yes"]);
-    assert_role(&text, "lead", "codex", "gpt-6.1-sol", "high");
-    assert_role(&text, "colead", "codex", "gpt-6.1-sol", "xhigh");
+    assert_role(&text, "lead", "codex", "gpt-6.2-sol", "high");
+    assert_role(&text, "colead", "codex", "gpt-6.2-sol", "xhigh");
     assert!(!text.contains("\nclaude = claude\n"));
     assert!(!command(&text, "orchestrator").is_empty());
 }
@@ -346,7 +346,7 @@ fn terminal_accepts_recomputed_model_defaults_after_harness_changes() {
     answer(&rig, "Colead effort", "");
     wait_prompt(&rig, "Wrote config to");
     let text = std::fs::read_to_string(&rig.config).expect("interactive config");
-    assert_role(&text, "lead", "codex", "gpt-6.1-sol", "high");
+    assert_role(&text, "lead", "codex", "gpt-6.2-sol", "high");
     assert_role(&text, "colead", "claude", "claude-opus-5-5", "xhigh");
 }
 
@@ -381,12 +381,12 @@ fn role_choices_use_existing_proposal_and_force_backup_rules() {
     let proposed =
         std::fs::read_to_string(rig.config.with_file_name("config.proposed")).expect("proposal");
     assert_role(&proposed, "lead", "claude", "claude-opus-5-5", "low");
-    assert_role(&proposed, "colead", "codex", "gpt-6.1-sol", "high");
+    assert_role(&proposed, "colead", "codex", "gpt-6.2-sol", "high");
     let mut forced = args.to_vec();
     forced.push("--force");
     let text = written(&rig, &forced);
     assert_role(&text, "lead", "claude", "claude-opus-5-5", "low");
-    assert_role(&text, "colead", "codex", "gpt-6.1-sol", "high");
+    assert_role(&text, "colead", "codex", "gpt-6.2-sol", "high");
     let backups: Vec<_> = std::fs::read_dir(rig.config.parent().expect("parent"))
         .expect("files")
         .flatten()
