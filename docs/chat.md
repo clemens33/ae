@@ -321,6 +321,19 @@ A launch whose chat cannot open still starts, says so once and journals
 `chat-window-failed`. Residual: a card can outlive input typed in its pane, because
 only the watchdog daemon ends a wait on pane input.
 
+## Reading back
+
+`ae chat` has no scroll view of its own, so in the chat window tmux holds the
+place you read. Scrolling up with the mouse wheel, or `prefix [`, opens tmux
+copy mode, and new entries do not move that view. In copy mode your keys go to
+tmux, so leave it before you type: `q` leaves it and shows the newest entries. To
+read and type at the same time on an ae-owned server, press `prefix v`. A
+[reader pane](reference/commands.md#hotkey-and-mouse) opens above the chat with a
+frozen snapshot of its history, and the keyboard stays in the composer. The wheel
+scrolls the reader, new entries appear only in the chat below, and `prefix v`
+closes the reader. For one live view that stays where you scrolled it while you
+type, use [`ae app`](app.md).
+
 ## Input
 
 The row above the seat prompt names the target session. Its label uses that
