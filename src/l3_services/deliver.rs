@@ -734,6 +734,9 @@ fn dead_pane_line(request: &Request<'_>) -> String {
 struct TargetInput {
     model: InputModel,
     diagnostic: &'static str,
+    /// The tool whose running turn refuses this delivery at the last read
+    /// before the paste: set for a fleet overview only.
+    turn: Option<ToolKind>,
 }
 
 /// The input-box grammar this pane draws — `ae_target_tool` — and the tool
@@ -743,7 +746,11 @@ struct TargetInput {
 fn target_input(request: &Request<'_>, command: &str) -> (TargetInput, Option<ToolKind>) {
     let recorded = recorded_binary(&target_meta_dir(request), request.pane_slot);
     let tool = tool_named(&recorded, command);
-    (choose_input(&recorded, command), tool)
+    let input = TargetInput {
+        turn: tool.filter(|_| request.action == crate::watchdog::SWEEP_NUDGE_ACTION),
+        ..choose_input(&recorded, command)
+    };
+    (input, tool)
 }
 
 /// The tool a delivery names: the recorded binary, else the live command.
@@ -797,6 +804,7 @@ fn choose_input(recorded: &str, command: &str) -> TargetInput {
         } else {
             "other"
         },
+        turn: None,
     }
 }
 
@@ -970,6 +978,9 @@ pub enum DeferHeld {
     /// The pane is the voice-proved orchestrator seat and its voice footer
     /// could not be read, so a dictation cannot be ruled out.
     VoiceUnreadable,
+    /// The harness reads a running turn: a fleet overview waits for its
+    /// boundary instead of joining the harness's own input queue.
+    TurnRunning,
 }
 
 impl DeferHeld {
@@ -1002,7 +1013,8 @@ impl DeferHeld {
             | Self::EscapedServiceWait
             | Self::EscapedUnreadable
             | Self::Dictating
-            | Self::VoiceUnreadable => false,
+            | Self::VoiceUnreadable
+            | Self::TurnRunning => false,
         }
     }
 
@@ -1019,7 +1031,8 @@ impl DeferHeld {
             | Self::EscapedServiceWait
             | Self::EscapedUnreadable
             | Self::Dictating
-            | Self::VoiceUnreadable => false,
+            | Self::VoiceUnreadable
+            | Self::TurnRunning => false,
         }
     }
 
@@ -1038,6 +1051,7 @@ impl DeferHeld {
             Self::CodexServiceWait | Self::EscapedServiceWait => CODEX_SERVICE_WAIT_REASON,
             Self::Dictating => "Claude dictation on the pane",
             Self::VoiceUnreadable => "dictation seat's voice footer unreadable",
+            Self::TurnRunning => "a model turn is running",
         }
     }
 
@@ -1109,7 +1123,10 @@ impl Snapshot {
         }
         if matches!(
             self.held,
-            DeferHeld::CodexServiceWait | DeferHeld::Dictating | DeferHeld::VoiceUnreadable
+            DeferHeld::CodexServiceWait
+                | DeferHeld::Dictating
+                | DeferHeld::VoiceUnreadable
+                | DeferHeld::TurnRunning
         ) {
             halves.push(self.held.halves().to_owned());
         }
@@ -1972,14 +1989,15 @@ pub fn stage_and_paste(
         server,
         (buffer, bytes),
         pane,
-        (gate, InputModel::Unmodelled),
+        (gate, InputModel::Unmodelled, None),
     )
 }
 
 /// [`stage_and_paste`] into a composer that must still be empty: for a
 /// modelled `composer`, the read between the load and the paste also refuses
-/// [`StageFailure::Occupied`] when the box holds text or reads unreadable.
-/// One capture answers both that and `gate`.
+/// [`StageFailure::Occupied`] when the box holds text or reads unreadable, or,
+/// with `turn` given, when that tool's harness reads a running turn. One
+/// capture answers all of them and `gate`.
 ///
 /// # Errors
 ///
@@ -1988,7 +2006,7 @@ pub fn stage_into_empty(
     server: &ServerId,
     (buffer, bytes): (&str, &[u8]),
     pane: &str,
-    (gate, composer): (VoiceGate, InputModel),
+    (gate, composer, turn): (VoiceGate, InputModel, Option<ToolKind>),
 ) -> Result<(), StageFailure> {
     if !transport::load_buffer(server, buffer, bytes) {
         return Err(StageFailure::Load);
@@ -2004,6 +2022,13 @@ pub fn stage_into_empty(
                     region::occupancy(region, composer)
                 });
                 DeferHeld::of(occupancy, false).map(StageFailure::Occupied)
+            })
+            .or_else(|| {
+                let running = turn.zip(capture.as_deref()).is_some_and(|(tool, frame)| {
+                    crate::harness_state::classify(&printed_rows(frame), tool)
+                        == crate::harness_state::HarnessState::Busy
+                });
+                running.then_some(StageFailure::Occupied(DeferHeld::TurnRunning))
             })
     } else {
         gate.holds(server, pane).map(StageFailure::Held)
@@ -2044,7 +2069,7 @@ fn submit(
     if let Err(failure) = staged(
         request,
         (payload, diagnostic),
-        (gate, model),
+        (gate, model, input.turn),
         body_file,
         err,
     )? {
@@ -2140,7 +2165,7 @@ fn submit(
 fn staged(
     request: &Request<'_>,
     (payload, diagnostic): (&str, &str),
-    (gate, model): (VoiceGate, InputModel),
+    (gate, model, turn): (VoiceGate, InputModel, Option<ToolKind>),
     body_file: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
@@ -2153,7 +2178,7 @@ fn staged(
         request.server,
         (&buffer, payload.as_bytes()),
         pane,
-        (gate, model),
+        (gate, model, turn),
     ) {
         Ok(()) => return Ok(Ok(())),
         Err(StageFailure::Held(voice)) => DeferHeld::of_voice(voice),
@@ -2562,7 +2587,7 @@ fn under_lock(
         request.server,
         (&buffer_name(request.pane), request.text.as_bytes()),
         request.pane,
-        (gate, request.model),
+        (gate, request.model, None),
     ) {
         Ok(()) => {}
         Err(StageFailure::Held(state)) => {
@@ -2939,6 +2964,7 @@ mod tests {
             TargetInput {
                 model: InputModel::BorderDelimited,
                 diagnostic: "claude",
+                turn: None,
             }
         );
         assert_eq!(
@@ -2946,6 +2972,7 @@ mod tests {
             TargetInput {
                 model: InputModel::StyleDelimited,
                 diagnostic: "codex",
+                turn: None,
             }
         );
         assert_eq!(
@@ -2953,6 +2980,7 @@ mod tests {
             TargetInput {
                 model: InputModel::Unmodelled,
                 diagnostic: "other",
+                turn: None,
             }
         );
     }

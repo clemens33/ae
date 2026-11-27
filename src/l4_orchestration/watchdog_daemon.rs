@@ -2878,13 +2878,20 @@ impl Cycle<'_> {
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
-                sweep: self.sweep_observation(
-                    &slot,
-                    agent,
-                    &events,
-                    (overview.as_ref(), desk.as_ref()),
-                    now,
-                ),
+                sweep: self
+                    .sweep_observation(
+                        &slot,
+                        agent,
+                        &events,
+                        (overview.as_ref(), desk.as_ref()),
+                        now,
+                    )
+                    .map(|sweep| {
+                        sweep.with_turn_running(
+                            crate::harness_state::classify(&capture, tool)
+                                == crate::harness_state::HarnessState::Busy,
+                        )
+                    }),
                 own_work: outstanding.of(Seat::new(self.session, &slot, agent)),
                 auto_in_flight: if crate::autoreseat::in_flight(
                     &self.auto,

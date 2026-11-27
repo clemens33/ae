@@ -188,7 +188,23 @@ that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 300. A
 changed overview waits for that spacing unless its `NEEDS YOU` set changed:
 the overview hash carries a second digest of the seat needs alone (owner,
 reason and declared detail per session, never an age), and a change there is
-due on the next free cycle. The working hold still applies to it.
+due on the next free cycle. The working hold still applies to it. A checkpoint
+an older core wrote holds the fleet digest alone; it reads as the same overview
+when it equals the new fleet half, so an upgrade spends no turn on an unchanged
+fleet. While the main harness reads a running turn, no overview is due: it
+waits for the turn's boundary instead of joining the harness's own input queue,
+and the send helper refuses a `sweep-nudge` at its last read before the paste
+when that read shows a running turn. A publish keeps the explicit `sweep` row
+of a released seat config it replaces whole, so an existing seat keeps the
+spacing it ran with (the shipped template's old value was 120); only a fresh
+seed takes 300, and the owner sets `sweep = 300` by hand.
+
+The last read before an overview's paste is one capture after `load-buffer`
+under the send lock. It refuses, deletes the staged buffer and pastes nothing
+when the composer holds text, reads unreadable or shows a dictation. The
+capture and the paste are still two tmux commands: a human keystroke that
+arrives between them is not seen, and its text can mix with the paste. ae does
+not claim that this window is closed.
 
 Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session,
 and the canonical `[workspace] quota` awareness (`on` by default) beside it.

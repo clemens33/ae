@@ -329,6 +329,9 @@ One fresh capture between the load and the paste is the last read before any byt
 message delivery to a modelled composer refuses there, deletes the staged buffer and pastes
 nothing when the box now holds text or reads unreadable, as it does for a dictation: a human
 who starts typing after the quiet gate keeps their draft whole (`deliver::stage_into_empty`).
+For a fleet overview the same read also refuses a harness that shows a running turn. The
+capture and the paste stay two tmux commands, so a keystroke that lands between them is not
+seen.
 
 The transport threshold is 8192 framed bytes. Bodies at or below it are pasted directly;
 larger Claude/Codex bodies are published once in the sender's `messages/` directory and

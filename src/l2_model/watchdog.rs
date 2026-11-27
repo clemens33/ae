@@ -3631,6 +3631,9 @@ pub struct SweepObservation {
     /// Whether the overview's `NEEDS YOU` set differs from the last delivered
     /// one: such a change is due at once, without the minimum spacing.
     pub needs_changed: bool,
+    /// Whether the main seat's harness reads a running turn: an overview
+    /// waits for the turn's boundary instead of joining the harness's queue.
+    pub turn_running: bool,
     /// Oldest unacknowledged delivery recovered from durable state.
     pub persisted_outstanding_since: Option<SystemTime>,
     /// Latest delivered overview recovered for durable minimum spacing.
@@ -3653,6 +3656,7 @@ impl SweepObservation {
             working_since: None,
             overview_changed: true,
             needs_changed: false,
+            turn_running: false,
             persisted_outstanding_since: None,
             persisted_last_delivery: None,
             desk_stale: false,
@@ -3688,6 +3692,13 @@ impl SweepObservation {
     #[must_use]
     pub const fn with_needs_changed(mut self, changed: bool) -> Self {
         self.needs_changed = changed;
+        self
+    }
+
+    /// Add whether the main seat's harness reads a running turn.
+    #[must_use]
+    pub const fn with_turn_running(mut self, running: bool) -> Self {
+        self.turn_running = running;
         self
     }
 
@@ -3812,7 +3823,7 @@ pub fn sweep_step(
     let holding_for_work = seen
         .working_since
         .is_some_and(|at| secs_between(seen.now, at) < OVERVIEW_HOLD_WHILE_WORKING_SECS);
-    if due && !holding_for_work {
+    if due && !holding_for_work && !seen.turn_running {
         // A held overview is not an attempted delivery: no booking, hash or
         // spacing clock advances, so the next cycle sees the same change.
         if seen.overview_changed {
@@ -7490,6 +7501,30 @@ tail line
             .with_overview(false, Some(at(0)), Some(at(0)))
             .with_needs_changed(true);
         assert!(!fires(&unchanged), "no change, no turn");
+    }
+
+    #[test]
+    fn a_running_turn_holds_every_overview_until_its_boundary() {
+        let k = knobs();
+        let fires = |seen: &SweepObservation| {
+            sweep_step(&SweepState::default(), seen, &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge)
+        };
+        let due = seen(900, Some(900), &k).with_overview(true, Some(at(0)), Some(at(0)));
+        assert!(fires(&due));
+        assert!(!fires(&due.with_turn_running(true)), "a due overview waits");
+        assert!(
+            !fires(&due.with_needs_changed(true).with_turn_running(true)),
+            "a NEEDS YOU change waits too"
+        );
+        let held =
+            sweep_step(&SweepState::default(), &due.with_turn_running(true), &k).expect("enabled");
+        assert_eq!(
+            held.next.last_sweep, None,
+            "a held overview spends no spacing"
+        );
     }
 
     #[test]
