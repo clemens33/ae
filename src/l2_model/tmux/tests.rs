@@ -66,7 +66,13 @@ fn the_delivery_argv_addresses_the_named_pane_and_never_selects_it() {
     }
     assert_eq!(
         list_clients_args(&ServerId::Ambient),
-        vec!["list-clients", "-F", CLIENT_FORMAT]
+        vec![
+            "list-clients",
+            "-f",
+            "#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}",
+            "-F",
+            CLIENT_FORMAT
+        ]
     );
     assert!(
         !send_keys_args(&ServerId::Ambient, "%3", Key::Enter)
@@ -147,6 +153,8 @@ fn picker_client_session_is_one_exact_client_listing() {
         super::picker_client_sessions_args(&ServerId::Ambient),
         [
             "list-clients",
+            "-f",
+            "#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}",
             "-F",
             "#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
         ]
@@ -207,7 +215,7 @@ fn the_picker_read_is_one_queued_invocation_and_carries_no_write() {
     assert_eq!(
         args.join(" "),
         concat!(
-            "list-clients -F ae-picker:c|#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
+            "list-clients -f #{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1} -F ae-picker:c|#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
             " ; display-message -p ae-picker!c",
             " ; list-sessions -F ae-picker:s|#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{session_activity} | #{session_created} | #{@ae_goal_status}",
             " ; display-message -p ae-picker!s",
@@ -219,8 +227,8 @@ fn the_picker_read_is_one_queued_invocation_and_carries_no_write() {
             " ; display-message -p ae-picker!i",
             " ; display-message -p ae-picker:k|#{socket_path}",
             " ; display-message -p ae-picker!k",
-            " ; display-message -p -c /dev/ttys002 ae-picker:l|#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}",
-            " ; display-message -p ae-picker!l",
+            " ; display-message -p -c /dev/ttys002 #{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},,ae-picker:l|#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}}",
+            " ; display-message -p -c /dev/ttys002 #{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},,ae-picker!l}",
         ),
         "one queued read, one prefix per command, no write"
     );
@@ -331,6 +339,8 @@ fn menu_client_snapshot_carries_one_validated_session_name() {
         super::menu_clients_args(&ServerId::Ambient),
         [
             "list-clients",
+            "-f",
+            "#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}",
             "-F",
             "#{client_name} | #{client_pid} | #{session_id} | #{session_name} | #{client_height} | #{client_width}",
         ]
