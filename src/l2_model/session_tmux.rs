@@ -1329,8 +1329,7 @@ mod tests {
                 "%9",
                 "client-session-changed[0]",
                 concat!(
-                    "if-shell -F '#{?#{&&:#{client_control_mode},",
-                    "#{==:#{client_termname},ae-dictation}},0,1}' { ",
+                    "if-shell -F '#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}' { ",
                     "if-shell -F -t %9 \"#{==:#{session_id},$7}\" \"select-window -t %9 ; select-pane -t %9\" }",
                 )
             ]

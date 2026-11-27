@@ -724,8 +724,7 @@ fn an_ordinary_cycle_is_one_invocation_with_the_wake_hook_first() {
             "=$3:",
             WAKE_HOOK,
             concat!(
-                "if-shell -F '#{?#{&&:#{client_control_mode},",
-                "#{==:#{client_termname},ae-dictation}},0,1}' ",
+                "if-shell -F '#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}' ",
                 "{ wait-for -S ae-wake-3-17 }",
             ),
             ";",
