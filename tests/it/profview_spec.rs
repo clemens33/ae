@@ -85,7 +85,7 @@ impl Rig {
     }
 
     fn config(&self, profiles: &str) {
-        let clients = "claude = claude\nmic = claude config_home=$HOME/.claude-mic manual_resets=1\ncodex = codex";
+        let clients = "claude = claude\nwork = claude config_home=$HOME/.claude-work manual_resets=1\ncodex = codex";
         let text = format!("[clients]\n{clients}\n[profiles]\n{profiles}");
         self.write("config", text.as_bytes());
     }
@@ -815,9 +815,9 @@ fn window(lines: &[String], bucket: &str, used: &str) -> String {
 fn quota_rows_list_every_window_of_the_own_scope_with_the_first_sight_level() {
     let rig = Rig::new("windows");
     rig.config(
-        "fablex = claude --model fable\nmicx = mic --model opus\ncapx = codex -m gpt-6.1-sol\n",
+        "fablex = claude --model fable\nworkx = work --model opus\ncapx = codex -m gpt-6.1-sol\n",
     );
-    let all = ["fablex", "micx", "capx"];
+    let all = ["fablex", "workx", "capx"];
     let t = now();
     let limit = |kind: &str, group: &str, pct: u32, scope: &str| {
         format!(
@@ -839,7 +839,7 @@ fn quota_rows_list_every_window_of_the_own_scope_with_the_first_sight_level() {
         format!(r#"{{"cachedUsageUtilization":{usage}}}"#)
     };
     rig.write(".claude.json", cache(66, 85, 100).as_bytes());
-    rig.write(".claude-mic/.claude.json", cache(40, 12, 30).as_bytes());
+    rig.write(".claude-work/.claude.json", cache(40, 12, 30).as_bytes());
     let capped = String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
         .replace(
             "\"plan_type\":\"pro\"",
@@ -858,7 +858,7 @@ fn quota_rows_list_every_window_of_the_own_scope_with_the_first_sight_level() {
     let plain = rig.table(t);
     let windows = concat!(
         "fablex session 66% headroom,fablex weekly_all 85% low,fablex weekly_scoped 100% critical,",
-        "micx session 40% -,micx weekly_all 12% -,micx weekly_scoped 30% -",
+        "workx session 40% -,workx weekly_all 12% -,workx weekly_scoped 30% -",
     );
     let specs: Vec<Vec<&str>> = windows
         .split(',')
@@ -871,9 +871,9 @@ fn quota_rows_list_every_window_of_the_own_scope_with_the_first_sight_level() {
     let ok = oracle[3][1] != "40%" && plain.contains("spend-cap");
     pin(ok, "rig: EFFECTIVE derived, spend cap read", &plain);
     let text = rig.seam(t, GIB);
-    let (fablex, micx, capx) = (
+    let (fablex, workx, capx) = (
         block(&text, "fablex", &all),
-        block(&text, "micx", &all),
+        block(&text, "workx", &all),
         block(&text, "capx", &all),
     );
     for (word, cells) in specs.iter().zip(&oracle) {
@@ -892,12 +892,16 @@ fn quota_rows_list_every_window_of_the_own_scope_with_the_first_sight_level() {
     };
     let ok = listed("codex") == 1 && listed("codex_bengalfox") == 2 && says(&capx, "spend-cap");
     pin(ok, "stale windows listed, spend cap carried", &capx);
-    for lines in [&fablex, &micx] {
+    for lines in [&fablex, &workx] {
         let ok = window(lines, "weekly_scoped", "%").contains("Fable");
         pin(ok, "model-scoped window listed with its qualifier", lines);
     }
     pin(says(&fablex, "first-sight"), "level labelled", &fablex);
-    pin(!says(&micx, "66%"), "never another account's window", &micx);
+    pin(
+        !says(&workx, "66%"),
+        "never another account's window",
+        &workx,
+    );
 }
 
 /// Plan P15-P17: at most 128 sessions, newest recorded sign of life first; the rest are

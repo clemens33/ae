@@ -6,6 +6,6 @@
   ┃
   ┃  reply with the single word ok
   ┃
-  ┃  Build · DeepSeek V4.1 Flash Free Default / OpenCode                    ~/projects/clemens33/ae:main
+  ┃  Build · DeepSeek V4.1 Flash Free Default / OpenCode                    ~/projects/workspace/ae:main
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
    ⬝⬝⬝⬝⬝⬝⬝⬝ Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]        esc interrupt    • OpenCode 1.19.3

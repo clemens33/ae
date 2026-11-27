@@ -2009,7 +2009,7 @@ mod tests {
                 seat("colead", None),
                 seat(
                     "w1",
-                    Some("codex-mic unknown (unclassified) (measured: none)"),
+                    Some("codex-work unknown (unclassified) (measured: none)"),
                 ),
             ],
             &mut out,
@@ -2030,7 +2030,7 @@ mod tests {
                 (
                     Level::Ok,
                     "seat-version",
-                    "infra:w1 codex-mic unknown (unclassified) (measured: none)"
+                    "infra:w1 codex-work unknown (unclassified) (measured: none)"
                 ),
             ]
         );
@@ -2204,7 +2204,7 @@ mod tests {
         let mut facts = facts();
         facts.quota = vec![
             scope("work", Some(facts.now - 19 * 3_600)),
-            scope("mic", None),
+            scope("alt", None),
         ];
         let rows = rows_labelled(&facts, "quota-feed");
         assert!(
@@ -2214,7 +2214,7 @@ mod tests {
             "{rows:?}"
         );
         assert!(
-            rows[1].detail.starts_with("mic has no quota reading"),
+            rows[1].detail.starts_with("alt has no quota reading"),
             "{rows:?}"
         );
         for row in &rows {

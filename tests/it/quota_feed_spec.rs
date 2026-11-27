@@ -15,16 +15,16 @@ struct Rig(super::cli::OwnedScratch);
 impl Rig {
     fn new(tag: &str) -> Self {
         let rig = Self(super::cli::OwnedScratch::root("qf", tag));
-        for dir in ["home/.claude", "home/.claude-mic", "state/sessions"] {
+        for dir in ["home/.claude", "home/.claude-work", "state/sessions"] {
             std::fs::create_dir_all(rig.0.join(dir)).expect("fixture directories");
         }
         std::fs::write(
             rig.0.join("config"),
             concat!(
                 "[clients]\nbase = claude manual_resets=1\n",
-                "mic = claude config_home=$HOME/.claude-mic\n",
+                "work = claude config_home=$HOME/.claude-work\n",
                 "[profiles]\nbasep = base --model opus\n",
-                "explicitp = CLAUDE_CONFIG_DIR=$HOME/.claude claude --model opus\nmicp = mic --model opus\n"
+                "explicitp = CLAUDE_CONFIG_DIR=$HOME/.claude claude --model opus\nworkp = work --model opus\n"
             ),
         )
         .expect("fixture config");
@@ -126,7 +126,7 @@ fn fixture_configuration_is_valid_before_feed() {
     let rig = Rig::new("config");
     let text = rig.at(1_788_858_600);
     assert!(
-        text.contains("basep") && text.contains("explicitp") && text.contains("micp"),
+        text.contains("basep") && text.contains("explicitp") && text.contains("workp"),
         "{text}"
     );
 }
@@ -182,12 +182,12 @@ fn feed_is_silent_private_and_the_existing_effective_derivation_reads_it() {
 fn implicit_explicit_and_canonical_alias_scopes_do_not_cross_accounts() {
     let rig = Rig::new("scopes");
     let default = rig.0.join("home/.claude");
-    let mic = rig.0.join("home/.claude-mic");
+    let work = rig.0.join("home/.claude-work");
     let alias = rig.0.join("home/alias");
-    std::os::unix::fs::symlink(&mic, &alias).expect("scope alias");
+    std::os::unix::fs::symlink(&work, &alias).expect("scope alias");
     rig.feed(None, &payload("42", "43"));
     rig.feed(Some(&default), &payload("65", "66"));
-    rig.feed(Some(&mic), &payload("72", "73"));
+    rig.feed(Some(&work), &payload("72", "73"));
     rig.feed(Some(&alias), &payload("74", "75"));
     let path = rig.record(None);
     assert_eq!(
@@ -196,9 +196,9 @@ fn implicit_explicit_and_canonical_alias_scopes_do_not_cross_accounts() {
             .count(),
         3
     );
-    assert_eq!(rig.record(Some(&alias)), rig.record(Some(&mic)));
+    assert_eq!(rig.record(Some(&alias)), rig.record(Some(&work)));
     let text = rig.at(received(&path));
-    for (profile, percent) in [("basep", "42%"), ("explicitp", "65%"), ("micp", "74%")] {
+    for (profile, percent) in [("basep", "42%"), ("explicitp", "65%"), ("workp", "74%")] {
         let line = text
             .lines()
             .find(|line| line.contains(profile))

@@ -4021,7 +4021,7 @@ mod tests {
             Ok(Some("aedev, bad name!, aedev".into())),
             Ok(Some("900".into())),
             Ok(vec![
-                entry("sol6x", Some("opus55x-mic, opus55x, spark13cm"), 3),
+                entry("sol6x", Some("opus55x-work, opus55x, spark13cm"), 3),
                 entry("bad key", Some("x"), 4),
                 entry("fablex", None, 5),
                 entry("opus55x", Some("opus55x, sol6x, sol6x, 9bad, "), 6),

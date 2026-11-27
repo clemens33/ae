@@ -236,8 +236,8 @@ mod bgmark_acceptance {
 
     #[test]
     fn bgmark_real_codex_background_capture_replays_as_a_task() {
-        // Unmodified selected rows from ps -A -o pid=,ppid=,stat=,comm=,
-        // captured 2026-11-12 while this author's background tool ran sleep 120.
+        // Selected rows with a generic home path, from ps -A -o pid=,ppid=,stat=,comm=.
+        // Captured 2026-11-12 while this author's background tool ran sleep 120.
         // Full raw capture remains local; no hand-built row replaces this input.
         let table = crate::procs::parse_stat_table(include_str!("ps-task-captured.txt"));
         assert_eq!(

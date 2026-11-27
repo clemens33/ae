@@ -1,6 +1,7 @@
 # OpenCode V2 fixture provenance
 
-Byte-identical local measurement captures, OpenCode 2.2.1, 2026-10-29.
+Local measurement captures, OpenCode 2.2.1, 2026-10-29.
+The local-ui-54 and resume-full paths use a generic home. The hashes describe the tracked fixtures.
 Source: retained `.local/oc2` report and local deterministic stub. No real-provider calls.
 `local-ui-15` is 80x24; `local-ui-30/54` are 120x40. `resume-full-120x40` filename is historical: actual frame is 80x24.
 Welcome captures are idle; local UI captures include spinner/history. They do not establish safe busy sends or permission/limit detection.
@@ -16,7 +17,7 @@ V2 boot at both geometries, authentic permission/limit frames and real-provider 
 | local-ui-15.txt | 0ae918c9075a10dd22f2fba1872947df921a7458ba7ccd6b06f9b84281ce2236 |
 | local-ui-30.esc | 6c976381af7db35fe419a2936bdd5dc350c5db6cd4d2d120007898436c5d9a5b |
 | local-ui-30.txt | 98e88661492be3cebed6f748d58938c8e6dc979b41be40388a6eb256f96443b3 |
-| local-ui-54.esc | 6af574d1637f2c3c66a7e6e04ea7973bb86c70877d1239f1f27da85adab3eda3 |
-| local-ui-54.txt | 83f1e060c32b340b5c2cd212c148cd3a0e8863359dec0384ce9db22153f1ed21 |
-| resume-full-120x40.esc | e695f711d6fe01d2220c762d75c9840a88f51c6a93708db016d872b6e989c172 |
-| resume-full-120x40.txt | e4613de74f3049f443cbf609a6eec2a4f44ac992ba6c01ec4f9751c706efcab2 |
+| local-ui-54.esc | 4d40e012875a37b3eed527001f4b545b6d5fb0ec29f65539af1997f5a9a2c435 |
+| local-ui-54.txt | 58abe972d31f6cf1a876b690baa81a534dc49dac09537e2831eb26f90832f58d |
+| resume-full-120x40.esc | 40c6c72ea09ce19893c0862770874f1475b5dcdcfb60c40c087a440f777083af |
+| resume-full-120x40.txt | dfdd5ce703133eed450970d7fc524f5bd8937ab4d5222325c284fc23efdae486 |

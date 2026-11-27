@@ -1995,7 +1995,7 @@ mod tests {
         let scratch = seeded("list-client");
         let meta = scratch.meta().replacen(
             "profile.main=fable5\n",
-            "profile.main=fable5\nclient.main=cc-mic\n",
+            "profile.main=fable5\nclient.main=cc-work\n",
             1,
         );
         scratch.file("meta", &meta);
@@ -2003,7 +2003,7 @@ mod tests {
             "config",
             "[clients]\n\
              claude = claude\n\
-             cc-mic = claude config_home=/tmp/x/.claude-mic\n\
+             cc-work = claude config_home=/tmp/x/.claude-work\n\
              \n\
              [profiles]\n\
              fable5 = claude --model opus\n\
@@ -2022,7 +2022,7 @@ mod tests {
         let main = &rows(&out)[0];
         assert_eq!(main[0], "seat");
         assert!(
-            main[7].contains(".claude-mic") && main[7].contains("claude --model opus"),
+            main[7].contains(".claude-work") && main[7].contains("claude --model opus"),
             "the override expansion, not the default: {main:?}"
         );
         assert_eq!(
@@ -2040,7 +2040,7 @@ mod tests {
         let scratch = seeded("replace-client");
         let meta = scratch.meta().replacen(
             "profile.main=fable5\n",
-            "profile.main=fable5\nclient.main=cc-mic\n",
+            "profile.main=fable5\nclient.main=cc-work\n",
             1,
         );
         scratch.file("meta", &meta);
@@ -2057,14 +2057,14 @@ mod tests {
         );
         assert_eq!((code, err.as_str()), (0, ""));
         assert!(
-            scratch.meta().contains("client.main=cc-mic\n"),
+            scratch.meta().contains("client.main=cc-work\n"),
             "the label survives the republish: {}",
             scratch.meta()
         );
         // An unusable row cannot be preserved and must not be laundered.
         let damaged = scratch
             .meta()
-            .replace("client.main=cc-mic\n", "client.main=\n");
+            .replace("client.main=cc-work\n", "client.main=\n");
         scratch.file("meta", &damaged);
         let (code, _, err) = init(
             scratch.dir(),
@@ -2512,10 +2512,10 @@ mod tests {
         assert!(add(Some("cc\nseat.main=x")).is_err());
         assert!(add(Some("cc\u{7}")).is_err());
         assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
-        let slot = add(Some("cc-mic")).expect("a seat");
+        let slot = add(Some("cc-work")).expect("a seat");
         let meta = scratch.meta();
         assert!(meta.contains(&format!("profile.{slot}=fable5\n")), "{meta}");
-        assert!(meta.contains(&format!("client.{slot}=cc-mic\n")), "{meta}");
+        assert!(meta.contains(&format!("client.{slot}=cc-work\n")), "{meta}");
         assert!(!meta.contains('@'), "{meta}");
     }
 

@@ -4226,14 +4226,14 @@ mod tests {
             super::parse(&argv(words)).map(|parsed| (parsed.profile, parsed.client))
         };
         assert_eq!(
-            split(&["work", "lead", "--using", "lunam@cc-mic"]),
-            Ok(("lunam".to_owned(), Some("cc-mic".to_owned())))
+            split(&["work", "lead", "--using", "lunam@cc-work"]),
+            Ok(("lunam".to_owned(), Some("cc-work".to_owned())))
         );
         assert_eq!(
             split(&["work", "lead", "--using=lunam"]),
             Ok(("lunam".to_owned(), None))
         );
-        for bad in ["lunam@", "@cc-mic", "lunam@cc@mic"] {
+        for bad in ["lunam@", "@cc-work", "lunam@cc@work"] {
             let refusal = split(&["work", "lead", "--using", bad]).expect_err("malformed");
             assert!(
                 refusal.contains(&format!("'{bad}' is not <profile> or <profile>@<client>")),
@@ -4248,14 +4248,14 @@ mod tests {
     #[test]
     fn a_same_profile_move_is_nothing_only_on_the_client_already_recorded() {
         use crate::meta::RecordedClient::{Invalid, Label, Missing};
-        let label = Label("cc-mic".to_owned());
+        let label = Label("cc-work".to_owned());
         assert!(super::same_client(None, &Missing));
         assert!(super::same_client(None, &Invalid));
         assert!(!super::same_client(None, &label));
-        assert!(super::same_client(Some("cc-mic"), &label));
+        assert!(super::same_client(Some("cc-work"), &label));
         assert!(!super::same_client(Some("cc-p"), &label));
-        assert!(!super::same_client(Some("cc-mic"), &Missing));
-        assert!(!super::same_client(Some("cc-mic"), &Invalid));
+        assert!(!super::same_client(Some("cc-work"), &Missing));
+        assert!(!super::same_client(Some("cc-work"), &Invalid));
     }
 
     #[test]

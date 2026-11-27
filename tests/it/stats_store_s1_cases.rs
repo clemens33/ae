@@ -203,7 +203,7 @@ pub fn assert_balanced(view: &View) {
 pub fn fleet(seed: u64) -> Vec<Feed> {
     let model = ["sonnet", "opus", "sol", "escaped-\\\"-model"]
         [usize::try_from(seed % 4).expect("bounded index")];
-    let a = fields("claude", Some("claude-p"), Some(model), Some("high"));
+    let a = fields("claude", Some("claude-a"), Some(model), Some("high"));
     let b = fields("codex", None, Some("sol"), None);
     let original = birth(S, 1, &a);
     let duplicate = original.replace("\"target\":\"scout\"", "\"target\":\"renamed\"");

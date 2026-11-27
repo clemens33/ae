@@ -1767,7 +1767,7 @@ fn a_receipt_names_one_window_one_reset_and_one_conversation() {
     for other in [
         ask_receipt(&key, Some(13_601), &seat(Some(CONVERSATION_A))),
         ask_receipt(&key, Some(13_600), &seat(Some(CONVERSATION_B))),
-        moved(|key| key.source = PathBuf::from("/tmp/cc-mic/.claude.json")),
+        moved(|key| key.source = PathBuf::from("/tmp/cc-work/.claude.json")),
         moved(|key| key.bucket = "weekly_all".to_owned()),
         moved(|key| key.qualifier = None),
         moved(|key| key.window_minutes = None),
@@ -9809,9 +9809,9 @@ fn label_entry(
 fn seat_client_label_honors_override_profile_binary_and_token_in_order() {
     let long = "l".repeat(40);
     let cfg = crate::config::parse_identity(&format!(
-        "[clients]\nclaude = claude\ncc-mic = claude config_home=$HOME/.claude-mic\n\
+        "[clients]\nclaude = claude\ncc-work = claude config_home=$HOME/.claude-work\n\
              codex = codex\n{long} = codex\n[profiles]\np1 = claude --model fable\n\
-             p2 = cc-mic --model fable\np3 = /usr/bin/Muse --model fable\n\
+             p2 = cc-work --model fable\np3 = /usr/bin/Muse --model fable\n\
              p4 = nosuchclient --x\np5 = {long} --full-auto\n"
     ))
     .expect("the fixture parses");
@@ -9823,13 +9823,13 @@ fn seat_client_label_honors_override_profile_binary_and_token_in_order() {
     };
     // Headline: one binary, two config homes, two different labels.
     assert_eq!(at(Some("p1"), missing(), Some("claude")), "claude");
-    assert_eq!(at(Some("p2"), missing(), Some("claude")), "cc-mic");
+    assert_eq!(at(Some("p2"), missing(), Some("claude")), "cc-work");
     for (profile, client, binary, expected, why) in [
         (
             Some("p1"),
-            label("cc-mic"),
+            label("cc-work"),
             Some("claude"),
-            "cc-mic",
+            "cc-work",
             "override",
         ),
         (
@@ -9906,7 +9906,7 @@ fn seat_client_label_honors_override_profile_binary_and_token_in_order() {
 /// misread is worse than none.
 #[test]
 fn agents_fact_refuses_a_profile_at_spelling() {
-    let roster = [entry("main", "fablex@cc-mic", "lead")];
+    let roster = [entry("main", "fablex@cc-work", "lead")];
     let observed = vec![live_seat("main", "%3", Verdict::Active)];
     assert_eq!(
         agents_fact(&roster, &observed, &[("main", "cc".to_owned())], 2_000, 60),
@@ -9960,14 +9960,14 @@ fn the_agents_fact_emits_v3_and_empties_an_unrepresentable_model() {
         seen_running("spawned.0", "%9", "weird:model", Some("high"), false),
     ];
     let clients = [
-        ("main", "cc-mic".to_owned()),
+        ("main", "cc-work".to_owned()),
         ("worker.0", "muse".to_owned()),
         ("spawned.0", "oc".to_owned()),
     ];
     let fact = agents_fact(&roster, &observed, &clients, 2_000, 60).expect("a v3 fact");
     assert_eq!(
         fact,
-        "v3;2000;60;lead:fable5:working:%3:cc-mic:Fable 5.1:xhigh:!:;\
+        "v3;2000;60;lead:fable5:working:%3:cc-work:Fable 5.1:xhigh:!:;\
              nav:spark13m:working:%8:muse:muse-spark-1.3:max::;\
              runner:ocds:working:%9:oc::::"
     );
@@ -9975,7 +9975,7 @@ fn the_agents_fact_emits_v3_and_empties_an_unrepresentable_model() {
     // must survive the strict parser that reads it back.
     let parsed = crate::tmux::parse_picker_agents(&fact, 2_000).expect("its own reader");
     assert_eq!(parsed.len(), 3);
-    assert_eq!(parsed[0].client, "cc-mic");
+    assert_eq!(parsed[0].client, "cc-work");
     assert_eq!(parsed[0].model, "Fable 5.1");
     assert!(parsed[0].drift);
     assert_eq!(parsed[2].client, "oc", "the client survives the drop");

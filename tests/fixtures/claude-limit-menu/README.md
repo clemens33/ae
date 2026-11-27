@@ -1,7 +1,7 @@
 # Claude usage-limit menu fixture
 
 `claude-limit-menu-39col.txt` is the real `/rate-limit-options` dialog of a Claude
-Code seat whose account was at its weekly limit (100%), the `cc-mic` login, drawn
+Code seat whose account was at its weekly limit (100%), the `cc-work` login, drawn
 in a 39-column pane. Captured 2026-10-15 ~15:32Z from a live ae seat with `peek`
 (bottom rows, plain text, the pane's own trailing blanks kept); only the
 capture's one comment line was dropped. No account name, email or path appears.

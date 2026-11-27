@@ -20,5 +20,5 @@
   ┃
   ┃  Build · Probe Local deterministic probe · max
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  /…/U…/ckriech/projects/.tmp/ae-oc2-j49bs7s6/project  2 (0%)  ctrl+p commands
+  /…/U…/x/projects/.tmp/ae-oc2-j49bs7s6/project        2 (0%)  ctrl+p commands
 

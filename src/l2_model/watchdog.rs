@@ -5676,7 +5676,7 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
 
 › Ask Codex to do anything
 
-  gpt-6-astra medium · ~/projects/clemens33/ae · main · Context 51% used · weekly 0% left";
+  gpt-6-astra medium · ~/projects/workspace/ae · main · Context 51% used · weekly 0% left";
 
     /// Muse 1.2.1's quota banner, verbatim from a live pane (2026-09-14,
     /// 190 columns): `◆` (U+25C6) at column 0, `·` U+00B7, the reset time on
@@ -5693,7 +5693,7 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
     const MUSE_BOTTOM: &str = "── Voice input (⌥ + v to start) ──
 ❯
 ────────────────────────────────────────
-  muse-spark-1.3 · max · ~/projects/clemens33/ae · YOLO";
+  muse-spark-1.3 · max · ~/projects/workspace/ae · YOLO";
 
     /// #189's false positive: a claude seat whose TRANSCRIPT quotes a limit
     /// banner — its own prose, a tool result peeking another seat, a pasted
@@ -6727,20 +6727,20 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
 
 › ⟦ae:msg from watchdog⟧
   Status check: if you have more work, continue. Otherwise declare
-  your state so I stop nudging: /Users/ckriech/.ae/sessions/aerewrite/
+  your state so I stop nudging: /Users/x/.ae/sessions/aerewrite/
   state <waiting-user|blocked|done> "<reason>"
 back to real output after the block
   ❯ ⟦ae:msg from watchdog⟧
   Session goal: ship P4.1. Status check: if you have more work,
   continue. Otherwise declare your state so I stop nudging:
-  /Users/ckriech/.ae/sessions/aerewrite/state <waiting-user|blocked|done>
+  /Users/x/.ae/sessions/aerewrite/state <waiting-user|blocked|done>
   "<reason>"
 more real output
 ⟦ae:msg from watchdog⟧
-Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /Users/ckriech/.ae/sessions/aerewrite/state <waiting-user|blocked|done> "<reason>"
+Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /Users/x/.ae/sessions/aerewrite/state <waiting-user|blocked|done> "<reason>"
 ⟦ae:msg from watchdog⟧
 a human message that is not a nudge
-Session goal: ship the watchdog. Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /Users/ckriech/.ae/sessions/aerewrite/state <waiting-user|blocked|done> "<reason>"
+Session goal: ship the watchdog. Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /Users/x/.ae/sessions/aerewrite/state <waiting-user|blocked|done> "<reason>"
   └ Marked gpt56sol:reviewer done: wrapped it up
 ⏺ [21:28] Done — output: Marked opus5:builder waiting-user: needs review
 Marked opus5:builder waiting-user: needs review
@@ -6775,7 +6775,7 @@ tail line
     /// all.
     const RAW_NUDGE: &str = "Status check: if you have more work, continue. \
          Otherwise declare your state so I stop nudging: \
-         /Users/ckriech/.ae/sessions/aerewrite/state \
+         /Users/x/.ae/sessions/aerewrite/state \
          <waiting-user|blocked|done> \"<reason>\"";
 
     #[test]
@@ -6917,7 +6917,7 @@ tail line
             WaitEnded, done_challenge_text, idle_nudge_text, idle_nudge_text_waiting, nudge_text,
             nudge_words, wait_challenge_text,
         };
-        let meta = std::path::Path::new("/Users/ckriech/.ae/sessions/demo");
+        let meta = std::path::Path::new("/Users/x/.ae/sessions/demo");
         let ended = WaitEnded {
             kind: QuietKind::WaitingUser,
             input_age_secs: 300,
@@ -7031,7 +7031,7 @@ tail line
     #[test]
     fn a_noted_nudge_is_a_footprint_exactly_when_the_plain_one_is() {
         use crate::watchdog_daemon::{WaitEnded, idle_nudge_text, nudge_text, nudge_words};
-        let meta = std::path::Path::new("/Users/ckriech/.ae/sessions/aerewrite");
+        let meta = std::path::Path::new("/Users/x/.ae/sessions/aerewrite");
         let ended = WaitEnded {
             kind: QuietKind::WaitingUser,
             input_age_secs: 300,

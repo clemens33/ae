@@ -2458,7 +2458,7 @@ fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
         // #296 part A: this rig's config approves no pair, so the pair gate
         // refuses before existence (full spec: presetspawn_spec.rs).
         (
-            vec!["helper", "--using", "fake@cc-mic"],
+            vec!["helper", "--using", "fake@cc-work"],
             "is not an approved pair",
         ),
     ] {

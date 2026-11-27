@@ -21,12 +21,12 @@ mod tests {
     const ID_B: &str = "01a08046-2000-7abc-8abc-aaaaaaaaaaaa";
     const HEADER: &str = "Quota · cached only";
     const CONFIG: &str = "[clients]\nclaude = claude\ncodex = codex\n\
-        mic = claude config_home=$HOME/.claude-mic manual_resets=2\n\
-        mic2 = claude config_home=$HOME/.claude-mic manual_resets=1\n\
+        work = claude config_home=$HOME/.claude-work manual_resets=2\n\
+        work2 = claude config_home=$HOME/.claude-work manual_resets=1\n\
         capped = codex config_home=$HOME/.codex-capped manual_resets=3\n\
         solo = claude config_home=$HOME/.claude-solo\ngone = claude config_home=$HOME/.claude-gone\nbad = claude config_home=$HOME/.claude-bad\n\
         [profiles]\nfablex = claude --model fable\nopusx = claude --model opus\n\
-        micx = mic --model fable\nmicy = mic2 --model opus\nastrax = codex --model astra\n\
+        workx = work --model fable\nworky = work2 --model opus\nastrax = codex --model astra\n\
         capx = capped --model sol\nspark = muse\ngem = agy\ngemini = gemini\n\
         [workspace]\nmuse_quota = on\n";
     const META: &str = "schema=2\nmode=local\nseat.main=lead\nprofile.main=astrax\n\
@@ -57,10 +57,10 @@ mod tests {
         let claude = include_str!("../fixtures/quota/claude-cache.json");
         put(&home.join(".claude.json"), claude);
         // Every window 100 raw, observed 8600 s before NOW: stale, 2h23m old.
-        let mic = claude.replace("\"percent\": 66", "\"percent\": 100");
-        let mic = mic.replace("\"percent\": 9,", "\"percent\": 100,");
-        let mic = mic.replace("1788858413691", "1788850000000");
-        put(&home.join(".claude-mic/.claude.json"), &mic);
+        let work = claude.replace("\"percent\": 66", "\"percent\": 100");
+        let work = work.replace("\"percent\": 9,", "\"percent\": 100,");
+        let work = work.replace("1788858413691", "1788850000000");
+        put(&home.join(".claude-work/.claude.json"), &work);
         let solo = claude.replace("2026-09-08T11:49:59", "2026-09-08T08:00:00");
         put(&home.join(".claude-solo/.claude.json"), &solo);
         let bad = "{\"cachedUsageUtilization\": ["; // corrupt
@@ -189,8 +189,8 @@ mod tests {
         let rows = [
             // Two profiles on the default login: ONE account, 66 raw stays 66, own reset + age.
             "claude · ~/.claude\n|66%^reset in 2h39m · seen 3m|stale",
-            // Two labels on .claude-mic: one block, the SMALLEST count (1): 100 raw is 50.
-            "claude · mic|50%^1 reset in hand · stale^2h23m|100%^33",
+            // Two labels on .claude-work: one block, the SMALLEST count (1): 100 raw is 50.
+            "claude · work|50%^1 reset in hand · stale^2h23m|100%^33",
             // Fresh unlimited credits judge 0 whatever the vendor's 40.
             "codex · ~/.codex\n|0%^credits unlimited|40%",
             // A reached spend cap judges 100 despite three resets (100 raw / 4 would be 25).

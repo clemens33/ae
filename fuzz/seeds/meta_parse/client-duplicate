@@ -3,6 +3,6 @@ origin=/home/c/projects/ae
 work_dir=/home/c/projects/ae
 seat.main=lead
 profile.main=fablex
-client.main=cc-mic
+client.main=cc-work
 client.main=cc-other
 agent_bin.main=claude

@@ -13,7 +13,7 @@ const BID: &str = "22222222-2222-4222-8222-222222222222";
 
 fn certificate() -> String {
     format!(
-        "{{\"ts\":\"2026-11-01T10:00:00Z\",\"actor\":\"lead\",\"action\":\"worker-birth\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session_id\":\"{SID}\",\"birth_v\":1,\"birth\":\"{BID}\",\"birth_tool\":\"claude\",\"birth_client\":\"claude-p\",\"birth_model\":\"sonnet\",\"birth_effort\":\"high\",\"birth_profile\":\"preset\"}}"
+        "{{\"ts\":\"2026-11-01T10:00:00Z\",\"actor\":\"lead\",\"action\":\"worker-birth\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session_id\":\"{SID}\",\"birth_v\":1,\"birth\":\"{BID}\",\"birth_tool\":\"claude\",\"birth_client\":\"claude-a\",\"birth_model\":\"sonnet\",\"birth_effort\":\"high\",\"birth_profile\":\"preset\"}}"
     )
 }
 
@@ -32,7 +32,7 @@ fn typed_certificate_preserves_configured_aliases_and_route_labels() {
     assert_eq!(birth.name.as_deref(), Some("scout"));
     assert_eq!(birth.slot.as_deref(), Some("spawned.0"));
     assert_eq!(birth.tool.as_deref(), Some("claude"));
-    assert_eq!(birth.client.as_deref(), Some("claude-p"));
+    assert_eq!(birth.client.as_deref(), Some("claude-a"));
     assert_eq!(
         birth.model.as_deref(),
         Some("sonnet"),
@@ -42,7 +42,7 @@ fn typed_certificate_preserves_configured_aliases_and_route_labels() {
     assert_eq!(birth.profile.as_deref(), Some("preset"));
 
     let no_flags = certificate()
-        .replace(",\"birth_client\":\"claude-p\"", "")
+        .replace(",\"birth_client\":\"claude-a\"", "")
         .replace(",\"birth_model\":\"sonnet\"", "")
         .replace(",\"birth_effort\":\"high\"", "");
     let Record::Birth(birth) = read(&no_flags).expect("proved absence") else {
@@ -202,7 +202,7 @@ fn hostile_family_members_cost_the_family_evidence_not_the_existing_event() {
     for (member, old) in [
         ("birth", BID),
         ("birth_tool", "claude"),
-        ("birth_client", "claude-p"),
+        ("birth_client", "claude-a"),
         ("birth_model", "sonnet"),
         ("birth_effort", "high"),
         ("birth_profile", "preset"),
@@ -298,7 +298,7 @@ fn birth_fields_on_a_fact_still_obey_known_member_damage_rules() {
         Family::Fact,
         &[
             ("birth_tool", "claude"),
-            ("birth_client", "claude-p"),
+            ("birth_client", "claude-a"),
             ("birth_model", "sonnet"),
             ("birth_effort", "high"),
             ("birth_profile", "preset"),

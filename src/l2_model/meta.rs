@@ -5050,10 +5050,10 @@ mod tests {
         assert_eq!((legacy.tool, legacy.id), (None, ID));
         // A wrapper binary is an ordinary tag: the grammar is a BASENAME, not a
         // list of the tools ae knows.
-        let wrapper = format!("claude-mic.1:{ID}");
+        let wrapper = format!("claude-work.1:{ID}");
         assert_eq!(
             super::prior_parts(&wrapper).map(|prior| prior.tool),
-            Some(Some("claude-mic.1"))
+            Some(Some("claude-work.1"))
         );
         let over = "c".repeat(super::PRIOR_TOOL_MAX + 1);
         // The id grammar is LOWERCASE, and this id has letters to prove it.
@@ -5177,7 +5177,7 @@ mod tests {
     /// the move must not touch.
     fn seated() -> String {
         "session=work\nseat.main=lead\nseat.spawned.0=scout\n\
-         profile.main=fable5\nagent_bin.main=claude\nclient.main=cc-mic\n\
+         profile.main=fable5\nagent_bin.main=claude\nclient.main=cc-work\n\
          harness_session.main=11111111-1111-4111-8111-111111111111\n\
          launch_id.main=L-OLD\ncapture_floor.main=1000\nlaunch_time.main=1200\n\
          config_home.main=/home/x/.claude\nconfig_home_base.main=/home/x\n\
@@ -5224,7 +5224,7 @@ mod tests {
             "{}meta_agent=true\nreseat_origin.main=requested:L-OLD\n",
             seated()
         );
-        let mut move_to = carrying("cc-mic", "claude", "/h/b");
+        let mut move_to = carrying("cc-work", "claude", "/h/b");
         move_to.launch_id = NEW;
         move_to.orchestrator_continuation = true;
         let requested = super::reseated_from(&before, "main", &move_to, true);
@@ -5276,9 +5276,9 @@ mod tests {
         // nothing may be recorded as abandoned — and the store rows go with the
         // conversation in this SAME document, because a published conversation
         // whose account no row names would resolve to the home it just left.
-        let moved = super::reseated(&seated(), "main", &carrying("cc-mic", "claude", "/h/b"));
+        let moved = super::reseated(&seated(), "main", &carrying("cc-work", "claude", "/h/b"));
         let value = |key: &str| crate::lifecycle::meta_value(moved.as_bytes(), key);
-        assert_eq!(value("profile.main"), "cc-mic");
+        assert_eq!(value("profile.main"), "cc-work");
         assert_eq!(value("agent_bin.main"), "claude");
         assert_eq!(
             value("harness_session.main"),
@@ -5305,7 +5305,7 @@ mod tests {
         // An IMPLICIT target is one identity with the HOME that selected it,
         // and both of its rows are published in this same document.
         let implicit = super::SeatMove {
-            profile: "cc-mic",
+            profile: "cc-work",
             binary: "claude",
             launch_id: "L-NEW",
             orchestrator_continuation: false,
@@ -6465,13 +6465,13 @@ agent_bin.main=claude
     fn client_rows_are_typed_and_hostile_shapes_are_invalid_never_missing() {
         // Label: exactly one well-formed row, both orders, no anomaly.
         for text in [
-            "seat.main=lead\nclient.main=cc-mic\n",
-            "client.main=cc-mic\nseat.main=lead\n",
+            "seat.main=lead\nclient.main=cc-work\n",
+            "client.main=cc-work\nseat.main=lead\n",
         ] {
             let meta = Meta::parse(text);
             assert_eq!(
                 meta.roster()[0].client,
-                RecordedClient::Label("cc-mic".to_owned()),
+                RecordedClient::Label("cc-work".to_owned()),
                 "{text:?}"
             );
             assert!(meta.anomalies().is_empty(), "{text:?}");
@@ -6490,13 +6490,13 @@ agent_bin.main=claude
             "client.main=\nseat.main=lead\n",
             "seat.main=lead\nclient.main\n",
             "client.main\nseat.main=lead\n",
-            "seat.main=lead\nclient.main=cc-mic\nclient.main=cc\n",
-            "client.main=cc-mic\nclient.main=cc\nseat.main=lead\n",
-            "seat.main=lead\nclient.main=cc mic\n",
-            "seat.main=lead\nclient.main=fablex@cc-mic\n",
+            "seat.main=lead\nclient.main=cc-work\nclient.main=cc\n",
+            "client.main=cc-work\nclient.main=cc\nseat.main=lead\n",
+            "seat.main=lead\nclient.main=cc alt\n",
+            "seat.main=lead\nclient.main=fablex@cc-work\n",
             "seat.main=lead\nclient.main=-lead\n",
             "seat.main=lead\nclient.main=_lead\n",
-            "seat.main=lead\nclient.main=cc\tmic\n",
+            "seat.main=lead\nclient.main=cc\talt\n",
         ]
         .iter()
         .map(ToString::to_string)
@@ -6517,8 +6517,8 @@ agent_bin.main=claude
         }
         // Only a label round-trips; Missing and Invalid emit no row.
         assert_eq!(
-            RecordedClient::Label("cc-mic".to_owned()).record_value(),
-            Some("cc-mic".to_owned())
+            RecordedClient::Label("cc-work".to_owned()).record_value(),
+            Some("cc-work".to_owned())
         );
         assert_eq!(RecordedClient::Missing.record_value(), None);
         assert_eq!(RecordedClient::Invalid.record_value(), None);

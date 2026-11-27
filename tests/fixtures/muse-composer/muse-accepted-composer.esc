@@ -6,7 +6,7 @@
 
 [38;2;90;160;255m[48;2;38;56;84m❯ [38;2;204;211;219m⟦ae:msg from watchdog⟧[39m
 [38;2;90;160;255m  [38;2;204;211;219mStatus check: if you have more work, continue. Otherwise declare your state so
-[38;2;90;160;255m  [38;2;204;211;219mI stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state[39m
+[38;2;90;160;255m  [38;2;204;211;219mI stop nudging: /Users/x/.ae-dev/sessions/musecapture/state[39m
 [38;2;90;160;255m  [38;2;204;211;219m<waiting-user|waiting-agent|blocked|done> "<reason>"[39m
 [49m
 [1m[38;2;243;139;168m◆ [0m[38;2;243;139;168mUsage limit reached · /upgrade[39m

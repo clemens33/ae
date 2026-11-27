@@ -480,7 +480,7 @@ fn buildx_after_preflight_client_and_meta_failures_rollback_but_keep_saved_state
         rig.without_chat();
         keeper(&rig);
         let args = if fault == "different" {
-            vec!["--local", "bxRefusal", "--lead", "fablex@cc-mic"]
+            vec!["--local", "bxRefusal", "--lead", "fablex@cc-work"]
         } else {
             vec!["--local", "bxRefusal"]
         };
@@ -513,7 +513,7 @@ fn buildx_after_preflight_client_and_meta_failures_rollback_but_keep_saved_state
         let expected = match fault {
             "invalid" => "Error: session 'bxRefusal' seat 'lead' records an unusable client (client.main is empty, duplicated or malformed) — fix the meta row, or end the session (ae end bxRefusal).".to_owned(),
             "added" => "Error: session 'bxRefusal' seat 'lead' recorded client override 'claude' while this launch was starting — nothing was resumed; retry the launch.".to_owned(),
-            "different" => "Error: session 'bxRefusal' seat 'lead' recorded client override 'claude' but this launch selects 'cc-mic' — a recorded client is write-once. Resume with 'fablex@claude', restore the 'claude' client, or end the session (ae end bxRefusal).".to_owned(),
+            "different" => "Error: session 'bxRefusal' seat 'lead' recorded client override 'claude' but this launch selects 'cc-work' — a recorded client is write-once. Resume with 'fablex@claude', restore the 'claude' client, or end the session (ae end bxRefusal).".to_owned(),
             "read" => "cannot read the meta to carry recorded clients: Is a directory (os error 21)".to_owned(),
             _ => unreachable!("closed fault cases"),
         };

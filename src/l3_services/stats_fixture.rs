@@ -73,9 +73,9 @@ pub(crate) fn fields(
 /// T has births8–9. Linked modern announcements never add another birth.
 pub(crate) fn matrix() -> (Vec<u8>, Vec<u8>) {
     let s_rows = [
-        fields("claude", Some("claude-p"), Some("sonnet"), Some("high")),
-        fields("claude", Some("claude-mic"), Some("sonnet"), Some("high")),
-        fields("claude", Some("claude-p"), Some("opus"), Some("max")),
+        fields("claude", Some("claude-a"), Some("sonnet"), Some("high")),
+        fields("claude", Some("claude-work"), Some("sonnet"), Some("high")),
+        fields("claude", Some("claude-a"), Some("opus"), Some("max")),
         fields("codex", Some("codex"), Some("sol"), Some("high")),
         format!(
             "{},\"birth_model_unproved\":\"unsupported\",\"birth_effort_unproved\":\"unsupported\"",
@@ -83,7 +83,7 @@ pub(crate) fn matrix() -> (Vec<u8>, Vec<u8>) {
         ),
         format!(
             "{},\"birth_model_unproved\":\"ambiguous-model\"",
-            fields("claude", Some("claude-p"), None, Some("high"))
+            fields("claude", Some("claude-a"), None, Some("high"))
         ),
         format!(
             "{},\"birth_effort_unproved\":\"unknown-effort\"",
@@ -103,7 +103,7 @@ pub(crate) fn matrix() -> (Vec<u8>, Vec<u8>) {
         8,
         &fields(
             "claude",
-            Some("claude-p"),
+            Some("claude-a"),
             Some("claude-sonnet-5-5"),
             Some("high"),
         ),

@@ -6,6 +6,6 @@
   ┃
   ┃  Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]
   ┃
-  ┃  Build · DeepSeek V4.1 Flash Free Default / OpenCode                    ~/projects/clemens33/ae:main
+  ┃  Build · DeepSeek V4.1 Flash Free Default / OpenCode                    ~/projects/workspace/ae:main
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
                                                                                        ctrl+p commands    • OpenCode 1.19.3

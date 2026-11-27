@@ -17,4 +17,4 @@
 
 › Ask Codex to do anything
 
-  GPT-6-Astra low · ~/projects/clemens33/ae · main · Context 8% used · weekly 37% left
+  GPT-6-Astra low · ~/projects/workspace/ae · main · Context 8% used · weekly 37% left

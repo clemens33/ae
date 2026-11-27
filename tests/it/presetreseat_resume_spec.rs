@@ -37,7 +37,7 @@ fn reseated_then_stopped(tag: &str, session: &str, spawned: bool) -> Rig {
     let full = std::fs::read_to_string(&rig.config).expect("fixture config");
     std::fs::write(
         &rig.config,
-        format!("{full}\n[client_pairs]\ndestination = cc-mic\n"),
+        format!("{full}\n[client_pairs]\ndestination = cc-work\n"),
     )
     .expect("explicit global approval");
     let (code, out, err) = rig.launch(&["--local", session, "--lead", "solx"]);
@@ -73,7 +73,7 @@ fn reseated_then_stopped(tag: &str, session: &str, spawned: bool) -> Rig {
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("AE_SENDER_OVERRIDE")
-        .args(["reseat", session, name, "--using", "destination@cc-mic"])
+        .args(["reseat", session, name, "--using", "destination@cc-work"])
         .output()
         .expect("real public reseat");
     assert!(out.status.success(), "{out:?}");
@@ -83,7 +83,7 @@ fn reseated_then_stopped(tag: &str, session: &str, spawned: bool) -> Rig {
         "{moved}"
     );
     assert!(
-        moved.contains(&format!("client.{slot}=cc-mic\n")),
+        moved.contains(&format!("client.{slot}=cc-work\n")),
         "{moved}"
     );
     stop(&rig, session);
@@ -108,7 +108,7 @@ fn assert_resumed(rig: &Rig, session: &str, slot: &str) {
         !log.contains("side=a"),
         "default executable must not replace recorded override: {log}"
     );
-    let store = std::fs::canonicalize(rig.scratch.join(".claude-mic")).expect("override store");
+    let store = std::fs::canonicalize(rig.scratch.join(".claude-work")).expect("override store");
     assert!(
         log.contains(&format!("CLAUDE_CONFIG_DIR={}", store.display())),
         "override account: {log}"
@@ -119,7 +119,7 @@ fn assert_resumed(rig: &Rig, session: &str, slot: &str) {
         "{rebuilt}"
     );
     assert!(
-        rebuilt.contains(&format!("client.{slot}=cc-mic\n")),
+        rebuilt.contains(&format!("client.{slot}=cc-work\n")),
         "{rebuilt}"
     );
     assert!(

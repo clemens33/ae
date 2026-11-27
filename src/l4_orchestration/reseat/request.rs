@@ -1457,7 +1457,7 @@ mod tests {
             slot: MAIN_SLOT.to_owned(),
             agent: "orchestrator".to_owned(),
             launch: LAUNCH.to_owned(),
-            to: "opus55x@cc-mic".to_owned(),
+            to: "opus55x@cc-work".to_owned(),
             id: ID.to_owned(),
             at: Timestamp::from_epoch(1_800_000_000),
         }
@@ -1475,7 +1475,7 @@ mod tests {
             render(&request()),
             format!(
                 "ae-self-reseat v1\nsession {UUID}\nslot main\nagent orchestrator\nlaunch \
-                 {LAUNCH}\nto opus55x@cc-mic\nid {ID}\nat 2027-01-15T08:00:00Z\n"
+                 {LAUNCH}\nto opus55x@cc-work\nid {ID}\nat 2027-01-15T08:00:00Z\n"
             )
         );
     }
@@ -1494,9 +1494,9 @@ mod tests {
             (swap("slot main", "slot worker.1"), "slot line"),
             (swap("agent orchestrator", "agent -x"), "agent line"),
             (swap(&format!("launch {LAUNCH}"), "launch x"), "launch line"),
-            (swap("to opus55x@cc-mic", "to a@b@c"), "to line"),
-            (swap("to opus55x@cc-mic", "to @b"), "to line"),
-            (swap("to opus55x@cc-mic", "to a=b"), "to line"),
+            (swap("to opus55x@cc-work", "to a@b@c"), "to line"),
+            (swap("to opus55x@cc-work", "to @b"), "to line"),
+            (swap("to opus55x@cc-work", "to a=b"), "to line"),
             (swap(&format!("id {ID}"), "id 1"), "id line"),
             (swap("at 2027-01-15T08:00:00Z", "at yesterday"), "at line"),
             (swap("\nslot", "\r\nslot"), "session line"),
@@ -1517,7 +1517,7 @@ mod tests {
     #[test]
     fn a_destination_takes_one_client_at_most() {
         assert!(is_destination("opus55x"));
-        assert!(is_destination("opus55x@cc-mic"));
+        assert!(is_destination("opus55x@cc-work"));
         for bad in ["", "@", "a@", "@b", "a@b@c", "a b", "a=b", &"x".repeat(161)] {
             assert!(!is_destination(bad), "{bad:?}");
         }

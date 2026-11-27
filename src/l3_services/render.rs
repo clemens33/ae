@@ -3751,14 +3751,14 @@ mod tests {
             &dir,
             "global",
             "[profiles]\nopus55x = \"claude\"\nfable5x = \"claude\"\n\
-             [client_pairs]\nopus55x = cc-mic, cc-p\nfable5x = cc-p\nscout5x = cc-p\n",
+             [client_pairs]\nopus55x = cc-work, cc-p\nfable5x = cc-p\nscout5x = cc-p\n",
         );
         let document = manifest_recording(&dir, &global.display().to_string(), &[&global]);
         let guidance = spawn_profiles(&document);
         // `scout5x` has no `[profiles]` row: the list prints what the gate's
         // POLICY step accepts, and existence is a later step, so it is listed.
         for pair in [
-            "opus55x@cc-mic",
+            "opus55x@cc-work",
             "opus55x@cc-p",
             "fable5x@cc-p",
             "scout5x@cc-p",
@@ -3766,7 +3766,7 @@ mod tests {
             assert!(guidance.contains(pair), "{pair} is not listed: {guidance}");
         }
         assert!(
-            !guidance.contains("fable5x@cc-mic"),
+            !guidance.contains("fable5x@cc-work"),
             "an unapproved pair is listed: {guidance}"
         );
         assert!(!document.contains("${"), "a marker survived: {document}");
@@ -3778,7 +3778,7 @@ mod tests {
     #[test]
     fn a_project_overlay_pair_is_never_listed() {
         let dir = scratch("pairs-overlay");
-        let global = write(&dir, "global", "[client_pairs]\nopus55x = cc-mic\n");
+        let global = write(&dir, "global", "[client_pairs]\nopus55x = cc-work\n");
         let local = write(
             &dir,
             "local",
@@ -3790,7 +3790,7 @@ mod tests {
             &[global.as_path(), local.as_path()],
         );
         let guidance = spawn_profiles(&layered);
-        assert!(guidance.contains("opus55x@cc-mic"), "{guidance}");
+        assert!(guidance.contains("opus55x@cc-work"), "{guidance}");
         assert!(
             !guidance.contains("cc-p"),
             "an overlay pair leaked: {guidance}"
@@ -3817,7 +3817,7 @@ mod tests {
         let global = write(
             &dir,
             "global",
-            "[client_pairs]\nopus55x = cc-mic,,cc-p\nfable5x = cc-p\n",
+            "[client_pairs]\nopus55x = cc-work,,cc-p\nfable5x = cc-p\n",
         );
         let recorded = global.display().to_string();
         let guidance = spawn_profiles(&manifest_recording(&dir, &recorded, &[&global])).to_owned();
@@ -3832,7 +3832,11 @@ mod tests {
         );
 
         // With no usable row there is no approved heading, only the refusal.
-        let all_void = write(&dir, "all-void", "[client_pairs]\nopus55x = cc-mic,,cc-p\n");
+        let all_void = write(
+            &dir,
+            "all-void",
+            "[client_pairs]\nopus55x = cc-work,,cc-p\n",
+        );
         let recorded = all_void.display().to_string();
         let guidance =
             spawn_profiles(&manifest_recording(&dir, &recorded, &[&all_void])).to_owned();
@@ -3848,7 +3852,7 @@ mod tests {
         let torn = write(
             &dir,
             "torn",
-            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus55x = cc-mic\n",
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus55x = cc-work\n",
         );
         let recorded = torn.display().to_string();
         let guidance = spawn_profiles(&manifest_recording(&dir, &recorded, &[&torn])).to_owned();

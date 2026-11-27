@@ -240,7 +240,7 @@ mod tests {
         );
         assert_eq!(user_home(Path::new("/")), None);
         assert_eq!(own_server_name(), "ae");
-        for good in ["a", "mic", "work-2", "0", &"x".repeat(24)] {
+        for good in ["a", "alt", "work-2", "0", &"x".repeat(24)] {
             assert!(is_instance_name(good), "{good}");
         }
         for bad in ["", "dev", "Work", "-a", "a_b", "a.b", ".a", &"x".repeat(25)] {

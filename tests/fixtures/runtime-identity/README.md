@@ -16,12 +16,12 @@ opencode identity pins need the plain serialisation of frames whose recorded
 specimens are `-e` ANSI captures. `muse-idle-plain-80x24.txt` and
 `muse-occupied-plain-80x24.txt` are the SGR-strip of
 `tests/fixtures/muse-composer/muse-idle-composer.esc` (source sha256
-`e086277a93f190367f8d6328a7d4b105e47a5fe795d3ed389f9b708bd4ae1055`) and
+`38f8895b2ffe983cb564803f3170e166ba80a7ab82fb554d1c103a55c4f5c0f3`) and
 `muse-occupied-composer.esc` (source sha256
-`8536d03c560fb380b408bae27548b8070f64513fad160e1e43efc44bbbde0b47`);
+`0ee80b0d906be3afac11a70780c357776d922ca573f1320336747c9db9230a32`);
 `opencode-composed-plain-80x24.txt` is the same strip of
 `tests/fixtures/opencode-composer/opencode-composed-frame.esc` (source sha256
-`581d6b2cdb67565946fb0b9c1f35e49ed6c65d7fa8db4aaa0b9fb8320d54de82`). The
+`fb83ee1d70ad46de6b273abcdb0493109fb98b44c9ca079c4bf72acc0b625f60`). The
 sha256s name the SOURCE specimens, not the derived files. Each strip was then
 scrubbed: the home path becomes `/home/u`, the ae-dev session path becomes
 `/home/u/.ae/sessions/work`, and `~/projects/<org>` becomes `~/projects/u`.

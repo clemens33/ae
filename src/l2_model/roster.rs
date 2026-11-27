@@ -175,17 +175,17 @@ mod tests {
         );
         // Honored override: the bare profile keeps its row and the client
         // carries its own, directly after it.
-        seats[0].client = Some("cc-mic".to_owned());
+        seats[0].client = Some("cc-work".to_owned());
         let block = render(&seats);
         assert_eq!(
             block,
-            "schema=2\nseat.main=lead\nprofile.main=fable5\nclient.main=cc-mic\nagent_bin.main=claude\n"
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nclient.main=cc-work\nagent_bin.main=claude\n"
         );
         let roster = Meta::parse(&block).roster().to_vec();
         assert_eq!(roster[0].profile.as_deref(), Some("fable5"));
         assert_eq!(
             roster[0].client,
-            crate::meta::RecordedClient::Label("cc-mic".to_owned())
+            crate::meta::RecordedClient::Label("cc-work".to_owned())
         );
     }
 

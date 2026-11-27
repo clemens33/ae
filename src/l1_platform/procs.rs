@@ -1079,7 +1079,7 @@ mod tests {
         // reads the full path on macOS.
         let procs = vec![
             trow(100, 1, "fish"),
-            trow(200, 100, "/Users/ckriech/.local/bin/muse-bin-1.4.0-R4302.1"),
+            trow(200, 100, "/Users/x/.local/bin/muse-bin-1.4.0-R4302.1"),
         ];
         assert_eq!(descendancy(Some(&procs), 100, "muse"), Descendancy::Present);
         assert_eq!(

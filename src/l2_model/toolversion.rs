@@ -38,7 +38,7 @@ pub enum Why {
     /// The answer holds no release word.
     Unparseable,
     /// The seat's program is not a harness ae classifies (a wrapper such as
-    /// `cc` or `codex-mic`), so it was never asked and nothing is guessed.
+    /// `cc` or `codex-work`), so it was never asked and nothing is guessed.
     Unclassified,
 }
 
@@ -322,11 +322,11 @@ mod tests {
         );
         assert_eq!(
             cell(
-                "codex-mic",
+                "codex-work",
                 ToolKind::Unknown,
                 &Seen::Unknown(Why::Unclassified)
             ),
-            "codex-mic unknown (unclassified) (measured: none)"
+            "codex-work unknown (unclassified) (measured: none)"
         );
     }
 }

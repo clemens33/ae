@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! [client_pairs]
-//! opus55x = cc-mic, cc-p   # profile = the clients it may run on
+//! opus55x = cc-work, cc-p   # profile = the clients it may run on
 //! ```
 //!
 //! Policy lives here and nowhere else: written policy (the `spawn_instructions`
@@ -289,52 +289,52 @@ mod tests {
 
     #[test]
     fn a_listed_pair_is_approved_and_an_unlisted_one_names_what_is() {
-        let list = pairs("opus = cc-mic, cc-p\n");
-        assert_eq!(list.judge("opus", "cc-mic"), Verdict::Approved);
+        let list = pairs("opus = cc-work, cc-p\n");
+        assert_eq!(list.judge("opus", "cc-work"), Verdict::Approved);
         assert_eq!(list.judge("opus", "cc-p"), Verdict::Approved);
-        assert_eq!(list.judge("opus", "cc"), unlisted(&["cc-mic", "cc-p"]));
-        assert_eq!(list.judge("other", "cc-mic"), unlisted(&[]));
+        assert_eq!(list.judge("opus", "cc"), unlisted(&["cc-work", "cc-p"]));
+        assert_eq!(list.judge("other", "cc-work"), unlisted(&[]));
     }
 
     #[test]
     fn matching_is_exact_and_case_sensitive() {
-        let list = pairs("opus = cc-mic\n");
-        assert_eq!(list.judge("Opus", "cc-mic"), unlisted(&[]));
-        assert_eq!(list.judge("opus", "CC-MIC"), unlisted(&["cc-mic"]));
+        let list = pairs("opus = cc-work\n");
+        assert_eq!(list.judge("Opus", "cc-work"), unlisted(&[]));
+        assert_eq!(list.judge("opus", "CC-WORK"), unlisted(&["cc-work"]));
     }
 
     #[test]
     fn whitespace_around_entries_is_trimmed_and_repeats_collapse() {
-        let list = pairs("opus =  cc-mic ,cc-p,  cc-mic\n");
+        let list = pairs("opus =  cc-work ,cc-p,  cc-work\n");
         assert_eq!(list.judge("opus", "cc-p"), Verdict::Approved);
         assert_eq!(
             list.judge("opus", "nope"),
-            unlisted(&["cc-mic", "cc-p"]),
+            unlisted(&["cc-work", "cc-p"]),
             "the repeated label collapsed"
         );
     }
 
     #[test]
     fn a_comment_after_the_list_is_not_part_of_it() {
-        let list = pairs("opus = cc-mic   # the mic login\n");
-        assert_eq!(list.judge("opus", "cc-mic"), Verdict::Approved);
+        let list = pairs("opus = cc-work   # the work login\n");
+        assert_eq!(list.judge("opus", "cc-work"), Verdict::Approved);
     }
 
     #[test]
     fn a_row_ae_cannot_read_in_full_approves_nothing() {
         for body in [
             "opus =\n",
-            "opus = cc-mic,\n",
-            "opus = ,cc-mic\n",
-            "opus = cc-mic,,cc-p\n",
-            "opus = cc-mic, cc mic\n",
-            "opus = cc-mic, -bad\n",
+            "opus = cc-work,\n",
+            "opus = ,cc-work\n",
+            "opus = cc-work,,cc-p\n",
+            "opus = cc-work, cc alt\n",
+            "opus = cc-work, -bad\n",
         ] {
             let list = pairs(body);
             assert!(
-                matches!(list.judge("opus", "cc-mic"), Verdict::Void { .. }),
+                matches!(list.judge("opus", "cc-work"), Verdict::Void { .. }),
                 "{body:?} must void the whole row: {:?}",
-                list.judge("opus", "cc-mic")
+                list.judge("opus", "cc-work")
             );
         }
     }
@@ -360,42 +360,48 @@ mod tests {
 
     #[test]
     fn a_profile_keyed_twice_is_void_not_last_wins() {
-        let list = pairs("opus = cc-mic\nopus = cc-p\n");
+        let list = pairs("opus = cc-work\nopus = cc-p\n");
         assert!(matches!(list.judge("opus", "cc-p"), Verdict::Void { .. }));
-        assert!(matches!(list.judge("opus", "cc-mic"), Verdict::Void { .. }));
+        assert!(matches!(
+            list.judge("opus", "cc-work"),
+            Verdict::Void { .. }
+        ));
     }
 
     #[test]
     fn a_key_repeated_across_two_headers_is_a_duplicate_too() {
         let list = parse_in(
             Path::new("config"),
-            "[client_pairs]\nopus = cc-mic\n[workspace]\nmain = lead\n[client_pairs]\nopus = cc-p\n",
+            "[client_pairs]\nopus = cc-work\n[workspace]\nmain = lead\n[client_pairs]\nopus = cc-p\n",
         );
-        assert!(matches!(list.judge("opus", "cc-mic"), Verdict::Void { .. }));
+        assert!(matches!(
+            list.judge("opus", "cc-work"),
+            Verdict::Void { .. }
+        ));
     }
 
     #[test]
     fn a_void_row_does_not_touch_other_profiles() {
-        let list = pairs("opus = cc-mic,,cc-p\nfable = cc-p\n");
+        let list = pairs("opus = cc-work,,cc-p\nfable = cc-p\n");
         assert_eq!(list.judge("fable", "cc-p"), Verdict::Approved);
     }
 
     #[test]
     fn a_key_no_profile_can_carry_is_inert() {
-        let list = pairs("a@b = cc-mic\nopus = cc-mic\n");
-        assert_eq!(list.judge("opus", "cc-mic"), Verdict::Approved);
-        assert_eq!(list.judge("a@b", "cc-mic"), unlisted(&[]));
+        let list = pairs("a@b = cc-work\nopus = cc-work\n");
+        assert_eq!(list.judge("opus", "cc-work"), Verdict::Approved);
+        assert_eq!(list.judge("a@b", "cc-work"), unlisted(&[]));
     }
 
     #[test]
     fn other_sections_and_absence_approve_nothing() {
         let other = parse_in(
             Path::new("config"),
-            "[auto_reseat]\nopus = cc-mic\n[profiles]\nopus = \"claude\"\n",
+            "[auto_reseat]\nopus = cc-work\n[profiles]\nopus = \"claude\"\n",
         );
-        assert_eq!(other.judge("opus", "cc-mic"), unlisted(&[]));
+        assert_eq!(other.judge("opus", "cc-work"), unlisted(&[]));
         assert_eq!(
-            ApprovedPairs::default().judge("opus", "cc-mic"),
+            ApprovedPairs::default().judge("opus", "cc-work"),
             unlisted(&[])
         );
     }
@@ -403,7 +409,7 @@ mod tests {
     #[test]
     fn a_refusal_names_where_the_human_approves_and_what_is_allowed() {
         let global = Path::new("/h/.ae/config");
-        let list = pairs("opus = cc-mic, cc-p\n");
+        let list = pairs("opus = cc-work, cc-p\n");
         let line = list
             .judge("opus", "cc")
             .refusal("opus", global)
@@ -411,7 +417,7 @@ mod tests {
         assert!(line.contains("is not an approved pair"), "{line}");
         assert!(line.contains("[client_pairs] in /h/.ae/config"), "{line}");
         assert!(
-            line.contains("Approved clients for 'opus': cc-mic, cc-p."),
+            line.contains("Approved clients for 'opus': cc-work, cc-p."),
             "{line}"
         );
         let bare = list
@@ -425,9 +431,9 @@ mod tests {
     #[test]
     fn a_void_refusal_says_why_and_clips_a_hostile_entry() {
         let global = Path::new("/h/.ae/config");
-        let hostile = format!("opus = cc-mic, {}\n", "x".repeat(200));
+        let hostile = format!("opus = cc-work, {}\n", "x".repeat(200));
         let line = pairs(&hostile)
-            .judge("opus", "cc-mic")
+            .judge("opus", "cc-work")
             .refusal("opus", global)
             .expect("void refuses");
         assert!(line.contains("[client_pairs] 'opus' is unusable"), "{line}");
@@ -439,18 +445,18 @@ mod tests {
 
     #[test]
     fn the_guidance_lists_each_usable_row_as_whole_pairs_in_file_order() {
-        let text = pairs("opus = cc-mic, cc-p, cc-mic\nfable = cc-p\n")
+        let text = pairs("opus = cc-work, cc-p, cc-work\nfable = cc-p\n")
             .guidance(Path::new(GLOBAL))
             .expect("two rows say something");
         assert_eq!(
             text,
-            format!("{HEADER}\n- opus@cc-mic, opus@cc-p\n- fable@cc-p")
+            format!("{HEADER}\n- opus@cc-work, opus@cc-p\n- fable@cc-p")
         );
     }
 
     #[test]
     fn the_guidance_names_a_void_row_in_the_refusals_words_and_lists_the_rest() {
-        let text = pairs("opus = cc-mic,,cc-p\nfable = cc-p\n")
+        let text = pairs("opus = cc-work,,cc-p\nfable = cc-p\n")
             .guidance(Path::new(GLOBAL))
             .expect("one usable and one void row say something");
         assert_eq!(
@@ -459,8 +465,8 @@ mod tests {
                 "{HEADER}\n- fable@cc-p\n- [client_pairs] 'opus' is unusable (the list has an empty entry): no pair is approved for it."
             )
         );
-        let refusal = pairs("opus = cc-mic,,cc-p\n")
-            .judge("opus", "cc-mic")
+        let refusal = pairs("opus = cc-work,,cc-p\n")
+            .judge("opus", "cc-work")
             .refusal("opus", Path::new(GLOBAL))
             .expect("void refuses");
         assert!(
@@ -471,7 +477,7 @@ mod tests {
 
     #[test]
     fn the_guidance_of_only_void_rows_has_no_approved_heading() {
-        let text = pairs("opus = cc-mic\nopus = cc-p\n")
+        let text = pairs("opus = cc-work\nopus = cc-p\n")
             .guidance(Path::new(GLOBAL))
             .expect("a void row says something");
         assert_eq!(
@@ -484,12 +490,12 @@ mod tests {
     fn the_guidance_of_an_unreadable_section_lists_no_pair() {
         let list = parse_in(
             Path::new("config"),
-            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus = cc-mic\n",
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus = cc-work\n",
         );
         let text = list
             .guidance(Path::new(GLOBAL))
             .expect("an unreadable section says why");
-        let Verdict::Unreadable(why) = list.judge("opus", "cc-mic") else {
+        let Verdict::Unreadable(why) = list.judge("opus", "cc-work") else {
             panic!("the section must be unreadable");
         };
         assert!(!why.is_empty(), "the reason is empty");
@@ -509,17 +515,17 @@ mod tests {
         let other = parse_in(Path::new("config"), "[profiles]\nopus = \"claude\"\n");
         assert_eq!(other.guidance(global), None);
         // An inert key (no profile can carry it) says nothing either.
-        assert_eq!(pairs("a@b = cc-mic\n").guidance(global), None);
+        assert_eq!(pairs("a@b = cc-work\n").guidance(global), None);
     }
 
     #[test]
     fn a_section_that_cannot_be_read_approves_nothing() {
         let list = parse_in(
             Path::new("config"),
-            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus = cc-mic\n",
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus = cc-work\n",
         );
         assert!(matches!(
-            list.judge("opus", "cc-mic"),
+            list.judge("opus", "cc-work"),
             Verdict::Unreadable(_)
         ));
     }

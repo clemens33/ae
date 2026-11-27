@@ -223,9 +223,9 @@ fn an_answer_past_the_cap_records_oversize() {
 #[test]
 fn a_wrapper_that_hides_the_binary_is_never_asked_and_records_unclassified() {
     let rig = Rig::new("wrapper");
-    // `codex-mic` is not a binary ae classifies: whatever it prints, ae has no
+    // `codex-work` is not a binary ae classifies: whatever it prints, ae has no
     // rule that says it is a harness, so it is neither run nor believed.
-    rig.seat(&rig.tool("codex-mic", "echo 'codex-cli 0.199.1'"));
+    rig.seat(&rig.tool("codex-work", "echo 'codex-cli 0.199.1'"));
     rig.start();
     assert_eq!(
         rig.rows(),

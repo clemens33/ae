@@ -265,13 +265,13 @@ fn a_fresh_full_v2_entry_proven_to_be_the_seat_supplies_client_model_and_effort(
         Status::Running,
         LEAD,
         &[Some(true)],
-        Some(&full("lead:cl:working:%3:cc-mic:Spec Model 9:xhigh:!")),
+        Some(&full("lead:cl:working:%3:cc-work:Spec Model 9:xhigh:!")),
         Some(&panes),
         NOW,
     );
     assert_eq!(
         live(agent(&value, "lead")),
-        triple("cc-mic", "Spec Model 9", "xhigh")
+        triple("cc-work", "Spec Model 9", "xhigh")
     );
 }
 

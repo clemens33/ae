@@ -116,8 +116,8 @@ fn identity_matrix_keeps_routes_aliases_and_three_flag_states_separate() {
     assert_clients(
         all,
         &[
-            ("claude-p", 4),
-            ("claude-mic", 1),
+            ("claude-a", 4),
+            ("claude-work", 1),
             ("codex", 2),
             ("direct", 2),
             ("unknown", 3),
@@ -140,14 +140,14 @@ fn identity_matrix_keeps_routes_aliases_and_three_flag_states_separate() {
     assert_joint(
         all,
         &[
-            ("claude", "claude-p", "sonnet", "high", 1),
-            ("claude", "claude-mic", "sonnet", "high", 1),
-            ("claude", "claude-p", "opus", "max", 1),
+            ("claude", "claude-a", "sonnet", "high", 1),
+            ("claude", "claude-work", "sonnet", "high", 1),
+            ("claude", "claude-a", "opus", "max", 1),
             ("codex", "codex", "sol", "high", 1),
             ("muse", "direct", "unproved", "unproved", 1),
-            ("claude", "claude-p", "unproved", "high", 1),
+            ("claude", "claude-a", "unproved", "high", 1),
             ("codex", "codex", "sol", "unproved", 1),
-            ("claude", "claude-p", "claude-sonnet-5-5", "high", 1),
+            ("claude", "claude-a", "claude-sonnet-5-5", "high", 1),
             ("codex", "direct", "none set", "none set", 1),
             ("unknown", "unknown", "unknown", "unknown", 3),
         ],
@@ -173,7 +173,7 @@ fn identity_matrix_keeps_routes_aliases_and_three_flag_states_separate() {
 
 #[test]
 fn restart_noise_never_counts_and_retire_then_new_same_name_does() {
-    let fields = f::fields("claude", Some("claude-p"), Some("sonnet"), Some("high"));
+    let fields = f::fields("claude", Some("claude-a"), Some("sonnet"), Some("high"));
     let first = f::birth(f::S, 1, &fields);
     let mut bytes = first.clone();
     bytes.push_str(&f::link(1));
@@ -421,7 +421,7 @@ fn certificate_conflicts_poison_only_differing_cells_not_the_whole_tuple() {
     let a = f::birth(
         f::S,
         1,
-        &f::fields("claude", Some("claude-p"), Some("sonnet"), Some("high")),
+        &f::fields("claude", Some("claude-a"), Some("sonnet"), Some("high")),
     );
     let b = a.replace("\"birth_model\":\"sonnet\"", "\"birth_model\":\"opus\"");
     let view = stats::fold(
@@ -433,7 +433,7 @@ fn certificate_conflicts_poison_only_differing_cells_not_the_whole_tuple() {
     );
     assert_eq!(view.all.total, 1);
     assert_harness(&view.all, &[("claude", 1)]);
-    assert_clients(&view.all, &[("claude-p", 1)]);
+    assert_clients(&view.all, &[("claude-a", 1)]);
     assert_model_effort(&view.all, &[("unknown", "high", 1)]);
     assert_eq!((view.all.model_known, view.all.effort_known), (0, 1));
     assert_gap(&view.all, "conflict");
@@ -459,7 +459,7 @@ fn bad_and_newer_certificates_report_gaps_without_inventing_defaults() {
     let original = f::birth(
         f::S,
         1,
-        &f::fields("claude", Some("claude-p"), Some("sonnet"), Some("high")),
+        &f::fields("claude", Some("claude-a"), Some("sonnet"), Some("high")),
     );
     let damaged = original.replace("\"birth_effort\":\"high\"", "\"birth_effort\":7");
     let unsupported = f::birth(f::S, 2, &f::fields("codex", None, Some("sol"), None))
@@ -482,7 +482,7 @@ fn facts_before_parent_extensions_divergence_and_late_values_never_rewrite_confi
     let cert = f::birth(
         f::S,
         1,
-        &f::fields("claude", Some("claude-p"), Some("sonnet"), None),
+        &f::fields("claude", Some("claude-a"), Some("sonnet"), None),
     );
     let start = format!(",\"start\":\"spawned.0:{}:41\"", f::id(1));
     let attempt = f::fact(f::S, 1, "start-attempted", &start);
@@ -950,7 +950,7 @@ fn source_session_mismatch_cannot_borrow_trust_or_current_scope() {
     let cert = f::birth(
         f::T,
         1,
-        &f::fields("claude", Some("claude-p"), Some("sonnet"), Some("high")),
+        &f::fields("claude", Some("claude-a"), Some("sonnet"), Some("high")),
     );
     let view = stats::fold(vec![source("claims-S", f::S, cert.as_bytes())], Some(f::S));
     assert_eq!(view.all.total, 1);
@@ -997,11 +997,11 @@ fn current_metadata_and_profile_edits_never_backfill_history() {
     let cert = f::birth(
         f::S,
         1,
-        &f::fields("claude", Some("claude-p"), Some("sonnet"), Some("high")),
+        &f::fields("claude", Some("claude-a"), Some("sonnet"), Some("high")),
     );
     let bytes = format!("{cert}{}", f::legacy(f::PRIVATE)).into_bytes();
     let meta = format!(
-        "session_id={}\nseat.spawned.0=scout\nprofile.spawned.0={}\nclient.spawned.0=claude-mic\nmodel.spawned.0=opus\nobserved_model.spawned.0=opus\nobserved_effort.spawned.0=max\nagent_cmd.spawned.0={}\n",
+        "session_id={}\nseat.spawned.0=scout\nprofile.spawned.0={}\nclient.spawned.0=claude-work\nmodel.spawned.0=opus\nobserved_model.spawned.0=opus\nobserved_effort.spawned.0=max\nagent_cmd.spawned.0={}\n",
         f::S,
         f::PRIVATE,
         f::PRIVATE
@@ -1011,7 +1011,7 @@ fn current_metadata_and_profile_edits_never_backfill_history() {
         Some(f::S),
     );
     assert_eq!(view.all.total, 2);
-    assert_clients(&view.all, &[("claude-p", 1), ("unknown", 1)]);
+    assert_clients(&view.all, &[("claude-a", 1), ("unknown", 1)]);
     assert_model_effort(
         &view.all,
         &[("sonnet", "high", 1), ("unknown", "unknown", 1)],

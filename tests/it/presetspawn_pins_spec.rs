@@ -10,8 +10,11 @@ use ae::pairs::{Verdict, parse_in};
 
 fn refusal_for(entry: &str) -> String {
     let global = Path::new("config");
-    let pairs = parse_in(global, &format!("[client_pairs]\nopus = cc-mic, {entry}\n"));
-    let verdict = pairs.judge("opus", "cc-mic");
+    let pairs = parse_in(
+        global,
+        &format!("[client_pairs]\nopus = cc-work, {entry}\n"),
+    );
+    let verdict = pairs.judge("opus", "cc-work");
     assert!(
         matches!(verdict, Verdict::Void { .. }),
         "a bad entry voids the entire row: {verdict:?}"
@@ -25,10 +28,10 @@ fn refusal_for(entry: &str) -> String {
 #[test]
 fn presetspawn_bad_entry_refusal_preserves_and_escapes_the_entry() {
     for (entry, expected) in [
-        ("cc mic", r#""cc mic" is not a client label"#),
+        ("cc alt", r#""cc alt" is not a client label"#),
         (
-            "cc\t\"mic\\route",
-            r#""cc\t\"mic\\route" is not a client label"#,
+            "cc\t\"alt\\route",
+            r#""cc\t\"alt\\route" is not a client label"#,
         ),
     ] {
         let refusal = refusal_for(entry);

@@ -14,7 +14,7 @@ question. Captured 2026-09-18 in private probe panes (`tmux capture-pane -p`).
 | `agy-trust-modal-frame.txt` | folder-trust modal in a fresh dir, stable: question + two options, NO rules, NO composer — must NEVER read as composed |
 
 Scrubbed: account email → `someone@example.com`, worktree path
-`~/projects/clemens33/ae` → `~/projects/u/ae`, fresh-dir path →
+`~/projects/workspace/ae` → `~/projects/u/ae`, fresh-dir path →
 `/tmp/agy-trust-probe`. **Load-bearing:** the rule/`>`/rule fence, the
 footer literal, the footer as the last non-blank row at BOTH sizes, and the
 modal carrying the model label (`Gemini 3.8 Flash · high`) WITHOUT rules.

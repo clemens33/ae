@@ -2340,7 +2340,7 @@ mod pins {
         // A diagnostic that holds a key, a path or an escape yields no byte of them.
         for raw in [
             "error: invalid api key sk-ant-api03-ABCdef123",
-            "/home/x/.claude-p/bin v1",
+            "/home/x/.claude-a/bin v1",
             "\u{1b}[31m\n",
             "key=abc123DEF456ghi789",
             "",

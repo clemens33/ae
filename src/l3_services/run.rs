@@ -1811,7 +1811,7 @@ fn record_launch(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> s
 /// What this start learned of its harness's release, as the row records it.
 /// Only a program whose binary ae classifies as a harness is asked, with the
 /// one fixed argument `--version`, and only the start's own `set` assignments
-/// reach it; a wrapper such as `cc` or `codex-mic` is never run and never
+/// reach it; a wrapper such as `cc` or `codex-work` is never run and never
 /// believed. Every failure is a reason, never a guess. NAMED RESIDUAL: the
 /// profile's `env -i` (`plan.clear`) and `env -u` (`plan.unset`) are not
 /// applied to the question, so the answer is the binary's own in ae's
@@ -4626,7 +4626,7 @@ mod tests {
             format!(
                 "[clients]\n\
                  claude = {}/a/claude\n\
-                 cc-mic = {}/b/claude config_home={}\n\
+                 cc-work = {}/b/claude config_home={}\n\
                  \n\
                  [profiles]\n\
                  fablex = \"claude --model fable\"\n\
@@ -4652,7 +4652,7 @@ mod tests {
                  config={}\n\
                  seat.main=lead\n\
                  profile.main=fablex\n\
-                 client.main=cc-mic\n\
+                 client.main=cc-work\n\
                  agent_bin.main=claude\n\
                  config_home.main={}\n",
                 root.display(),

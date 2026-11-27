@@ -2635,8 +2635,8 @@ fn trustfix_home_with_the_recorded_default_config_answers_at_both_measured_width
 #[test]
 fn trustfix_home_with_an_alternate_config_answers() {
     for (tag, frame, account) in [
-        ("home-mic", HOME_TRUST_HOOKS, ".claude-mic"),
-        ("home-p", HOME_TRUST, ".claude-p"),
+        ("home-work", HOME_TRUST_HOOKS, ".claude-work"),
+        ("home-p", HOME_TRUST, ".claude-a"),
     ] {
         let mut rig = Rig::new(tag, "claude", "normal");
         let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
@@ -2847,8 +2847,8 @@ fn trustfix_home_with_only_the_measured_settings_rows_answers_with_the_default_c
 #[test]
 fn trustfix_plain_claude_block_answers_with_an_alternate_config() {
     for (case, account, use_subdir) in [
-        ("plain-home-mic", ".claude-mic", false),
-        ("plain-other-p", ".claude-p", true),
+        ("plain-home-work", ".claude-work", false),
+        ("plain-other-p", ".claude-a", true),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
         let watchdog_home =
@@ -3039,13 +3039,13 @@ fn trustfix_folder_splits_without_a_measured_wrap_are_named_without_keys() {
 fn trustfix_home_answers_again_after_a_carried_reseat_into_another_config_home() {
     let mut rig = Rig::new("home-carried-reseat", "claude", "normal");
     let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
-    for account in [".claude", ".claude-mic", ".claude-p"] {
+    for account in [".claude", ".claude-work", ".claude-a"] {
         fs::create_dir(home.join(account)).unwrap_or_else(|why| panic!("{account}: {why}"));
     }
-    rig.replace_meta("profile.main", "claude-mic");
+    rig.replace_meta("profile.main", "claude-work");
     rig.replace_meta(
         "config_home.main",
-        &home.join(".claude-mic").display().to_string(),
+        &home.join(".claude-work").display().to_string(),
     );
     let predecessor = HOME_TRUST_HOOKS.replace(HOME_TRUST_FOLDER, &home.display().to_string());
     write(rig.root.join("frame"), &predecessor);
@@ -3057,10 +3057,10 @@ fn trustfix_home_answers_again_after_a_carried_reseat_into_another_config_home()
 
     // The carried reseat: another profile, config home and launch for the same
     // seat, then a new tool process that draws the HOME dialog again.
-    rig.replace_meta("profile.main", "claude-p");
+    rig.replace_meta("profile.main", "claude-a");
     rig.replace_meta(
         "config_home.main",
-        &home.join(".claude-p").display().to_string(),
+        &home.join(".claude-a").display().to_string(),
     );
     rig.replace_meta("launch_id.main", "start-two");
     let successor = HOME_TRUST.replace(HOME_TRUST_FOLDER, &home.display().to_string());

@@ -467,7 +467,7 @@ fn an_at_spelling_in_a_retire_summary_stays_unlocated() {
     std::fs::write(
         root.join("sessions/live/events.jsonl"),
         format!(
-            "{{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"past\",\"ref\":\"{RETIRED_ID}\",\"target_slot\":\"spawned.1\",\"summary\":\"tool=claude profile=fablex@cc-mic config_home={} config_home_base=\"}}\n",
+            "{{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"past\",\"ref\":\"{RETIRED_ID}\",\"target_slot\":\"spawned.1\",\"summary\":\"tool=claude profile=fablex@cc-work config_home={} config_home_base=\"}}\n",
             root.display()
         ),
     )

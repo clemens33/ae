@@ -207,7 +207,7 @@ fn d3_ceiling_scales_with_the_credited_rung_only() {
 
 // ── D4 ────────────────────────────────────────────────────────────────────
 
-const META: &str = "/Users/ckriech/.ae/sessions/aedev/";
+const META: &str = "/Users/x/.ae/sessions/aedev/";
 
 fn check(state: WaitState, escalated: bool, target: Option<&str>) -> WaitCheck<'_> {
     WaitCheck {

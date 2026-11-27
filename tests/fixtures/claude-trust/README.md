@@ -47,4 +47,4 @@ The probes sent no keys. The folder row alone is scrubbed to
 |---|---|
 | `claude-home-trust-2.1.330-default-108x44.txt` | Scratch HOME, `CLAUDE_CONFIG_DIR` unset, a hook in `~/.claude/settings.json`. The home sentence appears with no settings rows. |
 | `claude-home-trust-2.1.330-default-80x24.txt` | The same setup at 80×24. The home sentence wraps after “This is your”. |
-| `claude-home-trust-2.1.330-hooks-108x44.txt` | `CLAUDE_CONFIG_DIR=~/.claude-mic`, hooks in `~/.claude/settings.json`. The home sentence, hooks warning and settings source row all appear. |
+| `claude-home-trust-2.1.330-hooks-108x44.txt` | `CLAUDE_CONFIG_DIR=~/.claude-work`, hooks in `~/.claude/settings.json`. The home sentence, hooks warning and settings source row all appear. |

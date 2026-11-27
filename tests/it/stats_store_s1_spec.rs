@@ -586,7 +586,7 @@ fn replacing_same_source_id_drops_old_evidence_and_absent_remove_is_idempotent()
             cases::birth(
                 T,
                 9,
-                &cases::fields("claude", Some("claude-mic"), None, Some("max")),
+                &cases::fields("claude", Some("claude-work"), None, Some("max")),
             ),
             true,
         )],

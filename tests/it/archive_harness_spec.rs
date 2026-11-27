@@ -33,7 +33,7 @@ fn full_meta() -> String {
         "session=hx\nsession_id={AID}\nsession_id_origin=session\nschema=2\nmode=local\n\
          origin=/o\nlayout=vertical\n\
          seat.main=lead\nprofile.main=fable\nagent_bin.main=claude\n\
-         harness_session.main={}\nconfig_home.main=/h/.claude-mic\n\
+         harness_session.main={}\nconfig_home.main=/h/.claude-work\n\
          harness_session_prior.main=codex:{P1},{P2}\n\
          seat.worker.0=colead\nprofile.worker.0=sol\nagent_bin.worker.0=codex\n\
          harness_session.worker.0=pending\nconfig_home.worker.0=implicit:/h/.codex\n\
@@ -50,7 +50,7 @@ fn full_meta() -> String {
 fn full_record() -> Vec<u8> {
     format!(
         "version\t1\narchive_id\t{AID}\n\
-         main\tfable\tclaude\tpath:/h/.claude-mic\tmissing\tclaude:{CUR}\tcodex:{P1},claude:{P2}\n\
+         main\tfable\tclaude\tpath:/h/.claude-work\tmissing\tclaude:{CUR}\tcodex:{P1},claude:{P2}\n\
          worker.0\tsol\tcodex\timplicit:/h/.codex\tpath:/h\t\t\n\
          spawned.3\tx%25y\tgemini\tunknown\tmissing\tgemini:{P3}\t\n"
     )
@@ -75,7 +75,7 @@ fn harness_a_full_meta_encodes_to_the_exact_record() {
     assert_eq!(main.binary, "claude");
     assert_eq!(
         main.config_home,
-        RecordedConfigHome::Path(PathBuf::from("/h/.claude-mic"))
+        RecordedConfigHome::Path(PathBuf::from("/h/.claude-work"))
     );
     assert_eq!(main.config_home_base, RecordedConfigHomeBase::Missing);
     assert_eq!(main.current, Some(conv("claude", CUR)));
@@ -212,7 +212,7 @@ fn harness_parse_refuses_every_malformed_shape() {
     };
     let head = format!("version\t1\narchive_id\t{AID}\n");
     let swapped = format!("archive_id\t{AID}\nversion\t1\n");
-    let home = "path:/h/.claude-mic";
+    let home = "path:/h/.claude-work";
     let base = "\tmissing\tclaude:";
     let cur = format!("claude:{CUR}");
     let pri = format!("codex:{P1},claude:{P2}");

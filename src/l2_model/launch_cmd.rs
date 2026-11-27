@@ -1667,7 +1667,7 @@ mod tests {
                 ToolKind::Codex,
             ),
             (
-                "CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable --effort xhigh",
+                "CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --permission-mode bypassPermissions --model fable --effort xhigh",
                 "claude",
                 ToolKind::Claude,
             ),
@@ -1815,8 +1815,8 @@ mod tests {
                 ToolKind::Codex,
             ),
             (
-                "CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable --effort xhigh",
-                &["CLAUDE_CONFIG_DIR=$HOME/.claude-mic"],
+                "CLAUDE_CONFIG_DIR=$HOME/.claude-work claude --permission-mode bypassPermissions --model fable --effort xhigh",
+                &["CLAUDE_CONFIG_DIR=$HOME/.claude-work"],
                 7,
                 "claude",
                 ToolKind::Claude,
@@ -2260,15 +2260,14 @@ mod tests {
         "opusalt = \"claude --permission-mode bypassPermissions --model opus-5 --effort xhigh\"";
     const OPUS55X: &str = "opus55x = \"claude --permission-mode bypassPermissions --model claude-opus-5-5 --effort xhigh\"";
     const OPUS55ALT: &str = "opus55alt = \"claude --permission-mode bypassPermissions --model opus-5-5 --effort xhigh\"";
-    const MICFABLE: &str =
-        "claude-mic = \"cc-mic --permission-mode bypassPermissions --model fable --effort xhigh\"";
-    const MICOPUS: &str = "opus5x-mic = \"cc-mic --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
+    const WORK_FABLE: &str = "claude-work = \"cc-work --permission-mode bypassPermissions --model fable --effort xhigh\"";
+    const WORK_OPUS: &str = "opus5x-work = \"cc-work --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
     const CLAUDE_SEAT: &str =
         "claude --permission-mode bypassPermissions --model fable --effort xhigh";
 
     fn inventory(rows: &[&str]) -> String {
         format!(
-            "[clients]\nclaude = claude\ncc-mic = claude config_home=/accounts/mic\n\n[profiles]\n{}\n",
+            "[clients]\nclaude = claude\ncc-work = claude config_home=/accounts/work\n\n[profiles]\n{}\n",
             rows.join("\n")
         )
     }
@@ -2397,14 +2396,19 @@ mod tests {
         // the seat's own: a candidate's is ignored, and only its model value
         // is taken.
         assert_eq!(
-            follow(&[FABLEX, MICOPUS], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
+            follow(
+                &[FABLEX, WORK_OPUS],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5"
+            ),
             Err(FollowRefusal::NoCandidate),
             "a profile on another config home is never a candidate"
         );
-        let rows = [FABLEX, MICFABLE, MICOPUS];
-        let mic_seat = resolved_seat(&rows, "claude-mic");
+        let rows = [FABLEX, WORK_FABLE, WORK_OPUS];
+        let work_seat = resolved_seat(&rows, "claude-work");
         assert_eq!(
-            follow(&rows, &mic_seat, ToolKind::Claude, "Opus 5"),
+            follow(&rows, &work_seat, ToolKind::Claude, "Opus 5"),
             Ok("claude-opus-5".to_owned()),
             "the work seat follows the work profile"
         );

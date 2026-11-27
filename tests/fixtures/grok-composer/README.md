@@ -13,7 +13,7 @@ plain, the serialisation the readiness read uses).
 | `grok-draft-frame-80x24.txt` | a single-line draft (`draft from human`) typed after `❯`, 80×24: the box stays, the rail row reads `│ ❯ draft … │`, and the hint row replaces the version line |
 | `grok-wrapped-draft-frame-80x24.txt` | a draft long enough to wrap, 80×24: the input row plus two continuation `│` rail rows, the box grown by two |
 
-Scrubbed: worktree path `~/p/clemens33/ae` → `~/p/u/ae`. The footer quota
+Scrubbed: worktree path `~/p/workspace/ae` → `~/p/u/ae`. The footer quota
 number, model label and flags are incidental capture noise, never markers.
 **Load-bearing:** the box glyphs, `❯` on the input row, and the edge row two
 rows above the last non-blank row (the version line) at BOTH sizes. The

@@ -1976,12 +1976,12 @@ fn seat_override_values_split_into_profile_and_optional_client() {
         Ok(("fablex".to_owned(), None))
     );
     assert_eq!(
-        super::split_seat_override("fablex@cc-mic"),
-        Ok(("fablex".to_owned(), Some("cc-mic".to_owned())))
+        super::split_seat_override("fablex@cc-work"),
+        Ok(("fablex".to_owned(), Some("cc-work".to_owned())))
     );
     // (An empty VALUE never reaches the split: the plan parser refuses
     // empty `--lead` / `--seat` selections before preflight.)
-    for bad in ["@cc-mic", "fablex@", "@", "fablex@cc@mic"] {
+    for bad in ["@cc-work", "fablex@", "@", "fablex@cc@work"] {
         let line = super::split_seat_override(bad).expect_err("usage");
         assert!(
             line.contains(bad) && line.contains("<profile>@<client>"),
@@ -2000,7 +2000,7 @@ fn override_cfg() -> crate::config::IdentityConfig {
     crate::config::parse_identity(
         "[clients]\n\
              claude = claude\n\
-             cc-mic = claude config_home=$HOME/.claude-mic\n\
+             cc-work = claude config_home=$HOME/.claude-work\n\
              cc-other = claude config_home=$HOME/.claude-other\n\
              codex = codex\n\
              u1 = sleep-u1\n\
@@ -2030,17 +2030,17 @@ fn client_override_resolves_same_adapter_and_refuses_anything_else() {
         &cfg,
         "lead",
         "fablex",
-        "cc-mic",
+        "cc-work",
         Some(&home),
         "fablex, solx, weird1, weird2",
-        "claude, cc-mic, cc-other, codex, u1, u2",
+        "claude, cc-work, cc-other, codex, u1, u2",
     )
     .expect("same-adapter override resolves");
     assert_eq!(
         command.as_str(),
-        "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --model fable --effort xhigh"
     );
-    assert_eq!(command.client_label(), Some("cc-mic"));
+    assert_eq!(command.client_label(), Some("cc-work"));
     assert_eq!(parsed.binary, "claude");
     // Cross-adapter: both values named, duplicate profile as the way out.
     let line = match super::resolve_client_override(
@@ -2068,7 +2068,7 @@ fn client_override_resolves_same_adapter_and_refuses_anything_else() {
         ("weird1", "u2"),
         ("weird2", "u1"),
         ("fablex", "u1"),
-        ("weird1", "cc-mic"),
+        ("weird1", "cc-work"),
     ] {
         let refused = super::resolve_client_override(
             &cfg,
@@ -2112,10 +2112,10 @@ fn client_override_errors_mirror_the_unknown_profile_shape() {
         &cfg,
         "lead",
         "missing",
-        "cc-mic",
+        "cc-work",
         Some(&home),
         "fablex, solx",
-        "cc-mic, codex",
+        "cc-work, codex",
     ) {
         Err(super::SeatOverrideRefusal::Usage(line)) => assert_eq!(
             line,
@@ -2130,11 +2130,11 @@ fn client_override_errors_mirror_the_unknown_profile_shape() {
         "ghost",
         Some(&home),
         "fablex, solx",
-        "cc-mic, codex",
+        "cc-work, codex",
     ) {
         Err(super::SeatOverrideRefusal::Usage(line)) => assert_eq!(
             line,
-            "Error: unknown client 'ghost' in --seat. Known clients: cc-mic, codex."
+            "Error: unknown client 'ghost' in --seat. Known clients: cc-work, codex."
         ),
         other => panic!("unknown client must refuse Usage, got {other:?}"),
     }
@@ -2155,10 +2155,10 @@ fn recorded_client_states_resolve_or_refuse_with_their_remedy() {
         super::recorded_selection("s", &cfg, &entry),
         Ok(super::RecordedSelection::Missing)
     );
-    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-work\n");
     assert_eq!(
         super::recorded_selection("s", &cfg, &entry),
-        Ok(super::RecordedSelection::Label("cc-mic".to_owned()))
+        Ok(super::RecordedSelection::Label("cc-work".to_owned()))
     );
     let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=ghost\n");
     let line = super::recorded_selection("s", &cfg, &entry).expect_err("absent refuses");
@@ -2170,8 +2170,8 @@ fn recorded_client_states_resolve_or_refuse_with_their_remedy() {
     );
     for meta in [
         "seat.main=lead\nprofile.main=fablex\nclient.main=\n",
-        "seat.main=lead\nprofile.main=fablex\nclient.main=cc mic\n",
-        "seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\nclient.main=cc-other\n",
+        "seat.main=lead\nprofile.main=fablex\nclient.main=cc alt\n",
+        "seat.main=lead\nprofile.main=fablex\nclient.main=cc-work\nclient.main=cc-other\n",
     ] {
         let entry = recorded_entry(meta);
         let line = super::recorded_selection("s", &cfg, &entry).expect_err("invalid refuses");
@@ -2191,9 +2191,9 @@ fn recorded_client_states_resolve_or_refuse_with_their_remedy() {
 fn recorded_label_accepts_only_its_exact_label() {
     let cfg = override_cfg();
     let home = PathBuf::from("/Users/a");
-    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-work\n");
     let command = cfg
-        .command_with_client("fablex", "cc-mic", Some(&home))
+        .command_with_client("fablex", "cc-work", Some(&home))
         .expect("override resolves")
         .command;
     // The exact label, with no recorded store yet: first start proceeds.
@@ -2201,7 +2201,7 @@ fn recorded_label_accepts_only_its_exact_label() {
         "s",
         "lead",
         "fablex",
-        Some("cc-mic"),
+        Some("cc-work"),
         &entry,
         &cfg,
         &command,
@@ -2226,16 +2226,16 @@ fn recorded_label_accepts_only_its_exact_label() {
         other => panic!("different label must refuse, got {other:?}"),
     };
     assert!(
-        line.contains("'cc-mic'")
+        line.contains("'cc-work'")
             && line.contains("'cc-other'")
             && line.contains("write-once")
-            && line.contains("fablex@cc-mic"),
+            && line.contains("fablex@cc-work"),
         "{line:?}"
     );
     // Identical facts today change nothing: the equality cannot cross a
     // config edit, so even a twin store refuses by label.
     let twin = crate::config::parse_identity(
-        "[clients]\ncc-mic = claude config_home=/twin\ncc-twin = claude config_home=/twin\n\
+        "[clients]\ncc-work = claude config_home=/twin\ncc-twin = claude config_home=/twin\n\
              [profiles]\nfablex = \"claude --model fable\"\n\
              [roster]\nlead = fablex\n[workspace]\nmain = lead\n",
     )
@@ -2279,7 +2279,7 @@ fn recorded_label_accepts_only_its_exact_label() {
         other => panic!("bare re-pair must refuse, got {other:?}"),
     };
     assert!(
-        line.contains("'cc-mic'") && line.contains("astrax@cc-mic"),
+        line.contains("'cc-work'") && line.contains("astrax@cc-work"),
         "{line:?}"
     );
     // No recorded row and no selection: the legacy path is untouched.
@@ -2359,13 +2359,13 @@ fn first_override_against_a_recorded_store_retakes_the_triple() {
 #[test]
 fn store_conflict_compares_mode_path_and_base_never_path_alone() {
     let home = PathBuf::from("/home-op");
-    let mic = |store: &str| {
+    let store_config = |store: &str| {
         crate::config::parse_identity(&format!(
             "[clients]\ncc = claude config_home={store}\n\
                  [profiles]\nf = \"claude --model fable\"\n\
                  [roster]\nlead = f\n[workspace]\nmain = lead\n",
         ))
-        .expect("mic config")
+        .expect("store config")
     };
     let resolve = |cfg: &crate::config::IdentityConfig| {
         cfg.command_with_client("f", "cc", Some(&home))
@@ -2373,7 +2373,7 @@ fn store_conflict_compares_mode_path_and_base_never_path_alone() {
             .command
     };
     // Matching explicit store proceeds.
-    let cfg = mic("/store-a");
+    let cfg = store_config("/store-a");
     let command = resolve(&cfg);
     let entry = recorded_entry("seat.main=lead\nprofile.main=f\nconfig_home.main=/store-a\n");
     super::refuse_store_conflict(
@@ -2387,7 +2387,7 @@ fn store_conflict_compares_mode_path_and_base_never_path_alone() {
     )
     .expect("matching store proceeds");
     // A definition that moved under the label refuses, naming both.
-    let moved = mic("/store-b");
+    let moved = store_config("/store-b");
     let moved_command = resolve(&moved);
     let line = match super::refuse_store_conflict(
         "s",
@@ -2472,15 +2472,15 @@ fn store_conflict_edges_fail_closed_except_first_start_and_unknown_current() {
     let home = PathBuf::from("/Users/a");
     let cfg = override_cfg();
     let command = cfg
-        .command_with_client("fablex", "cc-mic", Some(&home))
+        .command_with_client("fablex", "cc-work", Some(&home))
         .expect("override resolves")
         .command;
     // First start: no recorded store, the override is recorded normally.
-    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+    let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-work\n");
     super::refuse_store_conflict(
         "s",
         "lead",
-        "fablex@cc-mic",
+        "fablex@cc-work",
         &entry,
         &command,
         ToolKind::Claude,
@@ -2497,7 +2497,7 @@ fn store_conflict_edges_fail_closed_except_first_start_and_unknown_current() {
             super::refuse_store_conflict(
                 "s",
                 "lead",
-                "fablex@cc-mic",
+                "fablex@cc-work",
                 &entry,
                 &command,
                 ToolKind::Claude,
@@ -2512,7 +2512,7 @@ fn store_conflict_edges_fail_closed_except_first_start_and_unknown_current() {
     let refused = super::refuse_store_conflict(
         "s",
         "lead",
-        "fablex@cc-mic",
+        "fablex@cc-work",
         &entry,
         &command,
         ToolKind::Claude,
@@ -2560,10 +2560,10 @@ fn profile_client_values_split_once_or_are_malformed() {
         Some(("opus".to_owned(), None))
     );
     assert_eq!(
-        super::split_profile_client("opus@cc-mic"),
-        Some(("opus".to_owned(), Some("cc-mic".to_owned())))
+        super::split_profile_client("opus@cc-work"),
+        Some(("opus".to_owned(), Some("cc-work".to_owned())))
     );
-    for bad in ["@cc-mic", "opus@", "@", "opus@cc@mic", "a@b@"] {
+    for bad in ["@cc-work", "opus@", "@", "opus@cc@work", "a@b@"] {
         assert_eq!(super::split_profile_client(bad), None, "{bad}");
     }
 }
@@ -2576,13 +2576,13 @@ fn a_spawn_pair_takes_the_adapter_gate_and_the_first_start_store_proof() {
     let cfg = override_cfg();
     let home = PathBuf::from("/Users/a");
     let (command, parsed) =
-        super::resolve_spawn_pair(&cfg, "scout", "fablex", "cc-mic", Some(&home))
+        super::resolve_spawn_pair(&cfg, "scout", "fablex", "cc-work", Some(&home))
             .expect("a same-harness pair resolves");
     assert_eq!(
         command.as_str(),
-        "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --model fable --effort xhigh"
     );
-    assert_eq!(command.client_label(), Some("cc-mic"));
+    assert_eq!(command.client_label(), Some("cc-work"));
     assert_eq!(parsed.binary, "claude");
     let crossed = super::resolve_spawn_pair(&cfg, "scout", "fablex", "codex", Some(&home))
         .expect_err("a cross-harness pair refuses");
@@ -2631,15 +2631,15 @@ fn a_restored_spawned_seat_resolves_through_its_recorded_client() {
         .expect("a bare seat resolves")
         .expect("a configured profile");
     assert_eq!(bare.as_str(), "claude --model fable --effort xhigh");
-    let pair = super::spawned_command(&cfg, &restored(Some("cc-mic"), "fablex"), Some(&home))
+    let pair = super::spawned_command(&cfg, &restored(Some("cc-work"), "fablex"), Some(&home))
         .expect("a recorded client resolves")
         .expect("a configured profile");
     assert_eq!(
         pair.as_str(),
-        "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        "CLAUDE_CONFIG_DIR='/Users/a/.claude-work' claude --model fable --effort xhigh"
     );
     assert_eq!(
-        super::spawned_command(&cfg, &restored(Some("cc-mic"), "gone"), Some(&home)),
+        super::spawned_command(&cfg, &restored(Some("cc-work"), "gone"), Some(&home)),
         Ok(None),
         "an unconfigured profile keeps the seat verbatim"
     );

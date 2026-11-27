@@ -1825,9 +1825,9 @@ mod tests {
     fn cardread_brief_examples_render_readably_plain() {
         let cases: &[(&str, &[&str])] = &[
             (
-                "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
+                "Charlie decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
                 &[
-                    "  Clemens decides:",
+                    "  Charlie decides:",
                     "  may lead release X (fix, review PASS, tests green) and roll Y only?",
                     "  ",
                     "  - Yes lets the retest show why it fails",
@@ -1840,9 +1840,9 @@ mod tests {
                 ],
             ),
             (
-                "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
+                "Asked Charlie to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
                 &[
-                    "  Asked Clemens to dismiss a modal in pane P; request queued.",
+                    "  Asked Charlie to dismiss a modal in pane P; request queued.",
                     "  Last peek at 06:10 confirms modal; prior send ABANDONED after 30s.",
                     "  Clearing it permits retry.",
                     "  ",
@@ -2020,8 +2020,8 @@ mod tests {
             "| B",
             "A || B",
             "A | | B",
-            "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
-            "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
+            "Charlie decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
+            "Asked Charlie to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
             "Héllo wörld. Nächste Frage? Ja bitte | Nein danke.",
             "Use e.g. Vertical. Ship i.e. now? yes go | no wait",
             "No. 5 wins the slot. Ship it today. memo slots",
@@ -2061,7 +2061,7 @@ mod tests {
 
     #[test]
     fn cardread_non_cards_and_needs_you_stay_raw() {
-        let body = "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.";
+        let body = "Asked Charlie to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.";
         for (kind, tag) in [
             (said("lead"), "said lead"),
             (
@@ -2156,7 +2156,7 @@ mod tests {
         );
         let mut printed = Printed::styled(dressed("on", ""));
         printed.set_width(Some(40));
-        let ex1 = "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.";
+        let ex1 = "Charlie decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.";
         let got = printed.step(&lane(vec![item(card("lead"), T, ex1)], &[]), 0, true);
         let plain = unstyled(&got);
         assert!(plain.contains("Recommend yes."), "{plain}");

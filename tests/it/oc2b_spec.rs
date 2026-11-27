@@ -766,10 +766,10 @@ fn tagged_opencode_predecessors_use_only_the_existing_bounded_session_grammar() 
     }
     let uuid = "11111111-1111-4111-8111-111111111111";
     assert_eq!(ae::meta::prior_parts(uuid).expect("legacy UUID").tool, None);
-    let wrapper = format!("claude-mic.1:{uuid}");
+    let wrapper = format!("claude-work.1:{uuid}");
     assert_eq!(
         ae::meta::prior_parts(&wrapper).expect("wrapper UUID").tool,
-        Some("claude-mic.1")
+        Some("claude-work.1")
     );
     let oc = format!("opencode:{ID}");
     assert_eq!(

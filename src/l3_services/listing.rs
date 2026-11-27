@@ -1508,10 +1508,10 @@ mod tests {
             crate::session::version_cell_of(
                 &meta("version.main=unknown unclassified\n"),
                 "main",
-                Some("codex-mic"),
+                Some("codex-work"),
             )
             .as_deref(),
-            Some("codex-mic unknown (unclassified) (measured: none)")
+            Some("codex-work unknown (unclassified) (measured: none)")
         );
         assert_eq!(
             crate::session::version_cell_of(&meta("version.main=2.0.1\n"), "main", None).as_deref(),

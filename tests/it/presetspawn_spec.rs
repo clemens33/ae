@@ -92,8 +92,8 @@ while (1) {
 /// The approved pairs the default rig config carries. `codex`, `zzz` and
 /// `ghostc` are listed under `fake` on purpose: only the adapter, unknown and
 /// existence gates may fire for them, never the pair gate.
-const PAIRS: &str = "fake = cc, cc-mic, codex, zzz, ghostc\n\
-                     relp = plain\nconfp = cc-mic\nbad = cc-mic\nghostp = cc-mic\n";
+const PAIRS: &str = "fake = cc, cc-work, codex, zzz, ghostc\n\
+                     relp = plain\nconfp = cc-work\nbad = cc-work\nghostp = cc-work\n";
 
 /// One isolated server, one live session, a v2 meta, and a recorded GLOBAL
 /// config with two same-harness clients on two accounts (side a / side b),
@@ -231,7 +231,7 @@ impl Rig {
         let body = format!(
             "[clients]\n\
              cc = {a} config_home={sa}\n\
-             cc-mic = {b} config_home={sb}\n\
+             cc-work = {b} config_home={sb}\n\
              cc-other = {b} config_home={sb}\n\
              claude = {a}\n\
              plain = {b}\n\
@@ -398,7 +398,7 @@ fn presetspawn_approved_pair_runs_override_account_and_persists() {
         return;
     }
     let rig = Rig::new("pair");
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     let meta = rig.meta();
     assert!(meta.contains("seat.spawned.0=helper\n"), "{meta}");
@@ -406,7 +406,7 @@ fn presetspawn_approved_pair_runs_override_account_and_persists() {
         meta.contains("profile.spawned.0=fake\n"),
         "bare profile: {meta}"
     );
-    assert!(meta.contains("client.spawned.0=cc-mic\n"), "{meta}");
+    assert!(meta.contains("client.spawned.0=cc-work\n"), "{meta}");
     assert!(meta.contains("agent_bin.spawned.0=claude\n"), "{meta}");
     assert!(!meta.contains('@'), "no @ reaches meta: {meta}");
     let store_b = Rig::canon(&rig.store_b);
@@ -424,12 +424,12 @@ fn presetspawn_approved_pair_runs_override_account_and_persists() {
     );
     let manifest = std::fs::read_to_string(rig.dir.join("workspace.md")).unwrap_or_default();
     assert!(
-        manifest.contains("| helper | fake@cc-mic |"),
+        manifest.contains("| helper | fake@cc-work |"),
         "the roster cell reads profile@client: {manifest}"
     );
     assert_eq!(
         rig.birth_client("helper"),
-        Some("cc-mic".to_owned()),
+        Some("cc-work".to_owned()),
         "the birth certificate proves the override client"
     );
     // `_roster list` resolves the recorded label into the seat's command.
@@ -445,7 +445,7 @@ fn presetspawn_approved_pair_runs_override_account_and_persists() {
     assert!(
         helper.contains(&rig.scratch.join("bin-b/claude").display().to_string())
             && helper.contains(&rig.store_b.display().to_string()),
-        "roster list resolves through cc-mic: {helper}"
+        "roster list resolves through cc-work: {helper}"
     );
 }
 
@@ -462,7 +462,7 @@ fn presetspawn_bare_and_pair_seats_differ_only_by_client_row() {
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     let (code, stdout, stderr) = rig.run(
         ae::cli::SPAWN,
-        &["pairone", "--using=fake@cc-mic", "--", "do the task"],
+        &["pairone", "--using=fake@cc-work", "--", "do the task"],
     );
     assert_eq!(code, Some(0), "--using= admits the pair: {stdout}{stderr}");
     let launched = rig.launched_wait(2);
@@ -508,8 +508,8 @@ fn presetspawn_refusals_take_no_seat() {
     for (using, expected, absent) in [
         // Malformed `@` shapes.
         ("fake@", "is not <profile> or <profile>@<client>", ""),
-        ("@cc-mic", "is not <profile> or <profile>@<client>", ""),
-        ("fake@cc@mic", "is not <profile> or <profile>@<client>", ""),
+        ("@cc-work", "is not <profile> or <profile>@<client>", ""),
+        ("fake@cc@work", "is not <profile> or <profile>@<client>", ""),
         // Unlisted pair (client exists): the refusal teaches discovery.
         ("fake@cc-other", "is not an approved pair", ""),
         ("fake@cc-other", "Approved clients for 'fake':", ""),
@@ -522,7 +522,7 @@ fn presetspawn_refusals_take_no_seat() {
             "not defined in [clients]",
         ),
         // Listed pair, undefined profile / client: existence answers.
-        ("ghostp@cc-mic", "not defined in [profiles]", ""),
+        ("ghostp@cc-work", "not defined in [profiles]", ""),
         ("fake@ghostc", "not defined in [clients]", ""),
         // Listed cross-harness pair: ONLY the adapter gate can fire.
         ("fake@codex", "never the harness adapter", ""),
@@ -533,12 +533,12 @@ fn presetspawn_refusals_take_no_seat() {
         ("relp@plain", "unknown conversation store", ""),
         // Profile prefix and client both set the account variable.
         (
-            "confp@cc-mic",
-            "both profile and client 'cc-mic' set CLAUDE_CONFIG_DIR",
+            "confp@cc-work",
+            "both profile and client 'cc-work' set CLAUDE_CONFIG_DIR",
             "",
         ),
         // A listed pair whose profile is not one simple command.
-        ("bad@cc-mic", "one simple command", ""),
+        ("bad@cc-work", "one simple command", ""),
     ] {
         let (code, stdout, stderr) = rig.spawn("helper", using);
         assert_eq!(code, Some(1), "{using}: {stdout}{stderr}");
@@ -568,13 +568,13 @@ fn presetspawn_void_pair_rows_refuse() {
     let rig = Rig::new("voidrows");
     let meta0 = rig.meta();
     for pairs in [
-        "fake = cc-mic\nfake = cc-mic\n",
-        "fake = cc-mic, cc mic\n",
-        "fake = cc-mic,\n",
+        "fake = cc-work\nfake = cc-work\n",
+        "fake = cc-work, cc alt\n",
+        "fake = cc-work,\n",
         "fake =\n",
     ] {
         rig.write_config(pairs);
-        let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+        let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
         assert_eq!(code, Some(1), "{pairs:?}: {stdout}{stderr}");
         assert!(
             stderr.contains("is not an approved pair") && stderr.contains("unusable"),
@@ -583,10 +583,10 @@ fn presetspawn_void_pair_rows_refuse() {
         assert_eq!(rig.meta(), meta0, "{pairs:?} wrote meta");
     }
     // Control: the same pair under a clean row spawns.
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(1), "still void before rewrite: {stdout}{stderr}");
     rig.write_config(PAIRS);
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
 }
 
@@ -602,8 +602,8 @@ fn presetspawn_project_overlay_never_approves_or_redefines() {
     let rig = Rig::new("overlay");
     // Overlay-only approval approves nothing.
     rig.write_config("");
-    rig.write_local("[client_pairs]\nfake = cc-mic\n");
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    rig.write_local("[client_pairs]\nfake = cc-work\n");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(stderr.contains("is not an approved pair"), "{stderr}");
     assert!(!rig.meta().contains("spawned."), "{}", rig.meta());
@@ -613,10 +613,10 @@ fn presetspawn_project_overlay_never_approves_or_redefines() {
     rig.write_config(PAIRS);
     let a = rig.scratch.join("bin-a/claude").display().to_string();
     rig.write_local(&format!(
-        "[clients]\ncc-mic = {a} config_home={}\n\n[profiles]\nfake = \"{a} --model hijacked\"\nlocalp = \"cc --model local\"\n",
+        "[clients]\ncc-work = {a} config_home={}\n\n[profiles]\nfake = \"{a} --model hijacked\"\nlocalp = \"cc --model local\"\n",
         rig.store_a.display()
     ));
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     let launched = rig.launched_wait(1);
     let store_b = Rig::canon(&rig.store_b);
@@ -626,8 +626,8 @@ fn presetspawn_project_overlay_never_approves_or_redefines() {
         "the global pair ran, never the overlay redefinition: {launched}"
     );
     // An overlay-only profile is unknown to `@` even with a global pair row…
-    rig.write_config("localp = cc-mic\n");
-    let (code, stdout, stderr) = rig.spawn("localone", "localp@cc-mic");
+    rig.write_config("localp = cc-work\n");
+    let (code, stdout, stderr) = rig.spawn("localone", "localp@cc-work");
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(stderr.contains("not defined in [profiles]"), "{stderr}");
     // …and still spawns bare through the layered path, as today.
@@ -660,7 +660,7 @@ fn presetspawn_retired_pair_refuses_and_recorded_seat_survives() {
     let settled = rig.meta();
     // Retire every route: the pair section goes away entirely.
     rig.write_config("");
-    let (code, stdout, stderr) = rig.spawn("second", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("second", "fake@cc-work");
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(stderr.contains("is not an approved pair"), "{stderr}");
     let (code, stdout, stderr) = rig.spawn("third", "fake@cc");
@@ -686,9 +686,9 @@ fn presetspawn_cover_warning_uses_override_account() {
     let a = rig.scratch.join("bin-a/claude").display().to_string();
     let b = rig.scratch.join("bin-b/claude").display().to_string();
     let body = format!(
-        "[clients]\ncc = {a} config_home={sa}\ncc-mic = {b} config_home={sb}\n\n\
+        "[clients]\ncc = {a} config_home={sa}\ncc-work = {b} config_home={sb}\n\n\
          [profiles]\nfake = \"cc --model fake\"\ngrk = \"grok --model grk\"\n\n\
-         [client_pairs]\nfake = cc-mic\n\n\
+         [client_pairs]\nfake = cc-work\n\n\
          [workspace]\nmain = lead\nlayout = vertical\nauto_reseat = on\n",
         sa = rig.store_a.display(),
         sb = rig.store_b.display(),
@@ -700,7 +700,7 @@ fn presetspawn_cover_warning_uses_override_account() {
         stderr.contains("has no auto-reseat exit"),
         "the bare control warns in this config: {stderr}"
     );
-    let (code, stdout, stderr) = rig.spawn("pairone", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("pairone", "fake@cc-work");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     assert!(
         stderr.contains("has no auto-reseat exit"),
@@ -716,10 +716,10 @@ fn presetspawn_retire_removes_client_row() {
         return;
     }
     let rig = Rig::new("retire");
-    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-mic");
+    let (code, stdout, stderr) = rig.spawn("helper", "fake@cc-work");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     rig.launched_wait(1);
-    assert!(rig.meta().contains("client.spawned.0=cc-mic\n"));
+    assert!(rig.meta().contains("client.spawned.0=cc-work\n"));
     let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["helper"]);
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     assert!(
@@ -740,7 +740,7 @@ fn presetspawn_roster_list_honors_recorded_client_on_spawned_slot() {
     let rig = Rig::new("rosterread");
     let mut meta = rig.meta();
     meta.push_str(
-        "seat.spawned.0=helper\nprofile.spawned.0=fake\nclient.spawned.0=cc-mic\nagent_bin.spawned.0=claude\n",
+        "seat.spawned.0=helper\nprofile.spawned.0=fake\nclient.spawned.0=cc-work\nagent_bin.spawned.0=claude\n",
     );
     assert!(std::fs::write(rig.dir.join("meta"), meta).is_ok(), "a meta");
     let global = rig.config.display().to_string();
