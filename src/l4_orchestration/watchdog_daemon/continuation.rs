@@ -160,14 +160,15 @@ impl Cycle<'_> {
         let new_events = events.get(on.events.len()..).unwrap_or_default();
         let delivered =
             delivery.code == Some(0) && confirmed(new_events, on.agent, &claimed.launch, &summary);
-        if delivered {
-            self.advance_continuation(&claimed, ContinuationStep::Confirm, err)?;
-        } else if delivery.code.is_some_and(|code| code != 0)
+        let refused_before_paste = !delivered
+            && delivery.code.is_some_and(|code| code != 0)
             && delivery
                 .stdout
                 .lines()
-                .any(|line| line == crate::send::RETRYABLE_MARKER)
-        {
+                .any(|line| line == crate::send::RETRYABLE_MARKER);
+        if delivered {
+            self.advance_continuation(&claimed, ContinuationStep::Confirm, err)?;
+        } else if refused_before_paste {
             if self.advance_continuation(&claimed, ContinuationStep::Reopen, err)? {
                 let previous = state.continuation_refused.replace(owed.launch.clone());
                 if previous.as_ref() == Some(&owed.launch) {
@@ -187,7 +188,10 @@ impl Cycle<'_> {
         } else {
             self.tell_unknown_continuation(&claimed, on, err)?;
         }
-        if let Some(overview) = overview {
+        // A joined overview the helper refused before its paste was never
+        // attempted: it stays due, unbooked, and rides the retried
+        // continuation instead of waiting out a failed overview's retry.
+        if let Some(overview) = overview.filter(|_| !refused_before_paste) {
             self.record_overview(on, state, overview, delivered, err)?;
         }
         Ok(())
