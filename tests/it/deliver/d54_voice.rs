@@ -481,9 +481,9 @@ fn the_bound_hold_mic_leaves_the_unsent_transcript_in_claude() {
 
 #[test]
 fn mic_refuses_an_unread_voice_frame_even_with_a_proved_launch() {
+    use ae::harness_state::{Dictation, dictation};
     let (composer, _) = IDLE.rsplit_once("  ⏵⏵").expect("measured idle mode row");
     let unread = format!("{composer}unknown local footer\n");
-    use ae::harness_state::{Dictation, dictation};
     assert_eq!(
         dictation(&unread, ae::tool::ToolKind::Claude),
         Dictation::Unread
@@ -723,13 +723,13 @@ fn an_empty_result_reports_only_that_no_text_is_visible() {
 
 #[test]
 fn a_foreign_draft_without_transcribing_reports_an_unproved_result() {
+    const FOREIGN: &str = "Text typed directly in Claude.";
     let rig = orchestrator("voice-unproved-result", "claude", &composer_cursor(IDLE, 3));
     record_hold_launch(&rig);
     let api = rig_world(&rig).session("api", "tui", "");
     let pane = app(&rig, "api");
     let stopped = stop_on_the_holding_frame(&rig, &pane);
     let wire = rig.wire();
-    const FOREIGN: &str = "Text typed directly in Claude.";
     redraw_voice_frame(&rig, &with_draft(FOREIGN));
     let result = voice_report(
         &rig,
