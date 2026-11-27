@@ -1,6 +1,6 @@
 # Telegram bridge
 
-> Machine-global daemon that connects ae shared chat to one Telegram chat. By default, the proven orchestrator's chat is the only session chat it forwards. When `allowed_user_ids` is set, the bridge routes phone messages into shared chat.
+> Machine-global daemon that connects ae shared chat to one Telegram chat. By default it forwards the proven orchestrator's chat; with no proven orchestrator seat it forwards every running session's chat ([What it does](#what-it-does)). When `allowed_user_ids` is set, the bridge routes phone messages into shared chat.
 
 ## What it does
 
@@ -29,16 +29,25 @@ ae doctor              # reports telegram.core OK/WARN when telegram is configur
 
 There is no setup command. Do these steps once, after you create a bot with [@BotFather](https://t.me/BotFather):
 
-1. Write the bot token into `~/.config/ae/telegram-bot.token`, then run `chmod 600` on that file. ae refuses a token file that the group or other users can access.
-2. Add a `[telegram]` block to `~/.ae/config` with your numeric Telegram chat id. Add `allowed_user_ids` only if you want to send messages from the phone.
-3. Run `ae telegram start`. It refuses when `token_file` or `chat_id` is missing or the token file is unusable. Otherwise it writes `enabled = true` and starts the bridge.
+1. Create the token file and restrict it while it is still empty:
 
-```toml
-[telegram]
-token_file = "~/.config/ae/telegram-bot.token"
-chat_id = 123456789
-allowed_user_ids = "123456789"
-```
+   ```bash
+   mkdir -p ~/.config/ae
+   touch ~/.config/ae/telegram-bot.token
+   chmod 600 ~/.config/ae/telegram-bot.token
+   ```
+
+2. Put the bot token into that file with your editor. ae refuses a token file that the group or other users can access.
+3. Add a `[telegram]` block to `~/.ae/config` with your numeric Telegram chat id. Add `allowed_user_ids` only if you want to send messages from the phone.
+
+   ```toml
+   [telegram]
+   token_file = "~/.config/ae/telegram-bot.token"
+   chat_id = 123456789
+   allowed_user_ids = "123456789"
+   ```
+
+4. Run `ae telegram start`. If `token_file` or `chat_id` is missing, or the token file is unusable, it refuses before it records anything. Otherwise it records `enabled = true` and then tries to start the bridge. The start can still fail, and `enabled = true` stays recorded. `ae telegram status` shows the intent and the runtime state.
 
 Optional keys:
 
