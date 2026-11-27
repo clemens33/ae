@@ -756,6 +756,7 @@ fn a_challenge_state_retire_or_cap_closes_the_open_hold_episode() {
         "[unconfirmed] waiting-agent confirmation 1/2; refused pre-paste: dead pane",
     ] {
         let mut events = journal(Some("worker"), "working");
+        events.push(working_superseded());
         events.push(held_event(PROOF + 900, "L1"));
         events.push(event(PROOF + 901, "watchdog", "monitor", "wait-challenge", &format!(r#", "target":"waiter","target_slot":"main","target_session":"holdspec","ref":"L1","summary":"{summary}""#)));
         assert_eq!(
@@ -832,10 +833,19 @@ fn a_closed_target_hold_never_reopens_and_spent_attempts_never_start_a_hold() {
 }
 
 fn list_reason(events: &[Event], age: i64) -> Option<Reason> {
+    list_waiter(events, PROOF + age, CADENCE, true).reason
+}
+
+fn list_waiter(
+    events: &[Event],
+    now: i64,
+    cadence: u64,
+    worker_alive: bool,
+) -> ae::digest::AgentEntry {
     let snapshot = RecordSnapshot {
-        meta: Some(Meta::parse(
-            "schema=2\nmode=local\nsession=holdspec\nseat.main=waiter\nseat.spawned.1=worker\nprofile.main=spec\nprofile.spawned.1=spec\nlaunch_id.main=L1\nlaunch_id.spawned.1=W1\nidle_nudge_secs=300\ndone_confirmations=2\n",
-        )),
+        meta: Some(Meta::parse(&format!(
+            "schema=2\nmode=local\nsession=holdspec\nseat.main=waiter\nseat.spawned.1=worker\nseat.spawned.2=relay\nprofile.main=spec\nprofile.spawned.1=spec\nprofile.spawned.2=spec\nlaunch_id.main=L1\nlaunch_id.spawned.1=W1\nlaunch_id.spawned.2=R1\nidle_nudge_secs={cadence}\ndone_confirmations=2\n",
+        ))),
         events: Some(SessionRead::from_drain(&ae::events::Drain {
             events: events.to_vec(),
             cursor: ae::events::Cursor::default(),
@@ -845,33 +855,33 @@ fn list_reason(events: &[Event], age: i64) -> Option<Reason> {
         ..RecordSnapshot::default()
     };
     let runtime = SessionRuntime {
-        agents: ["main", "spawned.1"]
+        agents: ["main", "spawned.1", "spawned.2"]
             .into_iter()
             .map(|slot| AgentRuntime {
                 pane_id: None,
                 slot: slot.to_owned(),
-                alive: Some(true),
+                alive: Some(slot != "spawned.1" || worker_alive),
                 alert: None,
                 observed: HarnessState::Idle,
             })
             .collect(),
         ..SessionRuntime::new(Status::Running)
     };
-    ae::session::entry_from(&snapshot, SESSION, &runtime, at(PROOF + age), 3600)
+    ae::session::entry_from(&snapshot, SESSION, &runtime, at(now), 3600)
         .agents
         .into_iter()
         .find(|agent| agent.name == "waiter")
         .expect("waiting list entry")
-        .reason
 }
 
 #[test]
 fn list_requires_the_daemon_witness_and_agrees_with_account_on_a_fresh_target_hold() {
     let mut events = journal(Some("worker"), "working");
+    events.push(working_superseded());
     assert_eq!(
         list_reason(&events, 1_200),
         Some(Reason::Blocked),
-        "list never invents a promotion from working alone"
+        "without current working, promotion requires the daemon witness"
     );
     events.push(held_event(PROOF + 900, "L1"));
     assert_eq!(list_reason(&events, 1_200), None);
@@ -947,5 +957,198 @@ fn list_requires_the_daemon_witness_and_agrees_with_account_on_a_fresh_target_ho
             watchdog::promoted_rung(due(2_400), rung, witness(HoldReason::Target), true, CADENCE),
             rung
         );
+    }
+}
+
+#[test]
+fn local_working_target_ceiling_uses_awake_seconds_and_preserves_large_bases() {
+    for (target, cadence, boundary, sleep) in [
+        ("worker", 300, 3_600, 0),
+        ("holdspec:worker", 300, 3_600, 7_200),
+        ("worker", 0, 3_600, 0),
+        ("worker", 900, 7_200, 0),
+        ("worker", 1_800, 7_200, 0),
+        ("worker", 3_600, 14_400, 0),
+    ] {
+        let mut events = journal(Some(target), "working");
+        if sleep != 0 {
+            let summary = watchdog::suspended_summary(watchdog::Suspended {
+                secs: u64::try_from(sleep).expect("nonnegative fixture sleep"),
+                wall_secs: 7_260,
+                mono_secs: 60,
+            });
+            events.push(event(
+                PROOF + 100 + sleep,
+                "watchdog",
+                "monitor",
+                watchdog::HOST_SUSPENDED_ACTION,
+                &format!(r#", "summary":"{summary}""#),
+            ));
+        }
+        for (age, reason) in [(boundary - 1, None), (boundary, Some(Reason::Blocked))] {
+            let waiter = list_waiter(&events, PROOF + sleep + age, cadence, true);
+            assert_eq!(waiter.state.as_deref(), Some("waiting-agent"));
+            assert_eq!(
+                waiter.reason, reason,
+                "{target}, {cadence}s cadence, {age}s awake"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_working_target_ceiling_uses_the_credited_rung() {
+    let mut events = journal(Some("worker"), "working");
+    for (rung, challenged_at, confirmation, boundary) in [
+        (1, PROOF + 300, 1, 3_600),
+        (2, PROOF + 910, 2, 4_500),
+        (3, PROOF + 2_120, 1, 7_200),
+    ] {
+        events.push(event(
+            challenged_at,
+            "watchdog",
+            "monitor",
+            "wait-challenge",
+            &format!(
+                r#", "target":"waiter","target_slot":"main","target_session":"holdspec","ref":"L1","summary":"waiting-agent confirmation {confirmation}/2""#
+            ),
+        ));
+        let proof = challenged_at + 10;
+        events.push(declaration(
+            proof,
+            "waiter",
+            "main",
+            "waiting-agent",
+            Some("worker"),
+        ));
+        let reading = watchdog::wait_reading(
+            &events,
+            SESSION,
+            "main",
+            "waiter",
+            Some("L1"),
+            at(proof + 1),
+            CADENCE,
+            2,
+            WaitState::WaitingAgent,
+        );
+        assert_eq!(reading.rung, rung, "fixture's credited rung");
+        assert_eq!(
+            list_waiter(&events, proof + boundary - 1, CADENCE, true).reason,
+            None,
+            "before the extended rung-{rung} ceiling"
+        );
+        assert_eq!(
+            list_waiter(&events, proof + boundary, CADENCE, true).reason,
+            Some(Reason::Blocked),
+            "at the extended rung-{rung} ceiling"
+        );
+    }
+}
+
+#[test]
+fn only_a_current_working_direct_local_target_extends_the_wait() {
+    for (on, target_state, superseded, worker_alive) in [
+        (None, "working", false, true),
+        (Some("@holdspec"), "working", false, true),
+        (Some("waiter"), "working", false, true),
+        (Some("missing"), "working", false, true),
+        (Some("worker"), "waiting-agent", false, true),
+        (Some("worker"), "waiting-user", false, true),
+        (Some("worker"), "blocked", false, true),
+        (Some("worker"), "done", false, true),
+        (Some("worker"), "working", true, true),
+        (Some("worker"), "working", false, false),
+    ] {
+        let mut events = journal(on, target_state);
+        if superseded {
+            events.push(working_superseded());
+        }
+        for cadence in [0, CADENCE] {
+            assert_eq!(
+                list_waiter(&events, PROOF + 1_199, cadence, worker_alive).reason,
+                None
+            );
+            assert_eq!(
+                list_waiter(&events, PROOF + 1_200, cadence, worker_alive).reason,
+                Some(Reason::Blocked),
+                "{on:?}, {cadence}s cadence, target state {target_state}, superseded {superseded}, alive {worker_alive}"
+            );
+        }
+    }
+    for on in ["@elsewhere", "elsewhere:worker"] {
+        let events = journal(Some(on), "working");
+        assert_eq!(
+            list_reason(&events, 7_200),
+            None,
+            "{on} keeps the external exemption"
+        );
+    }
+}
+
+fn working_superseded() -> Event {
+    event(
+        PROOF + 1,
+        "worker",
+        "spawned.1",
+        "memo",
+        r#", "ref":"progress","summary":"newer than the declaration""#,
+    )
+}
+
+#[test]
+fn a_working_end_of_a_chain_does_not_extend_the_direct_wait() {
+    for (target, age, reason) in [
+        ("worker", 1_200, Some(Reason::Blocked)),
+        ("@elsewhere", 7_200, None),
+    ] {
+        let events = [
+            declaration(PROOF - 2, "worker", "spawned.1", "working", None),
+            declaration(
+                PROOF - 1,
+                "relay",
+                "spawned.2",
+                "waiting-agent",
+                Some(target),
+            ),
+            declaration(PROOF, "waiter", "main", "waiting-agent", Some("relay")),
+        ];
+        assert_eq!(list_reason(&events, age), reason, "relay waits on {target}");
+    }
+}
+
+#[test]
+fn the_working_declaration_must_match_the_target_slot_and_session() {
+    let wrong_slot = declaration(PROOF - 1, "worker", "spawned.9", "working", None);
+    let mut wrong_session = declaration(PROOF - 1, "worker", "spawned.1", "working", None);
+    wrong_session.actor_session = ae::events::RoutingMember::Value("elsewhere".to_owned());
+    for working in [wrong_slot, wrong_session] {
+        let events = [
+            working,
+            declaration(PROOF, "waiter", "main", "waiting-agent", Some("worker")),
+        ];
+        assert_eq!(
+            list_reason(&events, 1_200),
+            Some(Reason::Blocked),
+            "the target has no routed working declaration"
+        );
+    }
+}
+
+#[test]
+fn inbound_news_ends_working_currency_and_a_watchdog_nudge_keeps_it() {
+    for (actor, slot, action, reason) in [
+        ("relay", "spawned.2", "send", Some(Reason::Blocked)),
+        ("watchdog", "monitor", "nudge", None),
+    ] {
+        let mut events = journal(Some("worker"), "working");
+        events.push(event(
+            PROOF + 1,
+            actor,
+            slot,
+            action,
+            r#", "target":"worker","target_slot":"spawned.1","target_session":"holdspec","summary":"status check""#,
+        ));
+        assert_eq!(list_reason(&events, 1_200), reason, "inbound {action}");
     }
 }

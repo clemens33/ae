@@ -280,6 +280,19 @@ pub fn held_on<'a>(links: &[Link<'a>], seat: &str) -> Option<&'a str> {
         .map(|link| link.name)
 }
 
+/// Whether `seat`'s wait may age on the longer working-target ceiling
+/// ([`crate::watchdog::waiting_agent_ceiling_for`]): its [`held_on`] target in
+/// `links` ([`Facts::links`] of the same `facts`)
+/// is a live seat of this session whose newest relevant event is its own
+/// CURRENT `working` declaration. A superseded `working`, the end of a chain,
+/// an untyped, self, `@session` or other-session wait never qualifies.
+#[must_use]
+pub fn on_current_working(links: &[Link<'_>], facts: &[Facts], seat: &str) -> bool {
+    held_on(links, seat)
+        .and_then(|target| facts.iter().find(|fact| fact.name == target))
+        .is_some_and(|fact| fact.working_current)
+}
+
 /// One live seat's wait facts, owned, read from the journal the way its
 /// state cell reads it — the one builder both the read side and the
 /// watchdog fold from, so they cannot disagree about a chain.
@@ -289,6 +302,7 @@ pub struct Facts {
     on: Option<Target>,
     waiting: bool,
     working: bool,
+    working_current: bool,
 }
 
 impl Facts {
@@ -316,6 +330,7 @@ impl Facts {
                         .and_then(|raw| Target::parse(raw, session)),
                     waiting,
                     working: state == Some("working"),
+                    working_current: current && state == Some("working"),
                 }
             })
             .collect()

@@ -130,11 +130,15 @@ impl Seats {
     /// delivery to the lead is then refused before anything runs and leaves
     /// a `refused` record, the journal trace of an attempted challenge.
     fn cycle(&self, carry: &mut Carry) -> String {
+        self.cycle_for(carry, SeatLaunch::Unproven("fixture"), Knobs::default())
+    }
+
+    fn cycle_for(&self, carry: &mut Carry, launch: SeatLaunch, knobs: Knobs) -> String {
         let helper = SendHelper::for_session(&self.meta);
         let cycle = Cycle {
             knobs: Knobs {
                 quota_aware: false,
-                ..Knobs::default()
+                ..knobs
             },
             meta_dir: &self.meta,
             helper: &helper,
@@ -148,7 +152,7 @@ impl Seats {
             auto: crate::autoreseat::settings(None),
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
-            launch_ids: vec![("main".to_owned(), SeatLaunch::Unproven("fixture"))],
+            launch_ids: vec![("main".to_owned(), launch)],
             started: None,
             settled: None,
         };
@@ -594,4 +598,138 @@ fn a_real_cycle_journals_a_blocked_unchanged_hold_under_its_own_state() {
     let err = seats.cycle(&mut carry);
     assert_eq!(seats.held(), ["lead blocked held: unchanged"], "{err}");
     assert_eq!(seats.challenged(), 0, "{err}");
+}
+
+/// Capture the delivery boundary in the private fixture. The daemon still
+/// chooses, renders and dispatches the challenge through its ordinary path.
+fn capture_challenge(seats: &Seats) {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut helper = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(seats.meta.join(super::HELPER_NAME))
+        .expect("create the private fixture helper");
+    helper
+        .write_all(
+            b"#!/bin/sh\n\
+            if [ \"$1\" = lead ]; then\n\
+            printf '%s\\n' \"$_AE_EVENT_ACTION\" >> \"$(dirname \"$0\")/delivery\"\n\
+            if [ \"$_AE_EVENT_ACTION\" = wait-challenge ]; then\n\
+            printf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/challenge\"\n\
+            fi\n\
+            fi\n",
+        )
+        .expect("write the private fixture helper");
+}
+
+fn ceiling_cycle(
+    tag: &str,
+    target: &str,
+    age: i64,
+    superseded: bool,
+    cadence: u64,
+) -> (Seats, String, String) {
+    let seats = Seats::new(tag);
+    capture_challenge(&seats);
+    let now = Timestamp::now().epoch();
+    seats.record(
+        now - age - 1,
+        "worker",
+        "spawned.1",
+        r#""action":"state","ref":"working","summary":"building""#,
+    );
+    seats.record(
+        now - age,
+        "lead",
+        "main",
+        &format!(
+            r#""action":"state","ref":"waiting-agent","summary":"waits on worker","wait_on":"{target}""#
+        ),
+    );
+    if superseded {
+        seats.record(
+            now - age + 1,
+            "worker",
+            "spawned.1",
+            r#""action":"memo","ref":"progress","summary":"newer than the declaration""#,
+        );
+    }
+
+    let mut carry = Carry::new();
+    carry.pending = super::PendingCycle::new(crate::transport::observe_session_identity(
+        &seats.rig.server,
+        "current",
+    ));
+    assert!(
+        carry.pending.session_id().is_some(),
+        "private session identity"
+    );
+    let knobs = Knobs {
+        idle_nudge_secs: cadence,
+        ..Knobs::default()
+    };
+    let err = seats.cycle_for(&mut carry, SeatLaunch::from("L1"), knobs);
+    super::flush_cycle(&seats.rig.server, &mut carry);
+    let state = seats
+        .rig
+        .option("-p", &seats.rig.pane, crate::theme::PANE_STATE_OPTION);
+    (seats, state, err)
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "reads only the receipt from this test's private send helper"
+)]
+fn a_real_cycle_extends_only_a_wait_with_a_current_local_working_target() {
+    for (tag, target, age, superseded, escalated) in [
+        ("ceiling-bare", "worker", 1_500, false, false),
+        ("ceiling-local", "current:worker", 1_500, false, false),
+        ("ceiling-news", "worker", 1_500, true, true),
+        ("ceiling-aged", "worker", 3_900, false, true),
+    ] {
+        let (seats, state, err) = ceiling_cycle(tag, target, age, superseded, 300);
+        let challenge = std::fs::read_to_string(seats.meta.join("challenge"))
+            .expect("the due challenge reached the fixture helper");
+        assert!(
+            challenge.contains(&format!("waiting-agent on {target}")),
+            "{tag}: {challenge}"
+        );
+        let expected = if escalated {
+            "needs you (blocked)"
+        } else {
+            "waiting on an agent"
+        };
+        assert!(state.ends_with(expected), "{tag}: {state:?}, {err}");
+        assert_eq!(
+            challenge.contains("Reads blocked: past the ceiling."),
+            escalated,
+            "{tag}: {challenge}"
+        );
+        assert_eq!(seats.held(), Vec::<String>::new(), "{tag}: {err}");
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "inspects only the receipt path in this test's private session"
+)]
+fn a_real_cycle_at_zero_cadence_extends_attention_with_delivery_off() {
+    // Leave the first live-clock sample margin for scheduling. The list
+    // fixture pins the exact 3599/3600 boundary with a controlled timestamp.
+    for (tag, age, expected) in [
+        ("ceiling-zero-before", 3_500, "waiting on an agent"),
+        ("ceiling-zero-at", 3_600, "needs you (blocked)"),
+    ] {
+        let (seats, state, err) = ceiling_cycle(tag, "worker", age, false, 0);
+        assert!(state.ends_with(expected), "{tag}: {state:?}, {err}");
+        assert!(
+            !seats.meta.join("delivery").exists(),
+            "{tag}: zero cadence must disable both the challenge and the nudge"
+        );
+    }
 }

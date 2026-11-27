@@ -373,6 +373,11 @@ pub struct Activity {
     /// The wait episode's `wait-held` witness
     /// ([`crate::watchdog::WaitReading::held`]).
     pub wait_witness: Option<crate::watchdog::HoldWitness>,
+    /// The seat's direct same-session target holds a current `working`
+    /// declaration ([`crate::wait_on::on_current_working`]): its
+    /// `waiting-agent` ceiling is [`crate::watchdog::waiting_agent_ceiling_for`]'s
+    /// longer one. `false` keeps the base ceiling.
+    pub wait_on_working: bool,
 }
 
 /// The motion the watchdog already trusts for a waited-on seat (#225), each
@@ -2790,6 +2795,11 @@ impl Cycle<'_> {
                         ),
                     }),
                 wait_witness,
+                wait_on_working: crate::wait_on::on_current_working(
+                    &wait_links,
+                    &wait_facts,
+                    agent,
+                ),
             };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);

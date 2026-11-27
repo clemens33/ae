@@ -3146,7 +3146,7 @@ pub fn waiting_agent_cap_secs(idle_nudge_secs: u64) -> u64 {
     cadence.saturating_mul(OWN_WORK_AGE_CAP)
 }
 
-/// The `waiting-agent` ceiling on backoff `rung` (I14): `cadence × max(4,
+/// The BASE `waiting-agent` ceiling on backoff `rung` (I14): `cadence × max(4,
 /// 2^rung + 1)` — 1200, 1200, 1500, 2700 s at the default cadence — so a
 /// healthy backed-off wait always meets its challenge one cadence before it
 /// would read `blocked`. Rung 0 is exactly [`waiting_agent_cap_secs`], the
@@ -3169,14 +3169,56 @@ pub fn waiting_agent_escalated(age_secs: u64, idle_nudge_secs: u64) -> bool {
 }
 
 /// Whether a `waiting-agent` declaration whose AWAKE age is `age_secs`, on
-/// backoff `rung`, reads as `blocked`.
+/// backoff `rung`, is past the BASE ceiling ([`waiting_agent_ceiling_secs`]).
 ///
-/// PURE, and the ONE ceiling every consumer shares: the read side
-/// (`session::declared_reason`) and the watchdog's own nudge decision both ask
-/// this, so a surface can never disagree with the pane about escalation.
+/// PURE, and base-only: the external `overdue` marker (`session.rs`) reads it.
+/// The escalation the daemon and `session::declared_reason` share is
+/// [`waiting_agent_escalated_for`], which adds the working-target extension.
 #[must_use]
 pub fn waiting_agent_escalated_at(age_secs: u64, idle_nudge_secs: u64, rung: u8) -> bool {
     age_secs >= waiting_agent_ceiling_secs(idle_nudge_secs, rung)
+}
+
+/// How many [`waiting_agent_ceiling_secs`] a `waiting-agent` may age while
+/// its direct target works (lead ruling, option C).
+pub const WORKING_TARGET_CEILING_FACTOR: u64 = 3;
+
+/// The awake seconds a working target's factor may reach. A base ceiling that
+/// is already longer stays as it is: the cap never shortens a ceiling.
+pub const WORKING_TARGET_CEILING_CAP_SECS: u64 = 7_200;
+
+/// The `waiting-agent` ceiling on backoff `rung` when `on_working` says the
+/// wait's direct same-session target holds a current `working` declaration
+/// ([`crate::wait_on::on_current_working`]): `max(base, min(3 × base, 7200))`
+/// awake seconds over [`waiting_agent_ceiling_secs`]'s base, the zero cadence
+/// included. Without `on_working` it is the base ceiling.
+#[must_use]
+pub fn waiting_agent_ceiling_for(idle_nudge_secs: u64, rung: u8, on_working: bool) -> u64 {
+    let base = waiting_agent_ceiling_secs(idle_nudge_secs, rung);
+    if !on_working {
+        return base;
+    }
+    base.max(
+        base.saturating_mul(WORKING_TARGET_CEILING_FACTOR)
+            .min(WORKING_TARGET_CEILING_CAP_SECS),
+    )
+}
+
+/// Whether a `waiting-agent` declaration whose AWAKE age is `age_secs`, on
+/// backoff `rung`, reads as `blocked`, given whether its direct target works
+/// (`on_working`).
+///
+/// PURE, and the ONE escalation every consumer shares: the read side
+/// (`session::declared_reason`) and the watchdog's verdict and challenge text
+/// both ask this, so a surface can never disagree with the pane.
+#[must_use]
+pub fn waiting_agent_escalated_for(
+    age_secs: u64,
+    idle_nudge_secs: u64,
+    rung: u8,
+    on_working: bool,
+) -> bool {
+    age_secs >= waiting_agent_ceiling_for(idle_nudge_secs, rung, on_working)
 }
 
 /// The watchdog's journal record of a host suspension (I15): the wall clock

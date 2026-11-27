@@ -20,7 +20,9 @@ use crate::events::{
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
-use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_escalated_at};
+use crate::watchdog::{
+    DEFAULT_IDLE_NUDGE_SECS, waiting_agent_escalated_at, waiting_agent_escalated_for,
+};
 
 /// The `unanswered` threshold when nothing tunes it.
 pub const DEFAULT_UNANSWERED_SECS: i64 = 1800;
@@ -1297,7 +1299,14 @@ fn agent_entries(
                                 state,
                                 age_secs,
                                 idle_nudge_secs,
-                                wait_rung,
+                                (
+                                    wait_rung,
+                                    crate::wait_on::on_current_working(
+                                        &links,
+                                        &wait_facts,
+                                        &slot.name,
+                                    ),
+                                ),
                                 declared_current && !elsewhere,
                             )
                         });
@@ -1556,9 +1565,11 @@ pub(crate) fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 /// The attention reason a DECLARED work state contributes, if any.
 ///
 /// `waiting-agent` is the quiet fifth state: fresh it claims nobody, and past
-/// [`waiting_agent_escalated_at`]'s ceiling it becomes exactly `blocked` (R4) —
+/// [`waiting_agent_escalated_for`]'s ceiling it becomes exactly `blocked` (R4) —
 /// the SAME reason a declared `blocked` yields, and the same ceiling the
-/// watchdog uses to resume its nudge.
+/// watchdog uses to resume its nudge. `on_working` is
+/// [`crate::wait_on::on_current_working`]'s answer for the seat, which lengthens
+/// that ceiling while the direct target works.
 ///
 /// `cadence` is [`crate::meta::resolve_idle_nudge_secs`]'s answer: `None` when
 /// the session's pin exists and cannot be used. That FAILS CLOSED — no ceiling
@@ -1573,14 +1584,16 @@ fn declared_reason(
     state: &str,
     age_secs: u64,
     cadence: Option<u64>,
-    rung: u8,
+    (rung, on_working): (u8, bool),
     is_current: bool,
 ) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
         "blocked" => Some(Reason::Blocked),
         "waiting-agent" => (is_current
-            && cadence.is_some_and(|cadence| waiting_agent_escalated_at(age_secs, cadence, rung)))
+            && cadence.is_some_and(|cadence| {
+                waiting_agent_escalated_for(age_secs, cadence, rung, on_working)
+            }))
         .then_some(Reason::Blocked),
         _ => None,
     }

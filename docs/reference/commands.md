@@ -439,8 +439,10 @@ pane” or “as discussed.” A spawned (`spawned.<n>`) seat cannot declare `wa
 nudging too only when the idle-nudge cadence is enabled) once it is older than
 `idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods — the same multiplier as the
 own-work deferral, except that at `idle_nudge_secs = 0` the deferral is vacuous
-while the attention ceiling scales from the documented default 300 s (1200 s),
-because zero keeps the marker and only suppresses the nudge; its reason names the
+while the attention ceiling scales from the documented default 300 s (a base of 1200 s),
+because zero keeps the marker and only suppresses the nudge. While the `--on` target is a
+live seat of this session whose newest relevant event is its current `working` declaration,
+that ceiling triples, capped at 7200 awake seconds but never shortened. Its reason names the
 agent and what you need from them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
 decision elsewhere, a broken host — and names what blocks, who or what unblocks it, what
 you tried, and a long-form path.)

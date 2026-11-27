@@ -682,9 +682,9 @@ fn book_waiting_agent_escalation(
     effects: &mut Vec<Effect>,
     seen: &Observation,
     knobs: &Knobs,
-    rung: u8,
+    (rung, on_working): (u8, bool),
 ) -> Option<Verdict> {
-    if !waiting_agent_escalates(seen, knobs, rung) {
+    if !waiting_agent_escalates(seen, knobs, rung, on_working) {
         return None;
     }
     // An ACTIVE wait episode owns the next delivery: challenge, not nudge. A
@@ -722,15 +722,22 @@ fn book_target_moved(
 }
 
 /// Whether this cycle's quiet `waiting-agent` is past its ceiling on `rung`
-/// ([`book_wait_hold`]'s promoted rung) — the one answer the escalated
-/// verdict and the challenge text both read.
-pub(super) fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs, rung: u8) -> bool {
+/// ([`book_wait_hold`]'s promoted rung), the longer one while `on_working`
+/// ([`Activity::wait_on_working`]) — the one answer the escalated verdict and
+/// the challenge text both read.
+pub(super) fn waiting_agent_escalates(
+    seen: &Observation,
+    knobs: &Knobs,
+    rung: u8,
+    on_working: bool,
+) -> bool {
     seen.quiet == Some(QuietKind::WaitingAgent)
         && !seen.wait_ends_elsewhere
-        && crate::watchdog::waiting_agent_escalated_at(
+        && crate::watchdog::waiting_agent_escalated_for(
             seen.declared_age_secs,
             knobs.idle_nudge_secs,
             rung,
+            on_working,
         )
 }
 
@@ -1241,7 +1248,7 @@ fn account_ordinary(
             required,
             wait_age_secs,
             state: wait_state,
-            escalated: waiting_agent_escalates(seen, knobs, hold.rung),
+            escalated: waiting_agent_escalates(seen, knobs, hold.rung, activity.wait_on_working),
         };
         let mut waits = bounded(attempts, seen, knobs, challenge, wait_age_secs);
         if alerted {
@@ -1277,9 +1284,14 @@ fn account_ordinary(
                 moved: false,
             };
         }
-        if let Some(verdict) =
-            book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs, hold.rung)
-        {
+        if let Some(verdict) = book_waiting_agent_escalation(
+            prior,
+            &mut next,
+            &mut effects,
+            seen,
+            knobs,
+            (hold.rung, activity.wait_on_working),
+        ) {
             return Accounting {
                 next,
                 effects,
