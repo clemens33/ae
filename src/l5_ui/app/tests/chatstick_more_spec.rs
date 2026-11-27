@@ -285,3 +285,79 @@ fn a_panel_send_returns_the_panel_alone_to_the_bottom() {
     );
     assert_eq!(hint(&buf, &main), Some(7), "main counts:\n{drawn}");
 }
+
+/// Mutant triage (draw.rs anchor margin, ae-20261127T102435Z-9c3c683c): a
+/// scrolled-up chat keeps its first entry through the size floor's heights,
+/// where the lane has one or two rows, and through a burst of arrivals
+/// taken there; grown back, it shows the same first entry and the hint
+/// counts every arrival.
+#[test]
+fn a_scrolled_up_chat_keeps_its_first_entry_through_the_smallest_terminal() {
+    let root = Root::new("chatstick-more-floor");
+    let (mut app, _reader) = housed(&root);
+    arrive(&mut app, "api", 1, "entry", 40);
+    let all = 0..W;
+    let buf = frame_at(W, H, &mut app);
+    assert_eq!(last(&buf, &all, "entry"), 39, "a fresh view at the bottom");
+    wheel_up(&mut app, 150, 4);
+    let buf = frame_at(W, H, &mut app);
+    let drawn = text(&buf);
+    assert_eq!(hint(&buf, &all), Some(4), "scrolled up:\n{drawn}");
+    let top = *visible(&buf, &all, "entry")
+        .first()
+        .unwrap_or_else(|| panic!("an entry drawn:\n{drawn}"));
+    for height in [9, 8] {
+        let small = text(&frame_at(W, height, &mut app));
+        assert!(
+            small.contains(" newer turn"),
+            "still up at {height}:\n{small}"
+        );
+    }
+    arrive(&mut app, "api", 2, "entry", 75);
+    let small = text(&frame_at(W, 8, &mut app));
+    assert!(
+        small.contains(" newer turn"),
+        "the burst moved nothing:\n{small}"
+    );
+    let _ = frame_at(W, 9, &mut app);
+    let buf = frame_at(W, H, &mut app);
+    let drawn = text(&buf);
+    assert_eq!(
+        visible(&buf, &all, "entry").first(),
+        Some(&top),
+        "grown back, the same first entry:\n{drawn}"
+    );
+    assert_eq!(
+        hint(&buf, &all),
+        Some(39),
+        "every arrival counted:\n{drawn}"
+    );
+}
+
+/// Mutant triage (draw.rs anchor at the bottom): a chat at the bottom
+/// keeps no anchor, so a page up after arrivals starts from the newest
+/// rows whether or not a frame painted them first.
+#[test]
+fn a_first_page_up_after_arrivals_starts_from_the_newest_rows_painted_or_not() {
+    let all = 0..W;
+    let paged = |paint: bool| {
+        let root = Root::new("chatstick-more-coalesce");
+        let (mut app, _reader) = housed(&root);
+        arrive(&mut app, "api", 1, "entry", 40);
+        let buf = frame_at(W, H, &mut app);
+        assert_eq!(last(&buf, &all, "entry"), 39, "a fresh view at the bottom");
+        arrive(&mut app, "api", 2, "entry", 75);
+        if paint {
+            let buf = frame_at(W, H, &mut app);
+            assert_eq!(last(&buf, &all, "entry"), 74, "anchored, it follows");
+        }
+        press(&mut app, Key::PageUp);
+        let buf = frame_at(W, H, &mut app);
+        (visible(&buf, &all, "entry"), hint(&buf, &all), text(&buf))
+    };
+    let (painted, painted_hint, drawn) = paged(true);
+    assert!(painted_hint.is_some(), "a page up:\n{drawn}");
+    let (coalesced, coalesced_hint, drawn) = paged(false);
+    assert_eq!(coalesced, painted, "the same page:\n{drawn}");
+    assert_eq!(coalesced_hint, painted_hint, "the same count:\n{drawn}");
+}
