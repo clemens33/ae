@@ -9,9 +9,9 @@ use super::{
     destination_is_absent, dir_exists, existing_directories_match, from_preflight, io,
     judge_spawned_labels, meta, meta_value, name, node_exists, path_bytes, placement,
     recorded_selection, recorded_wins_seconds, refuse_unproven, reserved_launch_actor,
-    restore_saved_roster, restored_command, resume_absence, roster, running_override_refusal,
-    same_directory, set_env_server, spawned_entries, stamp_lead_pair_policy, stamp_main_pane, tmux,
-    transport, validate_seat_overrides,
+    restore_saved_roster, restored_command, resume_absence, resume_successor_notes, roster,
+    running_override_refusal, same_directory, set_env_server, spawned_entries,
+    stamp_lead_pair_policy, stamp_main_pane, tmux, transport, validate_seat_overrides,
 };
 
 // ---------------------------------------------------------------------------
@@ -350,6 +350,13 @@ pub(super) fn check_seat_overrides(
                 return Ok(ControlFlow::Break(EXIT_FAILED));
             }
         };
+    // A stopped session's resume names every `[profile_successors]` row it
+    // ignores, once, whether or not one of its seats records that source.
+    if preflight_meta_present && !running_preflight {
+        for note in resume_successor_notes(env, dir) {
+            writeln!(err, "{note}")?;
+        }
+    }
 
     if !preflight_meta_present
         && let Some(actor) = reserved_launch_actor(env, plan, seat_overrides.as_ref())
@@ -1195,14 +1202,8 @@ pub(super) fn restore_roster(
     err: &mut impl Write,
 ) -> crate::error::Result<ControlFlow<u8>> {
     if let Some(dir) = resumed {
-        let overridden: Vec<&str> = seat_overrides.map_or_else(Vec::new, |snapshot| {
-            snapshot
-                .overrides
-                .iter()
-                .map(|replacement| replacement.agent.as_str())
-                .collect()
-        });
-        if let Err(line) = restore_saved_roster(dir, session, cfg, home, &overridden, seats) {
+        let overrides = seat_overrides.map_or(&[][..], |snapshot| snapshot.overrides.as_slice());
+        if let Err(line) = restore_saved_roster(dir, session, cfg, home, overrides, seats) {
             writeln!(err, "{line}")?;
             return Ok(ControlFlow::Break(EXIT_FAILED));
         }
@@ -1234,7 +1235,7 @@ pub(super) fn lex_spawned_seats(
     home: Option<&Path>,
     err: &mut impl Write,
 ) -> crate::error::Result<ControlFlow<u8>> {
-    let spawned = match spawned_entries(dir, session) {
+    let spawned = match spawned_entries(dir, session, Some(cfg), judged) {
         Ok(spawned) => spawned,
         Err(line) => {
             writeln!(err, "{line}")?;

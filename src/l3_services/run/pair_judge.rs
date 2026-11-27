@@ -499,6 +499,173 @@ pub(crate) fn judge_spawned_label(
     Ok(Some(JudgedLabel { label, command }))
 }
 
+/// The `[profile_successors]` table of the session's recorded GLOBAL config
+/// (the `config` meta row), judged against `cfg`. A session that records no
+/// global config, or one ae cannot read, declares nothing.
+#[must_use]
+pub(crate) fn recorded_successors(
+    bytes: &[u8],
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+) -> crate::successors::Successors {
+    let global = meta_text(bytes, "config");
+    if global.is_empty() {
+        return crate::successors::Successors::default();
+    }
+    crate::successors::read_global(Path::new(&global), cfg, home)
+}
+
+/// The profile a STOPPED seat resumes on under `table`: the successor of its
+/// recorded profile, only when that successor proves usable for THIS seat.
+///
+/// The ONE per-seat eligibility a resume applies and `ae list` shows. The
+/// successor must not be a scope its vendor refused (`state_root` holds those
+/// records, `None` skips the check only for a caller with no state root). A
+/// seat with a recorded `client.<slot>` label must pass the label judgement a
+/// resume gives that seat ([`judge_spawned_label`]) with the successor in
+/// place of its profile; an unlabeled seat must record its harness
+/// (`agent_bin.<slot>`) and resolve the successor to one simple command of that
+/// harness that keeps its recorded store. Any doubt answers `None`: the seat
+/// keeps its recorded profile.
+#[must_use]
+pub(crate) fn seat_successor(
+    session: &str,
+    cfg: &IdentityConfig,
+    table: &crate::successors::Successors,
+    entry: &meta::RosterEntry,
+    home: Option<&Path>,
+    state_root: Option<&Path>,
+) -> Option<String> {
+    let profile = entry.profile.as_deref().filter(|name| !name.is_empty())?;
+    let target = table.target(profile)?;
+    let label = match &entry.client {
+        meta::RecordedClient::Invalid => return None,
+        meta::RecordedClient::Label(label) => Some(label.as_str()),
+        meta::RecordedClient::Missing => None,
+    };
+    if let Some(root) = state_root
+        && crate::vendorblock::scope_refusal_in(
+            cfg,
+            root,
+            target,
+            label,
+            crate::time::Timestamp::now().epoch(),
+        )
+        .is_some()
+    {
+        return None;
+    }
+    let mut moved = entry.clone();
+    moved.profile = Some(target.to_owned());
+    if label.is_some() {
+        return match judge_spawned_label(session, cfg, &moved, home, &known_names(cfg)) {
+            Ok(Some(JudgedLabel {
+                command: Some(_), ..
+            })) => Some(target.to_owned()),
+            _ => None,
+        };
+    }
+    let binary = entry.binary.as_deref().filter(|bin| !bin.is_empty())?;
+    let command = cfg.command(target, home).ok()??;
+    let lexed = crate::launch_cmd::lex_simple_command(command.as_str()).ok()?;
+    if ToolKind::from_binary_name(binary) != lexed.tool() {
+        return None;
+    }
+    refuse_recorded_client_conflict(
+        session,
+        &entry.name,
+        target,
+        None,
+        &moved,
+        cfg,
+        &command,
+        lexed.tool(),
+        home,
+    )
+    .ok()?;
+    Some(target.to_owned())
+}
+
+/// The identities a caller already holds for [`recorded_seat_successors`]:
+/// each `None` is read from the session's recorded files instead.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct HeldIdentity<'a> {
+    /// The identity the resume launches its seats with.
+    pub(crate) launch: Option<&'a IdentityConfig>,
+    /// The recorded GLOBAL identity a labeled spawned seat is judged by.
+    pub(crate) authority: Option<&'a IdentityConfig>,
+}
+
+/// Every seat of the STOPPED session at `dir` (meta `bytes`) that its resume
+/// moves to a `[profile_successors]` successor, as `(slot, successor)`.
+///
+/// The table is the session's recorded GLOBAL config; every proof of a row and
+/// of a seat is taken on ONE identity, the one the seat's command resolves
+/// from. A spawned seat that records a client label is judged against the
+/// recorded global config alone, the authority its pair was admitted by; every
+/// other seat against the identity its resume launches with: the global config
+/// plus the session's project overlay, never the dedicated orchestrator
+/// overlay ([`crate::run::identity_config_pair`]), which contributes no
+/// identity row. A caller that already holds
+/// either identity passes it in `held`, so the move and the command it runs
+/// come from the same read. The resume and `ae list` both read this. A session
+/// that declares no row, or whose configs do not read, moves nothing.
+#[must_use]
+pub(crate) fn recorded_seat_successors(
+    dir: &Path,
+    bytes: &[u8],
+    session: &str,
+    home: Option<&Path>,
+    held: HeldIdentity<'_>,
+) -> Vec<(String, String)> {
+    let global_row = meta_text(bytes, "config");
+    if global_row.is_empty() {
+        return Vec::new();
+    }
+    let global = Path::new(&global_row);
+    let Ok(text) = config::read_selected(global) else {
+        return Vec::new();
+    };
+    if crate::successors::parse_in(global, &text).is_empty() {
+        return Vec::new();
+    }
+    let judged = |cfg: Option<IdentityConfig>| {
+        cfg.map(|cfg| {
+            let table = crate::successors::judged_in(global, &text, &cfg, home);
+            (cfg, table)
+        })
+    };
+    let authority = judged(
+        held.authority
+            .cloned()
+            .or_else(|| config::parse_identity_in(global, &text).ok()),
+    );
+    let overlay = config::local_overlay(dir, &meta_text(bytes, "origin"));
+    let (pair_global, pair_local) =
+        crate::run::identity_config_pair(dir, overlay.as_deref(), &global_row);
+    let launch = judged(
+        held.launch
+            .cloned()
+            .or_else(|| config::read_identity(pair_global.as_deref(), pair_local.as_deref()).ok()),
+    );
+    let state_root = dir.parent().and_then(Path::parent);
+    let parsed = meta::Meta::parse(&String::from_utf8_lossy(bytes));
+    parsed
+        .roster()
+        .iter()
+        .filter_map(|entry| {
+            let held = if is_labeled_spawned(entry) {
+                authority.as_ref()
+            } else {
+                launch.as_ref()
+            };
+            let (cfg, table) = held?;
+            seat_successor(session, cfg, table, entry, home, state_root)
+                .map(|target| (entry.slot.clone(), target))
+        })
+        .collect()
+}
+
 /// The command a LABELED spawned seat ([`is_labeled_spawned`]) may run when it
 /// starts outside a resume — a relaunch, a `_run` with no command snapshot — and
 /// the command a reseat's admission judges its source by: the resume's own
@@ -548,5 +715,88 @@ pub(crate) fn labeled_spawned_command(
         ))),
         Ok(None) => Err(refuse("it records no client label")),
         Err(why) => Err(refusal(why)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recorded_seat_successors;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "ae-pairjudge-unit-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    const PROFILES: &str = "[clients]\nprimary = codex\n[profiles]\n\
+        legacy = \"primary -m old\"\nnext = \"primary -m new\"\n\
+        helper-old = \"claude --model old\"\nhelper-new = \"claude --model new\"\n";
+
+    fn moves(tag: &str, config: &str, main_bin: &str) -> Vec<(String, String)> {
+        let root = scratch(tag);
+        let global = root.join("config");
+        std::fs::write(&global, config).expect("global config");
+        let meta = format!(
+            "schema=2\nconfig={}\nseat.main=lead\nprofile.main=legacy\nagent_bin.main={main_bin}\n\
+             seat.spawned.0=helper\nprofile.spawned.0=helper-old\nagent_bin.spawned.0=claude\n",
+            global.display()
+        );
+        let moved = recorded_seat_successors(
+            &root,
+            meta.as_bytes(),
+            "s",
+            None,
+            super::HeldIdentity::default(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        moved
+    }
+
+    #[test]
+    fn every_seat_with_a_usable_successor_moves_and_nothing_else() {
+        let config =
+            format!("{PROFILES}[profile_successors]\nlegacy = next\nhelper-old = helper-new\n");
+        assert_eq!(
+            moves("both", &config, "codex"),
+            vec![
+                ("main".to_owned(), "next".to_owned()),
+                ("spawned.0".to_owned(), "helper-new".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn no_section_moves_nothing() {
+        assert!(moves("none", PROFILES, "codex").is_empty());
+    }
+
+    #[test]
+    fn a_seat_on_another_harness_than_its_successor_keeps_its_profile() {
+        let config = format!("{PROFILES}[profile_successors]\nlegacy = next\n");
+        assert!(moves("tool", &config, "claude").is_empty());
+    }
+
+    #[test]
+    fn a_session_without_a_recorded_global_config_moves_nothing() {
+        let root = scratch("noglobal");
+        let meta = "schema=2\nseat.main=lead\nprofile.main=legacy\nagent_bin.main=codex\n";
+        assert!(
+            recorded_seat_successors(
+                &root,
+                meta.as_bytes(),
+                "s",
+                None,
+                super::HeldIdentity::default()
+            )
+            .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

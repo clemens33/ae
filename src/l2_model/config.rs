@@ -318,9 +318,15 @@ pub(crate) const LOCAL_CONFIG_KEY: &str = "local_config";
 #[must_use]
 pub(crate) fn local_overlay(meta_dir: &Path, origin: &str) -> Option<PathBuf> {
     let bytes = crate::meta::read_bytes(meta_dir).ok();
+    local_overlay_in(bytes.as_deref(), origin)
+}
+
+/// [`local_overlay`] over meta `bytes` a caller already read, so the overlay
+/// and every other fact it holds come from ONE read; `None` reads as no meta.
+#[must_use]
+pub(crate) fn local_overlay_in(bytes: Option<&[u8]>, origin: &str) -> Option<PathBuf> {
     let row = |key: &str| {
         bytes
-            .as_deref()
             .map(|bytes| crate::lifecycle::meta_value(bytes, key))
             .unwrap_or_default()
     };

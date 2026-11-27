@@ -69,7 +69,8 @@ use crate::run::pair_judge::{
 pub use capture::developer_record_carries;
 use overrides::{
     SeatOverrideSnapshot, apply_seat_overrides, launch_identity, reserved_launch_actor,
-    restore_saved_roster, running_override_refusal, validate_seat_overrides,
+    restore_saved_roster, resume_successor_notes, running_override_refusal,
+    validate_seat_overrides,
 };
 pub(crate) use overrides::{approved_pair, split_profile_client};
 #[cfg(test)]
@@ -1428,6 +1429,9 @@ struct Launching {
     launch_id: String,
     pane: String,
     command_snapshot: Option<config::ResolvedCommand>,
+    /// The recorded profile this seat leaves for its `[profile_successors]`
+    /// successor on this resume, `None` when its profile is kept or chosen.
+    successor_of: Option<String>,
 }
 
 /// Watchdog launch facts published atomically with the rest of session meta.
@@ -1552,6 +1556,10 @@ fn build(
         Ok(uuid) => uuid,
         Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
     };
+    // The published meta now records each moved seat's successor: that is a
+    // durable rewrite whatever the launch does next, so it is journaled here,
+    // beside its publication, and a later rollback keeps both.
+    journal_successors(&dir, &launching, caller, err);
     if let Some(proof) = parent {
         announce_inherited_goal(&dir, &env.home.join("archive"), &proof.id, &shape.name, err);
     }
@@ -1847,6 +1855,13 @@ fn seat_roster(
             launch_id,
             pane: panes[index].clone(),
             command_snapshot: seat_overrides.map(|_| seat.command.clone()),
+            successor_of: seat_overrides.and_then(|snapshot| {
+                snapshot
+                    .overrides
+                    .iter()
+                    .find(|replacement| replacement.agent == seat.name)
+                    .and_then(|replacement| replacement.successor_of.clone())
+            }),
         });
     }
     Ok(launching)
@@ -1863,7 +1878,7 @@ fn restore_spawned(
     (seat_overrides, judged): (Option<&SeatOverrideSnapshot>, &[JudgedSpawned]),
     launching: &mut Vec<Launching>,
 ) -> Result<(), String> {
-    let spawned = spawned_entries(at.dir, &shape.name)?;
+    let spawned = spawned_entries(at.dir, &shape.name, Some(cfg), judged)?;
     for entry in spawned {
         // A profile that is not configured on THIS machine keeps its seat
         // VERBATIM at its original index — a later resume with the profile
@@ -1894,8 +1909,11 @@ fn restore_spawned(
         );
         // A labeled seat runs exactly the command preflight judged: `_run`
         // never resolves its pair a second time.
+        // So does a seat its successor moved: the command proved for it here is
+        // the one it starts, never a later resolution of the profile name.
         let command_snapshot =
-            (seat_overrides.is_some() || entry.client.is_some()) && !command.as_str().is_empty();
+            (seat_overrides.is_some() || entry.client.is_some() || entry.successor_of.is_some())
+                && !command.as_str().is_empty();
         launching.push(Launching {
             slot: entry.slot,
             name: entry.name,
@@ -1909,6 +1927,7 @@ fn restore_spawned(
             launch_id,
             pane,
             command_snapshot: command_snapshot.then_some(command),
+            successor_of: entry.successor_of,
         });
     }
     if let Some(layout) = respawn_layout(&shape.layout) {
@@ -2945,6 +2964,58 @@ fn journal_launch_start(
     )
 }
 
+/// The journal action of one stored profile a resume rewrote to its
+/// `[profile_successors]` successor.
+pub(crate) const PROFILE_SUCCESSOR_ACTION: &str = "profile-successor";
+
+/// One `profile-successor` row per seat whose published meta now records its
+/// successor, then one line saying so. The row states the stored rewrite only,
+/// never that the seat started. The append comes first and every line is
+/// best-effort: a failed append or a closed stderr is said where it can be and
+/// stops nothing, so the launch never stops half-built here.
+/// NAMED RESIDUAL: a crash between the publication and this append loses the
+/// row, and the next resume finds no source to move again.
+fn journal_successors(
+    dir: &Path,
+    launching: &[Launching],
+    caller: Caller<'_>,
+    err: &mut impl Write,
+) {
+    let actor = caller::actor_of(caller);
+    for seat in launching {
+        let Some(from) = seat.successor_of.as_deref() else {
+            continue;
+        };
+        let summary = format!("stored profile rewritten {from} -> {}", seat.profile);
+        let fields = crate::tracked::EventFields::new(
+            crate::time::Timestamp::now(),
+            &actor,
+            PROFILE_SUCCESSOR_ACTION,
+            &seat.name,
+            "",
+            "",
+            "",
+            &seat.slot,
+            "",
+            &summary,
+            "",
+        );
+        let appended = crate::store::open(dir).append_event(&crate::tracked::event_line(&fields));
+        let _ = writeln!(
+            err,
+            "ae: seat '{}' ({}) resumes on profile '{}', the successor of '{from}'.",
+            seat.name, seat.slot, seat.profile
+        );
+        if let Err(why) = appended {
+            let _ = writeln!(
+                err,
+                "Warning: could not journal the profile rewrite of seat '{}' ({why}).",
+                seat.name
+            );
+        }
+    }
+}
+
 /// The fleet feed's row of a launch handed over: `created`, or `resumed` with
 /// what the session parked when it filed a parking memo. Best-effort: a row
 /// the feed cannot append is a warning, never a failed launch.
@@ -3166,6 +3237,9 @@ struct Spawned {
     harness_session: String,
     config_home: Option<String>,
     config_home_base: Option<String>,
+    /// The recorded profile this seat leaves for its `[profile_successors]`
+    /// successor on this resume; `profile` then names the successor.
+    successor_of: Option<String>,
 }
 
 /// The launch command of one restored spawned seat, resolved through the
@@ -3215,11 +3289,27 @@ fn spawned_command(
 ///
 /// An unreadable meta, or an Invalid recorded client row with its remedy —
 /// the meta rewrite would otherwise launder it.
-fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
+fn spawned_entries(
+    dir: &Path,
+    session: &str,
+    launch: Option<&IdentityConfig>,
+    judged: &[JudgedSpawned],
+) -> Result<Vec<Spawned>, String> {
     let bytes = meta::read_bytes(dir)
         .map_err(|why| format!("cannot read the meta to restore spawned seats: {why}"))?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let parsed = Meta::parse(&text);
+    // An UNLABELED seat's move is decided here, from the meta read under the
+    // lock and the identity its command resolves from. A LABELED seat's move
+    // is the one its pre-lock judgement made, on the authority that judged its
+    // command, and only while the seat still records the profile it moved off.
+    let moved = spawned_successors(
+        dir,
+        &bytes,
+        session,
+        crate::doors::home().as_deref(),
+        launch,
+    );
     let mut out: Vec<Spawned> = Vec::new();
     for entry in parsed
         .roster()
@@ -3233,7 +3323,25 @@ fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
                 return Err(invalid_client_refusal(session, &entry.name, &entry.slot));
             }
         };
-        out.push(Spawned::of(entry, client));
+        let mut spawned = Spawned::of(entry, client);
+        let target = if spawned.client.is_some() {
+            judged
+                .iter()
+                .find(|held| {
+                    held.identity.slot == entry.slot
+                        && held.moved_from.as_deref() == Some(spawned.profile.as_str())
+                })
+                .map(|held| held.identity.profile.clone())
+        } else {
+            moved
+                .iter()
+                .find(|(slot, _)| *slot == entry.slot)
+                .map(|(_, target)| target.clone())
+        };
+        if let Some(target) = target {
+            spawned.successor_of = Some(std::mem::replace(&mut spawned.profile, target));
+        }
+        out.push(spawned);
     }
     out.sort_by_key(|entry| {
         entry
@@ -3243,6 +3351,27 @@ fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
             .unwrap_or(u32::MAX)
     });
     Ok(out)
+}
+
+/// The `spawned.<n>` seats of the stopped session at `dir` (meta `bytes`) that
+/// move to their `[profile_successors]` successor, as `(slot, successor)`:
+/// the ONE per-session reading `ae list` shows, filtered to spawned seats.
+/// `launch` is the identity the restore resolves an unlabeled seat from.
+fn spawned_successors(
+    dir: &Path,
+    bytes: &[u8],
+    session: &str,
+    home: Option<&Path>,
+    launch: Option<&IdentityConfig>,
+) -> Vec<(String, String)> {
+    let held = crate::run::pair_judge::HeldIdentity {
+        launch,
+        authority: None,
+    };
+    crate::run::pair_judge::recorded_seat_successors(dir, bytes, session, home, held)
+        .into_iter()
+        .filter(|(slot, _)| slot.starts_with("spawned."))
+        .collect()
 }
 
 /// Every recorded fact of one spawned seat a judgement of its client is bound
@@ -3270,6 +3399,7 @@ impl Spawned {
             harness_session: entry.harness_session.clone().unwrap_or_default(),
             config_home: entry.config_home.record_value(),
             config_home_base: entry.config_home_base.record_value(),
+            successor_of: None,
         }
     }
 
@@ -3294,6 +3424,9 @@ impl Spawned {
 struct JudgedSpawned {
     identity: SpawnedIdentity,
     command: Option<config::ResolvedCommand>,
+    /// The recorded profile this seat moves off for the successor its identity
+    /// and command name, judged on the same authority; `None` when it stays.
+    moved_from: Option<String>,
 }
 
 /// The refusal for a session whose labeled spawned seat has no global config
@@ -3337,10 +3470,32 @@ fn judge_spawned_labels(
         SeatOverrideRefusal::Failed(unavailable_authority_refusal(session, first, &why))
     })?;
     let known = known_names(&cfg);
+    // The move is decided on the SAME authority that judges the command the
+    // seat then runs: one read, one proof.
+    let held = crate::run::pair_judge::HeldIdentity {
+        launch: None,
+        authority: Some(&cfg),
+    };
+    let moved = crate::run::pair_judge::recorded_seat_successors(dir, &bytes, session, home, held);
     let mut judged = Vec::with_capacity(labeled.len());
     for entry in labeled {
-        if let Some(seat) = spawned_judgement(session, &cfg, entry, home, &known)? {
-            judged.push(seat);
+        // The recorded seat keeps its own judgement first: every refusal it
+        // owes stands whether or not a successor would move it.
+        let Some(kept) = spawned_judgement(session, &cfg, entry, home, &known)? else {
+            continue;
+        };
+        let Some((_, target)) = moved.iter().find(|(slot, _)| *slot == entry.slot) else {
+            judged.push(kept);
+            continue;
+        };
+        let mut moved_entry = entry.clone();
+        moved_entry.profile = Some(target.clone());
+        match spawned_judgement(session, &cfg, &moved_entry, home, &known)? {
+            Some(mut seat) if seat.command.is_some() => {
+                seat.moved_from.clone_from(&entry.profile);
+                judged.push(seat);
+            }
+            _ => judged.push(kept),
         }
     }
     Ok(judged)
@@ -3361,6 +3516,7 @@ fn spawned_judgement(
             |judged| JudgedSpawned {
                 identity: Spawned::of(entry, Some(judged.label)).identity(),
                 command: judged.command,
+                moved_from: None,
             },
         ),
     )

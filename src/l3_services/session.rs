@@ -1236,6 +1236,7 @@ fn agent_entries(
                 background_task: false,
                 harness_clash: None,
                 version: None,
+                successor: None,
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
                 alias: slot.profile.clone().unwrap_or_default(),

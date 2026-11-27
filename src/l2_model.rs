@@ -23,6 +23,7 @@ pub mod roster;
 pub(crate) mod session_tmux;
 pub mod state;
 pub mod store;
+pub mod successors;
 pub mod theme;
 pub mod tmux;
 pub mod tool;

@@ -117,6 +117,10 @@ pub struct AgentEntry {
     /// default, `[workspace] version_probe` is off) or its row is damaged.
     /// TABLE only, same rule as `own_work`. Filled by `ae list` alone.
     pub version: Option<String>,
+    /// The `[profile_successors]` successor a STOPPED seat's next resume moves
+    /// it to ([`crate::run::pair_judge::recorded_seat_successors`]). TABLE only,
+    /// same rule as `own_work`. Filled by `ae list` alone.
+    pub successor: Option<String>,
 }
 
 /// A pane that runs known harnesses the seat's records do not name — for

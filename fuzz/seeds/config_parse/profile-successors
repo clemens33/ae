@@ -1,0 +1,41 @@
+[clients]
+primary = codex
+secondary = codex config_home=/alt
+anthropic = claude
+[profiles]
+self = "primary -m self"
+ring-a = "primary -m ring-a"
+ring-b = "primary -m ring-b"
+ring-c = "primary -m ring-c"
+head = "primary -m head"
+mid = "primary -m mid"
+tail = "primary -m tail"
+into = "primary -m into"
+twice = "primary -m twice"
+other = "secondary -m other"
+oss = "primary --oss -m oss"
+cl = "anthropic --model cl"
+ok-a = "primary -m ok-a"
+ok-b = "primary -m ok-b"
+[profile_successors]
+self = self
+ring-a = ring-b
+ring-b = ring-c
+ring-c = ring-a
+head = mid
+mid = tail
+into = ring-a
+twice = ok-b
+twice = ok-a
+other = ok-a
+oss = ok-b
+cl = ok-a
+ok-a = ok-b
+malformed = a b
+labelled = ok-b@primary
+gone = ok-b
+ok-b = missing
+[workspace]
+main = lead
+[profile_successors]
+late = ok-b

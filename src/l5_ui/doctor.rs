@@ -1629,6 +1629,7 @@ pub fn run(
     let facts = gather(root, args.global.as_deref(), local.as_deref());
     let mut document = report(&facts);
     effort_floor_rows(&global, local.as_deref(), &mut document);
+    profile_successor_rows(&global, local.as_deref(), &mut document);
     variant_rows(&facts.profiles, &mut document);
     append_autoupgrade_status(crate::shape::current(), &mut document);
     report_pending_renames(root, &mut document);
@@ -1726,6 +1727,56 @@ fn effort_floor_rows(global: &Path, local: Option<&Path>, document: &mut Report)
     }
     for note in &notes {
         document.push(Level::Warn, LABEL, note);
+    }
+}
+
+/// The `profile successors` rows: OK with the usable row count, and one WARN
+/// per `[profile_successors]` row a resume ignores, in the resume's own note
+/// words, judged against the identity a launch from here reads. A project
+/// config's section is named as ignored: only the global config declares
+/// successors. Nothing without a section. A WARN never costs the exit code.
+fn profile_successor_rows(global: &Path, local: Option<&Path>, document: &mut Report) {
+    const LABEL: &str = "profile successors";
+    let section = crate::successors::SECTION;
+    if let Some(local) = local
+        && let Ok(text) = crate::config::read_selected(local)
+        && !crate::successors::parse_in(local, &text).is_empty()
+    {
+        document.push(
+            Level::Warn,
+            LABEL,
+            &format!(
+                "[{section}] in {} is ignored: only the global config declares successors",
+                local.display()
+            ),
+        );
+    }
+    let Ok(text) = crate::config::read_selected(global) else {
+        return;
+    };
+    if crate::successors::parse_in(global, &text).is_empty() {
+        return;
+    }
+    let Ok(identity) = crate::config::read_identity(Some(global), local) else {
+        return;
+    };
+    let home = crate::doors::home();
+    let table = crate::successors::judged_in(global, &text, &identity, home.as_deref());
+    let usable = table.usable();
+    if !usable.is_empty() {
+        let rows: Vec<String> = usable
+            .iter()
+            .map(|(source, target)| format!("{source} -> {target}"))
+            .collect();
+        document.push(
+            Level::Ok,
+            LABEL,
+            &format!("{} usable row(s): {}", rows.len(), rows.join(", ")),
+        );
+    }
+    for note in table.notes() {
+        let detail = note.strip_prefix("Note: ").unwrap_or(&note);
+        document.push(Level::Warn, LABEL, detail);
     }
 }
 

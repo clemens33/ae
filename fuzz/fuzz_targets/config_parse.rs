@@ -7,11 +7,12 @@ use libfuzzer_sys::fuzz_target;
 // byte in play as the one thing the parser can see. The auto reseat settings
 // read the same global text, through their own entry (the lead floor and its
 // `[model_tiers]` rows too), and so does the strict effort switch. The
-// approved-pair list is hand-edited global text read through
-// `section_entries`, so its pure entry takes the same bytes. Telegram also
-// reads the global text before opening its token file. The reserved-guard keys
-// write into every lead seat's instructions, so the target also puts the input
-// after each key and judges what the parser accepts.
+// approved-pair list and the profile successor table are hand-edited global
+// text read through `section_entries`, so their pure entries take the same
+// bytes. Telegram also reads the global text before opening its token file.
+// The reserved-guard keys write into every lead seat's instructions, so the
+// target also puts the input after each key and judges what the parser
+// accepts.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
@@ -85,6 +86,21 @@ fuzz_target!(|data: &[u8]| {
     }
     let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
     let _ = std::hint::black_box(pairs.judge("opus55x", "cc-work"));
+    // The profile successor table is hand-edited global text too: its shape
+    // parse and its judgement against the identity the same text declares.
+    let identity = ae::config::parse_identity(&text).unwrap_or_default();
+    let successors = ae::successors::judged_in(
+        std::path::Path::new("config"),
+        &text,
+        &identity,
+        Some(std::path::Path::new("/home/fuzz")),
+    );
+    let _ = std::hint::black_box((
+        successors.target("sol61x"),
+        successors.usable(),
+        successors.notes(),
+        successors.is_empty(),
+    ));
     let _ = std::hint::black_box(ae::telegram::validate_settings_in(
         std::path::Path::new("config"),
         &text,

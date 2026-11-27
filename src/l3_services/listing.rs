@@ -451,6 +451,13 @@ fn push_agent_line(out: &mut String, session: &SessionEntry, agent: &AgentEntry,
     if session.status == Status::Running && agent.alive == Some(false) {
         out.push_str(" !");
     }
+    // A stopped seat its next resume moves to a `[profile_successors]` row.
+    if session.status == Status::Stopped
+        && let Some(target) = &agent.successor
+    {
+        out.push_str(" · resumes on ");
+        out.push_str(target);
+    }
     out.push('\n');
 }
 
@@ -2367,6 +2374,34 @@ mod tests {
             ],
             "no declaration renders the dash cell"
         );
+    }
+
+    #[test]
+    fn a_stopped_seat_names_its_pending_successor_and_a_running_one_never_does() {
+        let seat = |successor: Option<&str>| AgentEntry {
+            reference: "lead".to_owned(),
+            alias: "legacy".to_owned(),
+            name: "lead".to_owned(),
+            session_id: Some("11111111".to_owned()),
+            successor: successor.map(ToOwned::to_owned),
+            ..Default::default()
+        };
+        let mut stopped = SessionEntry::new("moving", Status::Stopped);
+        stopped.agents = vec![seat(Some("next"))];
+        let rendered = table(&[&stopped]);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("11111111"))
+            .unwrap_or_default();
+        assert!(line.ends_with(" · resumes on next"), "{rendered}");
+
+        let mut running = SessionEntry::new("moving", Status::Running);
+        running.agents = vec![seat(Some("next"))];
+        assert!(!table(&[&running]).contains("resumes on"));
+
+        let mut kept = SessionEntry::new("moving", Status::Stopped);
+        kept.agents = vec![seat(None)];
+        assert!(!table(&[&kept]).contains("resumes on"));
     }
 
     #[test]

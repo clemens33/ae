@@ -75,6 +75,9 @@ fn resolve(root: &Path, agent: &str, value: &str) -> Result<(), SeatOverrideRefu
         session: "s",
         home: Some(Path::new("/Users/a")),
         state_root: root,
+        successors: &crate::successors::Successors::default(),
+        recorded_config: None,
+        recorded_local_config: None,
     };
     resolve_one_override(&ctx, agent, value).map(|_| ())
 }

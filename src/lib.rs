@@ -59,6 +59,7 @@ pub use l2_model::roster;
 pub(crate) use l2_model::session_tmux;
 pub use l2_model::state;
 pub use l2_model::store;
+pub use l2_model::successors;
 pub use l2_model::theme;
 pub use l2_model::tmux;
 pub use l2_model::tool;
@@ -1103,6 +1104,24 @@ fn enrich_list_seats(
             continue;
         };
         let seats = pids.get(&record.path);
+        // A stopped session's pending `[profile_successors]` moves, by the
+        // one reading its resume applies. Read-only: nothing is rewritten.
+        let moved = if entry.status == digest::Status::Stopped {
+            meta::read_bytes(&record.path).map_or_else(
+                |_| Vec::new(),
+                |bytes| {
+                    run::pair_judge::recorded_seat_successors(
+                        &record.path,
+                        &bytes,
+                        &entry.name,
+                        doors::home().as_deref(),
+                        run::pair_judge::HeldIdentity::default(),
+                    )
+                },
+            )
+        } else {
+            Vec::new()
+        };
         for agent in &mut entry.agents {
             let Some(seat) = meta.roster().iter().find(|seat| seat.name == agent.name) else {
                 continue;
@@ -1121,6 +1140,10 @@ fn enrich_list_seats(
                 &table,
             );
             agent.version = session::version_cell_of(meta, &seat.slot, seat.binary.as_deref());
+            agent.successor = moved
+                .iter()
+                .find(|(slot, _)| *slot == seat.slot)
+                .map(|(_, target)| target.clone());
             agent.harness_clash = pane
                 .filter(|_| entry.status == digest::Status::Running && agent.alive == Some(true))
                 .and_then(|pane| {

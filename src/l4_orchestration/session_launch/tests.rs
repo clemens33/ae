@@ -1719,6 +1719,7 @@ fn a_resume_document_carries_the_observed_model_pair_forward() {
         launch_id: "L1".to_owned(),
         pane: "%0".to_owned(),
         command_snapshot: None,
+        successor_of: None,
     }];
     let watchdog = super::WatchdogFacts {
         meta_agent: false,
@@ -1842,6 +1843,7 @@ fn resume_parts(
         launch_id: "L1".to_owned(),
         pane: "%0".to_owned(),
         command_snapshot: None,
+        successor_of: None,
     }];
     let watchdog = super::WatchdogFacts {
         meta_agent: false,
@@ -1932,7 +1934,7 @@ fn spawned_entries_refuses_an_unreadable_meta_without_losing_rows() {
     );
     let before = std::fs::read(dir.join("meta")).unwrap();
     std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o000)).unwrap();
-    let Err(why) = super::spawned_entries(&dir, "s") else {
+    let Err(why) = super::spawned_entries(&dir, "s", None, &[]) else {
         panic!("an unreadable meta must refuse")
     };
     assert!(why.contains("cannot read the meta"), "{why}");
@@ -1940,7 +1942,7 @@ fn spawned_entries_refuses_an_unreadable_meta_without_losing_rows() {
     // spawned seat reads back whole once readable again.
     std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(std::fs::read(dir.join("meta")).unwrap(), before);
-    let entries = super::spawned_entries(&dir, "s").expect("entries");
+    let entries = super::spawned_entries(&dir, "s", None, &[]).expect("entries");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].slot, "spawned.0");
     let _ = std::fs::remove_dir_all(&root);
@@ -2616,6 +2618,7 @@ fn restored(client: Option<&str>, profile: &str) -> super::Spawned {
         harness_session: String::new(),
         config_home: None,
         config_home_base: None,
+        successor_of: None,
     }
 }
 

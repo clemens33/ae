@@ -23,6 +23,46 @@ pub(super) struct ResolvedSeatOverride {
     /// resolved `Unknown`, in which case the build honors the seat but records
     /// no new pairing.
     pub(super) store_proven: bool,
+    /// The recorded profile this override replaces as its `[profile_successors]`
+    /// successor, `None` for an explicit flag or a carried label kept as recorded.
+    pub(super) successor_of: Option<String>,
+    /// For a successor move: every recorded fact it was decided from, which
+    /// the meta read under the lifecycle lock must still carry.
+    pub(super) decided_on: Option<Box<DecidedOn>>,
+}
+
+/// The recorded facts an automatic `[profile_successors]` move was decided
+/// from before the lifecycle lock: the seat's whole roster row and the config
+/// files its identity was read from. A locked meta that differs in any of
+/// them is another seat, and the move is stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DecidedOn {
+    entry: crate::meta::RosterEntry,
+    config: Option<String>,
+    origin: Option<String>,
+    local_config: Option<String>,
+}
+
+impl DecidedOn {
+    fn of(ctx: &OverrideCtx, entry: &crate::meta::RosterEntry, recorded: &Meta) -> Box<Self> {
+        Box::new(Self {
+            entry: entry.clone(),
+            config: ctx.recorded_config.map(ToOwned::to_owned),
+            origin: recorded.origin().map(ToOwned::to_owned),
+            local_config: ctx.recorded_local_config.map(ToOwned::to_owned),
+        })
+    }
+
+    /// Whether the meta read under the lock (`bytes`) still records exactly
+    /// these facts.
+    fn holds_in(&self, bytes: &[u8]) -> bool {
+        let locked = Meta::parse(&String::from_utf8_lossy(bytes));
+        let row = |key: &str| meta::first_value(bytes, key).map(String::from_utf8_lossy);
+        row("config").as_deref() == self.config.as_deref()
+            && row(config::LOCAL_CONFIG_KEY).as_deref() == self.local_config.as_deref()
+            && locked.origin() == self.origin.as_deref()
+            && locked.roster().contains(&self.entry)
+    }
 }
 
 /// Split a `--lead`/`--colead`/`--seat` value into its profile and optional
@@ -119,6 +159,26 @@ fn override_identity(
         )
     };
     read.map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))
+}
+
+/// The identity a STOPPED session's flagless resume launches with: the
+/// recorded global config and project overlay, as the resume's own setup
+/// points `env` at them, through [`launch_identity`], which never lets the
+/// dedicated orchestrator overlay's legacy identity rows take authority. Every
+/// automatic `[profile_successors]` decision is taken on it.
+///
+/// It reads the config files the recorded meta `bytes` name, the same read
+/// every other fact of the decision comes from.
+fn automatic_identity(env: &Env, bytes: &[u8]) -> Result<IdentityConfig, SeatOverrideRefusal> {
+    let mut resumed = env.clone();
+    let row = |key: &str| crate::lifecycle::meta_value(bytes, key);
+    let stored = row("config");
+    if !stored.is_empty() {
+        resumed.global = Some(PathBuf::from(stored));
+    }
+    resumed.local = config::local_overlay_in(Some(bytes), &row("origin"));
+    launch_identity(&resumed, None, false)
+        .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))
 }
 
 pub(super) fn running_override_refusal(session: &str) -> String {
@@ -455,6 +515,12 @@ struct OverrideCtx<'a> {
     home: Option<&'a Path>,
     /// The state root the vendor block records live under (`AE_HOME`).
     state_root: &'a Path,
+    /// The judged `[profile_successors]` table of the recorded global config.
+    successors: &'a crate::successors::Successors,
+    /// The `config` row of the `recorded` meta, from the same read.
+    recorded_config: Option<&'a str>,
+    /// The `local_config` row of the `recorded` meta, from the same read.
+    recorded_local_config: Option<&'a str>,
 }
 
 /// Resolve one `--seat <agent>=<profile[@client]>` value: the agent must be a
@@ -564,6 +630,8 @@ fn resolve_one_override(
         command,
         parsed,
         store_proven,
+        successor_of: None,
+        decided_on: None,
     })
 }
 
@@ -576,8 +644,13 @@ fn resolve_one_override(
 /// had been spelled. Seats an explicit flag names are skipped: the explicit
 /// selection already judged them (a bare profile refuses, an exact label
 /// re-takes), and judging twice would double-report.
+///
+/// A recorded profile with a usable `[profile_successors]` successor is
+/// replaced by it, decided and resolved on `auto`, the identity a flagless
+/// stopped resume launches with.
 fn synthesize_recorded_honors(
     ctx: &OverrideCtx,
+    auto: &OverrideCtx,
     seat_profiles: &[(String, String)],
 ) -> Result<Vec<ResolvedSeatOverride>, SeatOverrideRefusal> {
     let Some(recorded) = ctx.recorded else {
@@ -602,13 +675,26 @@ fn synthesize_recorded_honors(
         else {
             continue;
         };
-        let Some(profile) = entry.profile.as_deref().filter(|name| !name.is_empty()) else {
+        let Some(recorded_profile) = entry.profile.as_deref().filter(|name| !name.is_empty())
+        else {
             return Err(SeatOverrideRefusal::Failed(format!(
                 "Error: session '{}' seat '{}' recorded client override '{label}' but no profile — \
                  fix the meta row, or end the session (ae end {}).",
                 ctx.session, entry.name, ctx.session
             )));
         };
+        // A usable successor takes the recorded profile's place under the SAME
+        // label; the judgement below is the one the recorded profile would get.
+        let successor = crate::run::pair_judge::seat_successor(
+            auto.session,
+            auto.cfg,
+            auto.successors,
+            entry,
+            auto.home,
+            Some(auto.state_root),
+        );
+        let ctx = if successor.is_some() { auto } else { ctx };
+        let profile = successor.as_deref().unwrap_or(recorded_profile);
         let (command, parsed) = resolve_client_override(
             ctx.cfg,
             &entry.name,
@@ -636,9 +722,83 @@ fn synthesize_recorded_honors(
             command,
             parsed,
             store_proven: proven,
+            successor_of: successor.is_some().then(|| recorded_profile.to_owned()),
+            decided_on: successor
+                .is_some()
+                .then(|| DecidedOn::of(ctx, entry, recorded)),
         });
     }
     Ok(honored)
+}
+
+/// The successor of every UNLABELED launch seat a flagless part of this resume
+/// restores: a recorded main or worker seat no flag names, whose recorded
+/// profile has a successor usable for it, is resolved as if `--seat
+/// <agent>=<successor>` had been given. A successor that does not resolve for
+/// the seat keeps the recorded profile: a table row never refuses a resume.
+fn synthesize_successors(
+    ctx: &OverrideCtx,
+    seat_profiles: &[(String, String)],
+) -> Vec<ResolvedSeatOverride> {
+    let Some(recorded) = ctx.recorded else {
+        return Vec::new();
+    };
+    let mut moved = Vec::new();
+    for entry in recorded.roster() {
+        if entry.slot != "main" && !entry.slot.starts_with("worker.") {
+            continue;
+        }
+        if !matches!(entry.client, crate::meta::RecordedClient::Missing)
+            || !ctx.agents.iter().any(|known| known == &entry.name)
+            || seat_profiles.iter().any(|(agent, _)| agent == &entry.name)
+        {
+            continue;
+        }
+        let Some(target) = crate::run::pair_judge::seat_successor(
+            ctx.session,
+            ctx.cfg,
+            ctx.successors,
+            entry,
+            ctx.home,
+            Some(ctx.state_root),
+        ) else {
+            continue;
+        };
+        if let Ok(mut replacement) = resolve_one_override(ctx, &entry.name, &target) {
+            replacement.successor_of.clone_from(&entry.profile);
+            replacement.decided_on = Some(DecidedOn::of(ctx, entry, recorded));
+            moved.push(replacement);
+        }
+    }
+    moved
+}
+
+/// Whether the session's recorded GLOBAL config declares any
+/// `[profile_successors]` row at all. Shape alone decides, before any identity
+/// is read, so a config without the section keeps every resume path as it was.
+fn successors_declared(dir: &Path) -> bool {
+    let Some(global) = meta_value(dir, "config").filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let global = PathBuf::from(global);
+    config::read_selected(&global)
+        .is_ok_and(|text| !crate::successors::parse_in(&global, &text).is_empty())
+}
+
+/// The notes a resume of a stopped session prints for its ignored
+/// `[profile_successors]` rows, judged against the identity the resume uses.
+pub(super) fn resume_successor_notes(env: &Env, dir: &Path) -> Vec<String> {
+    if !successors_declared(dir) {
+        return Vec::new();
+    }
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return Vec::new();
+    };
+    let Ok(cfg) = automatic_identity(env, &bytes) else {
+        return Vec::new();
+    };
+    let home = crate::doors::home();
+    crate::run::pair_judge::recorded_successors(&bytes, &cfg, home.as_deref()).notes()
 }
 
 /// Whether a flagless resume carries labels it must honor: a `Label` row on a
@@ -684,6 +844,94 @@ pub(super) fn validate_seat_overrides(
     Ok(snapshot)
 }
 
+/// ONE read of the recorded meta: the roster, its `config` and `local_config`
+/// rows, the automatic identity and the successor table all come from it.
+struct RecordedRead {
+    bytes: Option<Vec<u8>>,
+    meta: Option<Meta>,
+    config: Option<String>,
+    local_config: Option<String>,
+}
+
+impl RecordedRead {
+    fn of(dir: &Path, resuming: bool) -> Self {
+        let bytes = resuming.then(|| meta::read_bytes(dir).ok()).flatten();
+        let row = |key: &str| {
+            bytes
+                .as_deref()
+                .and_then(|bytes| meta::first_value(bytes, key))
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+        };
+        Self {
+            meta: bytes
+                .as_deref()
+                .map(|bytes| Meta::parse(&String::from_utf8_lossy(bytes))),
+            config: row("config"),
+            local_config: row(config::LOCAL_CONFIG_KEY),
+            bytes,
+        }
+    }
+}
+
+/// The known agent, profile and client lists a refusal names.
+fn known_lists(cfg: &IdentityConfig, agents: &[String]) -> (String, String, String) {
+    let agent_names: Vec<&str> = agents.iter().map(String::as_str).collect();
+    let profile_names: Vec<&str> = cfg.profiles.iter().map(|(name, _)| name.as_str()).collect();
+    let client_names: Vec<&str> = cfg.clients.iter().map(|(name, _)| name.as_str()).collect();
+    (
+        known_list(&agent_names),
+        known_list(&profile_names),
+        known_list(&client_names),
+    )
+}
+
+/// The refusal for the first recorded `client.<slot>` row in an unusable
+/// shape, `None` when every row is usable or the meta does not read.
+fn invalid_client_row_refusal(plan: &Plan, dir: &Path) -> Option<String> {
+    let session = plan.name.as_deref().unwrap_or_default();
+    let bytes = meta::read_bytes(dir).ok()?;
+    let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+    parsed
+        .roster()
+        .iter()
+        .find_map(|entry| match &entry.client {
+            crate::meta::RecordedClient::Invalid => {
+                Some(invalid_client_refusal(session, &entry.name, &entry.slot))
+            }
+            _ => None,
+        })
+}
+
+/// The automatic identity and the judged successor table of a STOPPED
+/// resume's recorded meta `bytes` (`None` for any other launch: no table).
+/// A resume that reads its identity only for the table already holds the
+/// automatic identity as `cfg`; any other takes it from [`automatic_identity`]
+/// and moves no seat when that identity does not read.
+fn automatic_successors(
+    env: &Env,
+    bytes: Option<&[u8]>,
+    successors_only: bool,
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+) -> (Option<IdentityConfig>, crate::successors::Successors) {
+    let Some(bytes) = bytes else {
+        return (None, crate::successors::Successors::default());
+    };
+    if successors_only {
+        return (
+            None,
+            crate::run::pair_judge::recorded_successors(bytes, cfg, home),
+        );
+    }
+    match automatic_identity(env, bytes) {
+        Ok(automatic) => {
+            let table = crate::run::pair_judge::recorded_successors(bytes, &automatic, home);
+            (Some(automatic), table)
+        }
+        Err(_) => (None, crate::successors::Successors::default()),
+    }
+}
+
 fn seat_override_snapshot(
     env: &Env,
     plan: &Plan,
@@ -700,39 +948,22 @@ fn seat_override_snapshot(
     // Shape alone decides, so no config is needed; the config-absent leg
     // lives with the override checks further down. A running session takes
     // the running refusal instead, never this one.
-    if resuming && !running {
-        let session = plan.name.as_deref().unwrap_or_default();
-        let refusal = meta::read_bytes(dir)
-            .ok()
-            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
-            .as_ref()
-            .and_then(|parsed| {
-                parsed
-                    .roster()
-                    .iter()
-                    .find_map(|entry| match &entry.client {
-                        crate::meta::RecordedClient::Invalid => {
-                            Some(invalid_client_refusal(session, &entry.name, &entry.slot))
-                        }
-                        _ => None,
-                    })
-            });
-        if let Some(line) = refusal {
-            return Err(SeatOverrideRefusal::Failed(line));
-        }
+    if resuming
+        && !running
+        && let Some(line) = invalid_client_row_refusal(plan, dir)
+    {
+        return Err(SeatOverrideRefusal::Failed(line));
     }
     let frozen_solo_identity = frozen_solo_identity(plan, dir, resuming, running)?;
-    let recorded = if resuming {
-        meta::read_bytes(dir)
-            .ok()
-            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
-    } else {
-        None
-    };
-    if plan.seat_profiles.is_empty()
+    let read = RecordedRead::of(dir, resuming);
+    let (recorded_bytes, recorded) = (&read.bytes, &read.meta);
+    // A resume whose only reason to read the identity is a declared
+    // `[profile_successors]` section answers `None` again below when no seat
+    // moves, so a table that moves nothing changes no launch path.
+    let successors_only = plan.seat_profiles.is_empty()
         && frozen_solo_identity.is_none()
-        && !flagless_honor_needed(recorded.as_ref(), resuming, running)
-    {
+        && !flagless_honor_needed(recorded.as_ref(), resuming, running);
+    if successors_only && !(resuming && !running && successors_declared(dir)) {
         return Ok(None);
     }
     if running && !plan.seat_profiles.is_empty() {
@@ -742,7 +973,14 @@ fn seat_override_snapshot(
         )));
     }
 
-    let mut cfg = override_identity(env, dir, resuming)?;
+    // A resume that reads its identity only for the table reads the identity a
+    // flagless stopped resume launches with; any other launch keeps the
+    // identity its flags and carried labels were always judged on.
+    let mut cfg = if successors_only {
+        automatic_identity(env, recorded_bytes.as_deref().unwrap_or_default())?
+    } else {
+        override_identity(env, dir, resuming)?
+    };
     if let Some((recorded_main, recorded_profile)) = frozen_solo_identity {
         freeze_solo_config(&mut cfg, plan, &recorded_main, &recorded_profile)?;
     }
@@ -750,20 +988,7 @@ fn seat_override_snapshot(
         return Err(SeatOverrideRefusal::Usage(line));
     }
     let agents = override_agents(&cfg, plan, dir, resuming);
-    let agent_names: Vec<&str> = agents.iter().map(String::as_str).collect();
-    let known_agents = known_list(&agent_names);
-    let profile_names: Vec<&str> = cfg
-        .profiles
-        .iter()
-        .map(|(profile, _)| profile.as_str())
-        .collect();
-    let known_profiles = known_list(&profile_names);
-    let client_names: Vec<&str> = cfg
-        .clients
-        .iter()
-        .map(|(client, _)| client.as_str())
-        .collect();
-    let known_clients = known_list(&client_names);
+    let (known_agents, known_profiles, known_clients) = known_lists(&cfg, &agents);
     let session = plan.name.as_deref().unwrap_or_default();
     // Every recorded seat's client row must be usable before any rewrite,
     // whether or not this launch names that seat: the meta rewrite below
@@ -778,6 +1003,18 @@ fn seat_override_snapshot(
 
     let mut overrides = Vec::with_capacity(plan.seat_profiles.len());
     let home = crate::doors::home();
+    // Every automatic decision is taken on the identity a flagless stopped
+    // resume launches with ([`automatic_identity`]); an identity that does
+    // not read leaves every seat on its recorded profile.
+    let stopped_resume = resuming && !running;
+    let (automatic, successors) = automatic_successors(
+        env,
+        recorded_bytes.as_deref().filter(|_| stopped_resume),
+        successors_only,
+        &cfg,
+        home.as_deref(),
+    );
+    let auto_cfg = automatic.as_ref().unwrap_or(&cfg);
     let ctx = OverrideCtx {
         cfg: &cfg,
         agents: &agents,
@@ -788,6 +1025,13 @@ fn seat_override_snapshot(
         session,
         home: home.as_deref(),
         state_root: &env.home,
+        successors: &successors,
+        recorded_config: read.config.as_deref(),
+        recorded_local_config: read.local_config.as_deref(),
+    };
+    let auto = OverrideCtx {
+        cfg: auto_cfg,
+        ..ctx
     };
     for (agent, value) in &plan.seat_profiles {
         overrides.push(resolve_one_override(&ctx, agent, value)?);
@@ -795,7 +1039,17 @@ fn seat_override_snapshot(
     // Flagless seats last: the explicit loop above already judged every seat
     // a flag names, so these are exactly the carried labels the flags left
     // alone — honored through the same resolve + re-take.
-    overrides.extend(synthesize_recorded_honors(&ctx, &plan.seat_profiles)?);
+    overrides.extend(synthesize_recorded_honors(
+        &ctx,
+        &auto,
+        &plan.seat_profiles,
+    )?);
+    // Then the unlabeled seats a usable successor moves, each as if its
+    // `--seat` had been given; an explicit flag above always wins.
+    overrides.extend(synthesize_successors(&auto, &plan.seat_profiles));
+    if successors_only && overrides.is_empty() {
+        return Ok(None);
+    }
     for replacement in &overrides {
         if let Some((_, bound)) = cfg
             .roster
@@ -833,8 +1087,7 @@ fn restored_profiles_refusal(
         }
     };
     let session = plan.name.as_deref().unwrap_or_default();
-    let replaced: Vec<&str> = replaced.iter().map(|o| o.agent.as_str()).collect();
-    restore_saved_roster(dir, session, cfg, home.as_deref(), &replaced, &mut seats).err()
+    restore_saved_roster(dir, session, cfg, home.as_deref(), replaced, &mut seats).err()
 }
 
 /// Replace every command-derived field of `seat` with a resolved profile's.
@@ -866,30 +1119,55 @@ fn reprofile_seat(seat: &mut Seat, replacement: &ResolvedSeatOverride) {
 /// config's own binding for the slot would. A seat an explicit or recorded-label
 /// override will replace is left to that override.
 ///
+/// A `[profile_successors]` move was decided before the lifecycle lock, from
+/// the meta as it was then: the seat must still record that SOURCE here, read
+/// under the lock, or the move is stale (another launch moved or changed the
+/// seat meanwhile) and the resume refuses, so a move and its journal row are
+/// only ever made from the meta they rewrite.
+///
 /// # Errors
 ///
-/// The refusal line for a restored profile that no longer resolves, before any
-/// write.
+/// The refusal line for a restored profile that no longer resolves, or for a
+/// stale successor move, before any write.
 pub(super) fn restore_saved_roster(
     dir: &Path,
     session: &str,
     cfg: &IdentityConfig,
     home: Option<&Path>,
-    overridden: &[&str],
+    overrides: &[ResolvedSeatOverride],
     seats: &mut [Seat],
 ) -> Result<(), String> {
+    let locked = overrides
+        .iter()
+        .any(|replacement| replacement.decided_on.is_some())
+        .then(|| meta::read_bytes(dir).ok())
+        .flatten();
     for seat in seats {
         if let Some(saved) =
             meta_value(dir, &format!("seat.{}", seat.slot)).filter(|v| !v.is_empty())
         {
             seat.name = saved;
         }
-        let Some(saved) =
-            meta_value(dir, &format!("profile.{}", seat.slot)).filter(|v| !v.is_empty())
-        else {
+        let saved = meta_value(dir, &format!("profile.{}", seat.slot)).filter(|v| !v.is_empty());
+        let replacement = overrides
+            .iter()
+            .find(|replacement| replacement.agent == seat.name);
+        if let Some(decided) = replacement.and_then(|moved| moved.decided_on.as_deref())
+            && (decided.entry.slot != seat.slot
+                || !locked
+                    .as_deref()
+                    .is_some_and(|bytes| decided.holds_in(bytes)))
+        {
+            return Err(format!(
+                "Error: session '{session}' seat '{}' ({}) changed its recorded seat while this \
+                 launch was starting — nothing was resumed; retry the launch.",
+                seat.name, seat.slot
+            ));
+        }
+        let Some(saved) = saved else {
             continue;
         };
-        if saved != seat.profile && !overridden.contains(&seat.name.as_str()) {
+        if saved != seat.profile && replacement.is_none() {
             let refuse = |cause: String| {
                 format!(
                     "Error: session '{session}' cannot resume: seat '{}' ({}) records profile \
@@ -932,3 +1210,52 @@ pub(super) fn apply_seat_overrides(
 #[cfg(test)]
 #[path = "vendorblock_launch_spec.rs"]
 mod vendorblock_launch_spec;
+
+#[cfg(test)]
+mod decided_on_tests {
+    use super::DecidedOn;
+    use crate::meta::Meta;
+
+    const RECORDED: &str = "schema=2\nconfig=/g/config\nlocal_config=/l/config\norigin=/o\nseat.main=lead\n\
+        profile.main=legacy\nagent_bin.main=codex\nharness_session.main=sid-1\n";
+
+    fn decided() -> DecidedOn {
+        let recorded = Meta::parse(RECORDED);
+        let entry = recorded
+            .roster()
+            .iter()
+            .find(|entry| entry.slot == "main")
+            .cloned()
+            .expect("recorded main seat");
+        DecidedOn {
+            entry,
+            config: Some("/g/config".to_owned()),
+            origin: recorded.origin().map(ToOwned::to_owned),
+            local_config: Some("/l/config".to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_unchanged_record_holds() {
+        assert!(decided().holds_in(RECORDED.as_bytes()));
+    }
+
+    #[test]
+    fn any_changed_seat_fact_or_config_file_makes_the_move_stale() {
+        for (from, to) in [
+            ("profile.main=legacy", "profile.main=next"),
+            ("agent_bin.main=codex", "agent_bin.main=claude"),
+            ("harness_session.main=sid-1", "harness_session.main=sid-2"),
+            ("seat.main=lead", "seat.main=other"),
+            ("config=/g/config", "config=/g/other"),
+            ("origin=/o", "origin=/p"),
+            ("local_config=/l/config", "local_config=/l/other"),
+            ("local_config=/l/config\n", ""),
+        ] {
+            let locked = RECORDED.replace(from, to);
+            assert!(!decided().holds_in(locked.as_bytes()), "{to}");
+        }
+        let labeled = format!("{RECORDED}client.main=primary\n");
+        assert!(!decided().holds_in(labeled.as_bytes()));
+    }
+}
