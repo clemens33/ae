@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.128] - 2026-11-27
+- Use generic account labels in quota and config tests
+- Say how to read back in the chat window
+- Expose banked reset expiries in quota JSON
+- Freeze notice-only orchestrator dictation acceptance
+- Place dictation acceptance items before test statements
+- Freeze dictation client invisibility acceptance
+- Pin dictation control transport and client lifecycle
+- Pin human attachment in the detached waiter
+- Pin human client and picker look arguments
+- Require a positively idle Claude frame before dictation
+- Match wrapped dictation notices in acceptance tests
+- Resume and reap a stopped tmux fixture after test exit
+- Keep frozen hook operands visible to the floor guard
+- Specify dictation ownership of the pane send lock
+- Specify fail-closed Claude managed policy checks
+- Start and stop Claude hold dictation from the panel mic
+- Require a recognized frame above the dictation startup banner
+- Pin the guarded focus hook in launch traces
+- Read a fresh Claude start as idle for the dictation start only
+- Pin dictation startup and sidecar lifecycle
+- Use generic labels in picker and app fixtures
+
 ## [v2026.11.127] - 2026-11-27
 - Move the SGR capture parser to the base layer
 - Read the measured Claude interim waveform and refuse the inactive mic first
