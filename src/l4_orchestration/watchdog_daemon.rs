@@ -2347,7 +2347,7 @@ struct OverviewReading {
 
 impl OverviewReading {
     fn changed(&self) -> bool {
-        self.checkpoint.hash.as_deref() != Some(self.hash.as_str())
+        !crate::overview::same_overview(self.checkpoint.hash.as_deref(), &self.hash)
     }
 
     /// Whether the `NEEDS YOU` set differs from the last delivered overview's.

@@ -10877,6 +10877,32 @@ fn the_sweep_prompt_books_its_own_action_not_the_idle_nudge() {
     assert_eq!(actions, [crate::watchdog::SWEEP_NUDGE_ACTION]);
 }
 
+/// A checkpoint an older core wrote holds the fleet digest alone. After the
+/// upgrade the same fleet is no change, so a restart spends no turn; a fleet
+/// that did change still is one.
+#[test]
+fn a_legacy_overview_checkpoint_of_the_same_fleet_is_no_change_after_a_restart() {
+    let fleet = "0123456789abcdef";
+    let reading = |prior: &str, now: &str| OverviewReading {
+        rendered: "QUIET\n  alpha (done -)".to_owned(),
+        hash: now.to_owned(),
+        checkpoint: crate::monitor::OverviewCheckpoint {
+            hash: Some(prior.to_owned()),
+            outstanding_since: None,
+            last_delivered_at: Some(0),
+        },
+    };
+    let current = format!("{fleet}fedcba9876543210");
+    assert!(!reading(fleet, &current).changed(), "the unchanged fleet");
+    assert!(!reading(&current, &current).changed());
+    assert!(
+        !reading(fleet, &current).needs_changed(),
+        "no NEEDS YOU half to compare"
+    );
+    let moved = format!("1123456789abcdef{}", &current[16..]);
+    assert!(reading(fleet, &moved).changed(), "a changed fleet");
+}
+
 /// An overview booked without a desk claim rechecks the shared spacing it was
 /// booked under: a desk tick or an overview another writer delivered after
 /// the observation holds it, and nothing is pasted.

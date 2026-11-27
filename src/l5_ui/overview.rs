@@ -171,6 +171,18 @@ pub fn needs_changed(prior: Option<&str>, current: &str) -> bool {
     }
 }
 
+/// Whether the last delivered `prior` hash names the same fleet as `current`,
+/// both from [`semantic_hash`]. A legacy prior of the fleet digest alone,
+/// written before the `NEEDS YOU` half existed, is the same fleet when it
+/// equals `current`'s fleet half: an upgrade spends no turn on an unchanged
+/// fleet.
+#[must_use]
+pub fn same_overview(prior: Option<&str>, current: &str) -> bool {
+    prior.is_some_and(|prior| {
+        prior == current || (prior.len() == DIGEST_HEX && current.get(..DIGEST_HEX) == Some(prior))
+    })
+}
+
 /// The `NEEDS YOU` half of a [`semantic_hash`], when it has one.
 fn needs_half(hash: &str) -> Option<&str> {
     hash.get(DIGEST_HEX..)
@@ -452,7 +464,7 @@ fn clipped(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRAILER, WIDTH, needs_changed, nudge_body, render, semantic_hash};
+    use super::{TRAILER, WIDTH, needs_changed, nudge_body, render, same_overview, semantic_hash};
     use crate::attention::Reason;
     use crate::brief::{AgentLine, Card, Need, TopicLine};
 
@@ -874,6 +886,31 @@ mod tests {
             semantic_hash(&original, "orchestrator"),
             semantic_hash(&worker_blocked, "orchestrator"),
             "a new human need from any seat wakes the overview"
+        );
+    }
+
+    #[test]
+    fn a_legacy_fleet_digest_names_the_same_overview_after_an_upgrade() {
+        let quiet = vec![card("alpha", vec![agent("worker", "done", 60, None)])];
+        let mut working = quiet.clone();
+        working[0].agents[0].state = "working".to_owned();
+        let hash = |cards: &[Card]| semantic_hash(cards, "orchestrator");
+        let legacy = hash(&quiet)[..16].to_owned();
+        assert!(
+            same_overview(Some(&legacy), &hash(&quiet)),
+            "an unchanged fleet"
+        );
+        assert!(same_overview(Some(&hash(&quiet)), &hash(&quiet)));
+        assert!(
+            !same_overview(Some(&legacy), &hash(&working)),
+            "a changed fleet"
+        );
+        assert!(!same_overview(Some(&hash(&quiet)), &hash(&working)));
+        assert!(!same_overview(None, &hash(&quiet)), "nothing delivered yet");
+        let short = &legacy[..15];
+        assert!(
+            !same_overview(Some(short), &hash(&quiet)),
+            "only a whole digest"
         );
     }
 
