@@ -48,6 +48,9 @@ mod seatguard_spec;
 #[path = "seatguard_driver.rs"]
 mod seatguard_driver;
 
+#[path = "profile_successor_spec.rs"]
+mod profile_successor_spec;
+
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl
