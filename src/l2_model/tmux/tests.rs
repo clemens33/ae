@@ -870,7 +870,7 @@ fn the_waiter_reads_attachment_then_waits_and_its_release_names_the_same_channel
             "-p",
             "-t",
             "=s1:",
-            "ae-wd:a|#{session_attached}",
+            "ae-wd:a|#{?#{session_id},#{n;L:#{?#{&&:#{==:#{session_name},#{client_session}},#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}},1,}},}",
             ";",
             "wait-for",
             "ae-wake-3-9"

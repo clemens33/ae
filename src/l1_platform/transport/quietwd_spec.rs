@@ -551,7 +551,7 @@ fn quietwd_detached_wait_has_one_atomic_waiter_and_at_most_one_release_child() {
     assert!(
         call[read..wait]
             .iter()
-            .any(|word| word.contains("#{session_attached}"))
+            .any(|word| word.contains("#{n;L:#{?#{&&:#{==:#{session_name},#{client_session}},#{?#{&&:#{client_control_mode},#{==:#{client_termname},ae-dictation}},0,1}},1,}}"))
     );
     assert!(call[read..wait].iter().any(|word| word == "=current:"));
     assert!(call[read..wait].iter().any(|word| word == ";"));
