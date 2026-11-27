@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn the_table_draws_the_pace_column_between_credits_and_resets() {
+    fn the_table_draws_pace_and_resets_in_hand_before_the_vendor_reset() {
         let shown = group(vec![row(Some("16.0"), 60, RESET, Status::Fresh)], raw());
         let table = PaceTable::build(std::slice::from_ref(&shown), &history(), NOW);
         let text = super::super::render_with_pace(
@@ -1287,7 +1287,16 @@ mod tests {
             .collect();
         let at = |name| header.iter().position(|word| *word == name);
         assert_eq!(at("PACE"), at("CREDITS").map(|column| column + 1), "{text}");
-        assert_eq!(at("RESETS"), at("PACE").map(|column| column + 1), "{text}");
+        assert_eq!(
+            at("RESETS-IN-HAND"),
+            at("PACE").map(|column| column + 1),
+            "{text}"
+        );
+        assert_eq!(
+            at("RESETS"),
+            at("RESETS-IN-HAND").map(|column| column + 1),
+            "{text}"
+        );
         assert!(text.contains("%/h ~"), "{text}");
         let blind = super::super::render_at(&[shown], None, NOW);
         assert!(!blind.contains("%/h"), "no table, no pace: {blind}");

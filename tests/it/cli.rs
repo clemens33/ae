@@ -1463,7 +1463,7 @@ fn quota_is_a_real_public_read_only_command() {
         "{stdout}"
     );
     assert!(
-        stdout.lines().all(|line| line.chars().count() <= 160),
+        stdout.lines().all(|line| line.chars().count() <= 200),
         "{stdout}"
     );
     assert_eq!(

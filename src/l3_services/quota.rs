@@ -7670,7 +7670,7 @@ mod tests {
         let scope = &scopes[0];
         assert_eq!(scope.title, "codex · cx");
         assert_eq!(scope.profiles, "solx");
-        assert!(scope.account.is_none());
+        assert_eq!(scope.account.as_deref(), Some("resets in hand 1"));
         let names: Vec<&str> = scope.windows.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["Session 5h", "Weekly 7d"]);
         let first = &scope.windows[0];

@@ -471,10 +471,7 @@ fn cell(text: &str, line: &str, name: &str) -> String {
         .lines()
         .find(|row| row.starts_with("PROFILES"))
         .expect("table header");
-    let column = header
-        .find(name)
-        .unwrap_or_else(|| panic!("no {name} column: {header}"));
-    let column = header[..column].chars().count();
+    let column = super::quota::column_offset(header, name);
     line.chars()
         .skip(column)
         .take_while(|c| !c.is_whitespace())

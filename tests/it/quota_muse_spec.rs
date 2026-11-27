@@ -837,8 +837,8 @@ fn musediag_held(outcome: &str, extra: &str) -> String {
 fn musediag_cell(text: &str, column: &str, next: &str) -> String {
     let mut lines = text.lines();
     let header = lines.next().expect("quota header");
-    let start = header.find(column).expect("named column");
-    let end = header.find(next).expect("next column");
+    let start = super::quota::column_offset(header, column);
+    let end = super::quota::column_offset(header, next);
     // Header is ASCII; row positions count characters because SCOPE has a dot.
     lines
         .next()

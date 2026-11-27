@@ -14,6 +14,13 @@ const SECOND_ID: &str = "01a08046-2000-7abc-8abc-aaaaaaaaaaaa";
 const THIRD_ID: &str = "01a08046-2100-7abc-8abc-bbbbbbbbbbbb";
 const FOURTH_ID: &str = "01a08046-2200-7abc-8abc-cccccccccccc";
 
+/// Locate a complete column name in the ASCII quota header.
+pub(super) fn column_offset(header: &str, name: &str) -> usize {
+    format!(" {header} ")
+        .find(&format!(" {name} "))
+        .unwrap_or_else(|| panic!("no {name} column: {header}"))
+}
+
 fn rig(tag: &str) -> PathBuf {
     let root = super::cli::OwnedScratch::root("quota", tag).keep();
     std::fs::create_dir_all(root.join(".codex/sessions/2026/09/08"))

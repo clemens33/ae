@@ -114,7 +114,7 @@ fn fresh_credits_show_used_reset_and_observation_age() {
     // Main 2e23ba38: quota/pace.rs:153-166 requires sufficient history;
     // one observation leaves PACE unknown, spelled at pace.rs:203.
     assert!(
-        compact(&text).contains("credits (super) 7d 37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("credits (super) 7d 37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert!(!text.contains("unsupported"), "{text}");
@@ -128,7 +128,7 @@ fn idle_log_is_stale_and_keeps_its_actual_age() {
     // Main 2e23ba38: quota/pace.rs:396-405 refuses pace after 60 minutes;
     // PACE is '-', while USED and the actual stale age stay visible.
     assert!(
-        compact(&text).contains("37% - - - in 6d 23h 2h05m ago stale"),
+        compact(&text).contains("37% - - - - in 6d 23h 2h05m ago stale"),
         "{text}"
     );
     assert!(!text.contains(" fresh"), "{text}");
@@ -144,7 +144,7 @@ fn newest_timestamp_wins_even_when_older_record_is_last() {
     ));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert!(!text.contains("91%"), "{text}");
@@ -209,7 +209,7 @@ fn shared_log_noise_and_malformed_candidates_do_not_blind_quota() {
     rig.plant(bytes);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
@@ -225,7 +225,7 @@ fn candidate_prefilter_accepts_spacing_and_key_order_changes() {
     rig.plant(spaced);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
@@ -245,7 +245,7 @@ fn on_demand_note_does_not_replace_the_full_window_percentage() {
     rig.plant(record(FRESH, "100.0", true));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("100% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("100% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert_eq!(
@@ -270,7 +270,7 @@ fn declared_manual_reset_uses_the_same_effective_headroom_rule() {
     rig.plant(record(FRESH, "96", false));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("96% 48% x1 - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("96% 48% x1 - unknown 1 in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
@@ -286,7 +286,7 @@ fn tail_read_keeps_a_complete_record_inside_the_last_512_kib() {
     rig.plant(bytes);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
@@ -343,7 +343,7 @@ fn rejected_tier_bytes_never_reach_a_cell_or_note() {
     );
     let text = rig.quota();
     assert!(
-        compact(&text).contains("credits 7d 37% - - unknown in 6d 23h 5m ago fresh"),
+        compact(&text).contains("credits 7d 37% - - unknown - in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
