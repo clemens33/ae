@@ -172,6 +172,7 @@ my $buf = ($mode =~ /^staged/) ? "[Pasted Content 42 chars]" : "";
 my $pasting = 0;
 my $stalled = 0;
 my $human_done = 0;
+my $voice_spaces = 0;
 $marker_secs > 0 ? markers() : draw($buf);
 system('tmux', 'wait-for', '-S', "$control.ready") if $mode eq 'frame';
 if ($control) {
@@ -218,6 +219,14 @@ while (1) {
         select(undef, undef, undef, $1 / 1000);
     }
     record_wire($ch);
+    # Only a dictation case arms onwarm. The fake advances on actual input,
+    # so a screen observed by ae cannot stand in for a Space on the pane wire.
+    if ($mode eq 'frame' && !$pasting && $ch eq ' ' && ($voice_spaces || -e "$control.onwarm")) {
+        ++$voice_spaces;
+        next if $voice_spaces == 2 && transition_frame('onwarm');
+        next if $voice_spaces == 5 && transition_frame('onhold');
+        next if $voice_spaces == 6 && transition_frame('onrepeat');
+    }
     transition_frame('onescape') if !$pasting && $ch eq "\e";
     if (!$pasting && $ch eq "\x15") {   # C-u clears the line, and is counted
         open(my $cu, '>>', "$enters.cu") or die;
