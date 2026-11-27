@@ -142,8 +142,13 @@ mod desklive_nudge {
         }
 
         fn start(&self, channel: &str) -> (OwnedChild, Stepper) {
+            self.start_with_env(channel, &[])
+        }
+
+        fn start_with_env(&self, channel: &str, env: &[(&str, &str)]) -> (OwnedChild, Stepper) {
             let rig = &self.rig;
-            let watchdog = ae()
+            let mut runner = ae();
+            runner
                 .arg(ae::cli::WATCHDOG_RUN)
                 .arg(&rig.tool.dir)
                 .args([
@@ -165,7 +170,11 @@ mod desklive_nudge {
                 .env("TMUX", format!("{},0,0", rig.socket.display()))
                 .env("TMUX_PANE", &self.watcher)
                 .env_remove("AE_SENDER_OVERRIDE")
-                .env_remove("AE_WATCHDOG_SWEEP_SEC")
+                .env_remove("AE_WATCHDOG_SWEEP_SEC");
+            for &(name, value) in env {
+                runner.env(name, value);
+            }
+            let watchdog = runner
                 .stdout(Stdio::null())
                 .stderr(
                     fs::File::create(rig.root.join(format!("{channel}.err")))
@@ -276,6 +285,149 @@ mod desklive_nudge {
         assert_eq!(
             fs::read_to_string(dir.join("desk-record")).expect("manual desk"),
             manual
+        );
+    }
+
+    // Forward real tmux operations. Pause the first real buffer load before
+    // returning to ae, so the watcher has already booked the idle turn.
+    const JOINED_LOAD_TMUX: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+my $real = $ENV{CHATLAG_REAL_TMUX};
+my $root = $ENV{CHATLAG_JOINED_ROOT};
+my @words = @ARGV;
+shift @words if @words && $words[0] eq '-u';
+if (@words >= 3 && $words[0] eq '-S' && $words[1] eq $ENV{CHATLAG_JOINED_SOCKET}) {
+    if ($words[2] eq 'load-buffer' && -e "$root/hold-joined-load") {
+        system { $real } $real, @ARGV;
+        die "private load-buffer failed: $?" if $?;
+        open my $trace, '>>', "$root/trace" or die "load trace: $!";
+        print $trace "buffer $words[4]\nheld hold-joined-load\n";
+        close $trace or die "load trace close: $!";
+        while (-e "$root/hold-joined-load") {
+            select undef, undef, undef, 0.025;
+        }
+        exit 0;
+    }
+    if ($words[2] eq 'paste-buffer') {
+        open my $trace, '>>', "$root/trace" or die "paste trace: $!";
+        print $trace "paste\n";
+        close $trace or die "paste trace close: $!";
+    }
+}
+exec { $real } $real, @ARGV;
+die "forward real tmux: $!";
+"#;
+
+    fn joined_load_env(rig: &Rig) -> [(&'static str, String); 4] {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::var_os("PATH").expect("fixture PATH");
+        let real = std::env::split_paths(&path)
+            .map(|dir| dir.join("tmux"))
+            .find(|file| file.is_file())
+            .expect("real tmux executable");
+        let bin = rig.root.join("joined-load-bin");
+        fs::create_dir(&bin).expect("private tmux wrapper directory");
+        let wrapper = bin.join("tmux");
+        fs::write(&wrapper, JOINED_LOAD_TMUX).expect("joined load wrapper");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
+            .expect("wrapper executable");
+        [
+            (
+                "PATH",
+                format!("{}:{}", bin.display(), path.to_string_lossy()),
+            ),
+            ("CHATLAG_REAL_TMUX", real.display().to_string()),
+            ("CHATLAG_JOINED_ROOT", rig.root.display().to_string()),
+            ("CHATLAG_JOINED_SOCKET", rig.socket.display().to_string()),
+        ]
+    }
+
+    #[test]
+    fn chatlag_joined_overview_waits_when_the_turn_starts_after_buffer_load() {
+        use super::super::app_writer_spec::Hold;
+        use ae::harness_state::{HarnessState, classify};
+        use ae::tool::ToolKind;
+
+        const NEED: &str = "fleet need awaiting the same idle turn";
+        const CONTINUATION: &str = "Restore your state first";
+        let fixture = Fixture::new("lag-joined-load");
+        let rig = &fixture.rig;
+        owe_reseat_continuation(&fixture);
+        fixture.event(
+            -30,
+            "state",
+            &format!(r#","ref":"blocked","summary":"{NEED}""#),
+        );
+
+        let env = joined_load_env(rig);
+        let env = env.each_ref().map(|(name, value)| (*name, value.as_str()));
+        let hold = Hold::new(&rig.root, "hold-joined-load");
+        let busy = rig.root.join("control.busy");
+        let busy_flag = &busy;
+        let wait_for = |state| {
+            rig.wait(
+                &rig.tool.pane,
+                "measured turn with an empty composer",
+                |screen| {
+                    screen.contains("Ask Codex to do anything")
+                        && classify(screen, ToolKind::Codex) == state
+                },
+            );
+        };
+        let (_watchdog, mut steps) = std::thread::scope(|scope| {
+            let redraw = scope.spawn(move || {
+                hold.held();
+                let trace = fs::read_to_string(rig.root.join("trace")).expect("private load trace");
+                let buffer = trace
+                    .lines()
+                    .find_map(|row| row.strip_prefix("buffer "))
+                    .expect("actual named tmux buffer");
+                let staged = rig.tmux(&["show-buffer", "-b", buffer]);
+                assert!(staged.contains(CONTINUATION), "{staged}");
+                assert!(
+                    staged.contains(NEED) && staged.contains(OVERVIEW_TRAILER),
+                    "{staged}"
+                );
+                fs::write(busy_flag, []).expect("model starts a running turn after buffer load");
+                rig.key(&rig.tool.pane, "C-u");
+                wait_for(HarnessState::Busy);
+                drop(hold);
+            });
+            let watchdog = fixture.start_with_env("lag-joined-load", &env);
+            redraw.join().expect("the held load saw the joined payload");
+            watchdog
+        });
+
+        let enters = || fs::read_to_string(rig.root.join("enters")).expect("pane Enter log");
+        let pastes = || {
+            fs::read_to_string(rig.root.join("trace"))
+                .expect("private load and paste trace")
+                .lines()
+                .filter(|row| *row == "paste")
+                .count()
+        };
+        assert_eq!(pastes(), 0, "late Busy stops the joined paste");
+        assert!(enters().is_empty(), "late Busy stops Enter");
+        assert!(fixture.receipt().is_empty());
+        wait_for(HarnessState::Busy);
+
+        fs::remove_file(busy).expect("model reaches the next turn boundary");
+        rig.key(&rig.tool.pane, "C-u");
+        wait_for(HarnessState::Idle);
+        steps.step();
+        let after = fixture.receipt();
+        assert_eq!(after.matches(CONTINUATION).count(), 1, "{after}");
+        assert_eq!(after.matches(OVERVIEW_TRAILER).count(), 1, "{after}");
+        assert!(after.contains(NEED), "{after}");
+        assert_eq!(enters().lines().count(), 1, "{after}");
+        assert_eq!(pastes(), 1, "the idle turn retries the continuation");
+        steps.step();
+        assert_eq!(
+            fixture.receipt(),
+            after,
+            "one owed continuation is delivered"
         );
     }
 
