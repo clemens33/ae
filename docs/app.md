@@ -601,26 +601,27 @@ and `rec` come from Claude's voice frame, which ae measured on Claude Code
 2.1.332 with the owner's microphone. The hold-mode warmup ends the mode row
 with ` · keep holding…` and reads `…`. The other states draw one row directly
 above the composer's upper border, alone and right-aligned. A hold recording
-draws `listening…` there and one waveform bar after `❯` in a one-row
-composer, and reads `rec`. A tap recording draws `⏺ REC · tap to send` and
+draws `listening…` there, and in the composer one waveform bar after `❯` in
+a one-row composer, or the interim transcript in gray (`38;5;246`) with the
+waveform directly after its last character, in a colour of its own, over one
+or more composer rows (continuations indented two columns). Both read `rec`.
+The mic reads the styled capture, because only the colours tell interim text
+from the waveform after it. A finished insert, which Claude draws in the
+default colour, is no recording. A tap recording draws `⏺ REC · tap to send` and
 reads `rec`. `Transcribing…` there reads `…`. The hold label without its bar
 (reduced motion, or a draft in the composer) and any voice word below the
-composer also read `…`. No key starts the mic: `v` stays Peek. A click
-proves the bound incarnation and its pane exactly as `pane` does, then
-refuses on the hint row, in order: a replaced incarnation, a tool without
-dictation, a launch without ae's hold-mode voice settings (relaunch the
-orchestrator), a dictation that already runs, a draft in Claude's composer, a
-busy Claude, a voice footer ae cannot read. In this release no click starts a
-dictation: one that passes every gate says `dictation needs the measured
-voice states; not enabled yet`. Activation stays off until ae can keep a hold
-recording alive and move its text into the panel's draft. ae never presses
-Enter for a dictation, and the text is meant to land in the panel's draft,
-never sent on its own.
+composer also read `…`. No key starts the mic: `v` stays Peek. In this
+release every click says `refused: ae dictation is not available in this
+version; no key was sent` on the hint row, before any other check, and sends
+no key: no relaunch, tool or pane state changes that. Activation stays off
+until ae can keep a hold recording alive. ae never presses Enter for a
+dictation.
 
 A dictation in a Claude pane holds ae's deliveries to it. Before each paste,
 Enter and Escape, ae reads the pane once more under its send lock. A frame
 that shows the warmup, a measured recording or transcribing row above the
-composer, the hold label alone, or a voice word below the composer refuses
+composer (read on its printed rows, where interim text before the bar reads
+as the label alone), the hold label alone, or a voice word below the composer refuses
 that effect with `Claude dictation on the pane`. On the orchestrator seat that
 a hold-mode launch proved, a frame whose voice footer ae cannot read refuses
 as well. A dictation the human starts after that last read and before the key

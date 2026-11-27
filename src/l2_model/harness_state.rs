@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 
+use crate::sgr::{Fg, Segment};
 use crate::tool::{IdentitySpec, InputModel, ToolKind};
 
 /// What the current, positively recognized harness frame says.
@@ -265,7 +266,9 @@ pub enum Dictation {
     /// Hold mode counts Space key events toward a recording.
     Warming,
     /// A hold-mode recording, MEASURED: the hold label above the box and the
-    /// waveform bar in it. Only this state is a recording a key could keep.
+    /// waveform bar in it, alone or after interim text (a styled capture
+    /// proves the interim shape). Only this state is a recording a key could
+    /// keep.
     Holding,
     /// A tap-mode recording, MEASURED: `⏺ REC · tap to send` above the box.
     Tapping,
@@ -307,18 +310,28 @@ const VOICE_WORDS: [&str; 8] = [
     "speak",
 ];
 
-/// The dictation state of the Claude Code frame `capture`, read as plain rows:
-/// the service and UI callers turn a styled capture into them first
-/// (`deliver::region::plain_text`). Escapes left in a capture can keep its box
-/// from reading at all ([`Dictation::Unread`]), and a voice word in a row that
-/// keeps them still reads as a provisional dictation. Every other tool reads [`Dictation::Unread`]: Muse draws the
-/// same box with no voice, so the tool's identity decides, never its input
-/// model.
+/// The dictation state of the Claude Code frame `capture`: plain rows, or a
+/// styled capture (`capture-pane -e`). A styled capture is read on the rows
+/// [`crate::sgr`] prints from it, and its foreground runs decide whether a
+/// `listening…` box proves a recording ([`styled_hold`]); the plain one-bar
+/// rule then does not apply. Every other tool reads [`Dictation::Unread`]:
+/// Muse draws the same box with no voice, so the tool's identity decides,
+/// never its input model.
 #[must_use]
 pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     if !tool.dictates() {
         return Dictation::Unread;
     }
+    if capture.contains('\u{1b}') {
+        let segments = crate::sgr::parse(capture);
+        return printed_dictation(&crate::sgr::plain_rows(&segments), Some(&segments));
+    }
+    printed_dictation(capture, None)
+}
+
+/// [`dictation`] on the printed rows `capture`, with the styled runs they were
+/// printed from when the capture had any.
+fn printed_dictation(capture: &str, styled: Option<&[Segment]>) -> Dictation {
     let lines = clean_lines(capture);
     let Some(prompt) = lines.iter().rposition(|line| line.starts_with('❯')) else {
         return Dictation::Unread;
@@ -330,7 +343,7 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
     else {
         return Dictation::Unread;
     };
-    if let Some(state) = measured_upper(capture) {
+    if let Some(state) = measured_upper(capture, styled) {
         return state;
     }
     let footer: Vec<&str> = lines[bottom + 1..]
@@ -366,7 +379,9 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
 /// * `listening…` plus one waveform bar (U+2581-U+2588, the vendor
 ///   renderer's alphabet) right after `❯` and its space in a ONE-row box (the
 ///   lower border directly below), is the recording, [`Dictation::Holding`]:
-///   a draft of several rows whose first row is a bar is no waveform;
+///   a draft of several rows whose first row is a bar is no waveform. A
+///   styled capture proves the recording by its runs instead
+///   ([`styled_hold`]), which also reads interim text before the bar;
 /// * `listening…` alone (reduced motion draws no bar, or the box holds a
 ///   draft) still blocks every key, but it is no proof of a recording:
 ///   [`Dictation::Transcribing`];
@@ -375,7 +390,7 @@ pub fn dictation(capture: &str, tool: ToolKind) -> Dictation {
 ///   one-glyph draft in such a capture is the accepted false positive.
 ///
 /// `None` when the rows show none of these, so the footer rules decide.
-fn measured_upper(capture: &str) -> Option<Dictation> {
+fn measured_upper(capture: &str, styled: Option<&[Segment]>) -> Option<Dictation> {
     let rows: Vec<&str> = capture.lines().collect();
     let prompt = rows
         .iter()
@@ -384,19 +399,14 @@ fn measured_upper(capture: &str) -> Option<Dictation> {
     if !claude_border(&normalized_row(rows[top])) {
         return None;
     }
-    let one_row = rows
-        .get(prompt + 1)
-        .is_some_and(|row| claude_border(&normalized_row(row)));
-    let wave = one_row
-        && normalized_row(rows[prompt])
-            .strip_prefix("❯ ")
-            .is_some_and(|rest| {
-                let mut bars = rest.chars();
-                matches!(
-                    (bars.next(), bars.next()),
-                    (Some('\u{2581}'..='\u{2588}'), None)
-                )
-            });
+    let bottom = rows[prompt + 1..]
+        .iter()
+        .position(|row| claude_border(&normalized_row(row)))
+        .map(|at| prompt + 1 + at);
+    let wave = match styled {
+        Some(segments) => bottom.is_some_and(|bottom| styled_hold(segments, prompt, bottom)),
+        None => bottom == Some(prompt + 1) && lone_bar(&normalized_row(rows[prompt])),
+    };
     let Some(above) = top.checked_sub(1) else {
         return wave.then_some(Dictation::Transcribing);
     };
@@ -411,6 +421,98 @@ fn measured_upper(capture: &str) -> Option<Dictation> {
         VOICE_TAPPING => Some(Dictation::Tapping),
         _ => None,
     }
+}
+
+/// One bar of the vendor waveform renderer's alphabet (U+2581-U+2588).
+const fn waveform_bar(glyph: char) -> bool {
+    matches!(glyph, '\u{2581}'..='\u{2588}')
+}
+
+/// Whether the printed composer row `row` is `❯`, its space and one bar.
+fn lone_bar(row: &str) -> bool {
+    row.strip_prefix("❯ ").is_some_and(|rest| {
+        let mut bars = rest.chars();
+        matches!((bars.next(), bars.next()), (Some(bar), None) if waveform_bar(bar))
+    })
+}
+
+/// The foreground Claude Code 2.1.332 paints interim transcript text in
+/// (`38;5;246`, the owner's capture of 2026-11-27, fixture
+/// `claude-voice-interim-*`).
+const INTERIM_FG: Fg = Fg::Indexed(246);
+
+/// One printed character of a styled box row, and where it sits.
+#[derive(Debug, Clone, Copy)]
+struct Cell {
+    glyph: char,
+    fg: Option<Fg>,
+    row: usize,
+    column: usize,
+}
+
+/// A blank cell: a space, a tab or a no-break space.
+const fn blank(glyph: char) -> bool {
+    matches!(glyph, ' ' | '\t' | '\u{a0}')
+}
+
+/// Whether the box rows `prompt..bottom` of the styled `segments` show a live
+/// hold (Claude Code 2.1.332, the owner's captures of 2026-11-26 and
+/// 2026-11-27). The last visible character of the box is one waveform bar
+/// painted in an explicit foreground, and either:
+///
+/// * it stands alone right after `❯` and its space in a ONE-row box, or
+/// * it follows interim text directly, on the box's last row. The interim
+///   text runs from the first row (after `❯` and its space) over any
+///   continuation rows (indented two columns). Every character of it, inner
+///   spaces included, is painted in [`INTERIM_FG`], and the bar is painted in
+///   another foreground, so the bar is a run of its own.
+///
+/// A finished insert (the default foreground), a bar in a draft, a bar inside
+/// the interim run, a gap before the bar or text after it proves nothing.
+/// The SGR state carries across rows, as tmux writes it, so a continuation
+/// row may start in the interim colour without restating it.
+fn styled_hold(segments: &[Segment], prompt: usize, bottom: usize) -> bool {
+    let mut cells: Vec<Cell> = Vec::new();
+    for row in prompt..bottom {
+        let chars: Vec<(char, Option<Fg>)> = segments
+            .iter()
+            .filter(|segment| segment.line == row)
+            .flat_map(|segment| segment.text.chars().map(|glyph| (glyph, segment.fg)))
+            .collect();
+        let lead = if row == prompt {
+            matches!(chars.as_slice(), [('❯', _), (' ' | '\u{a0}', _), ..])
+        } else {
+            matches!(chars.as_slice(), [(' ', _), (' ', _), (third, _), ..] if !blank(*third))
+        };
+        if !lead {
+            return false;
+        }
+        let mut visible = (2..chars.len()).filter(|&at| !blank(chars[at].0));
+        if let Some(first) = visible.next() {
+            let last = visible.next_back().unwrap_or(first);
+            cells.extend((first..=last).map(|column| Cell {
+                glyph: chars[column].0,
+                fg: chars[column].1,
+                row,
+                column,
+            }));
+        }
+    }
+    let Some(bar) = cells.pop() else {
+        return false;
+    };
+    if !waveform_bar(bar.glyph) || bar.fg.is_none() {
+        return false;
+    }
+    let Some(before) = cells.last() else {
+        return bottom == prompt + 1 && bar.column == 2;
+    };
+    bar.fg != Some(INTERIM_FG)
+        && cells
+            .iter()
+            .all(|cell| !waveform_bar(cell.glyph) && cell.fg == Some(INTERIM_FG))
+        && before.row == bar.row
+        && !blank(before.glyph)
 }
 
 /// The dictation state one footer row names, if it names one.
@@ -1322,18 +1424,77 @@ mod tests {
         fn the_measured_warmup_reads_warming_and_the_idle_frame_proves_nothing() {
             assert_eq!(dictation(IDLE, ToolKind::Claude), Dictation::Clear);
             assert_eq!(dictation(BUSY, ToolKind::Claude), Dictation::Clear);
+            // A styled capture reads the rows it prints, the same state.
             let printed = crate::sgr::plain_text(WARMING_ESC);
-            for frame in [WARMING, printed.as_str()] {
+            for frame in [WARMING, printed.as_str(), WARMING_ESC] {
                 assert_eq!(dictation(frame, ToolKind::Claude), Dictation::Warming);
             }
-            // A styled capture left unprinted reads no box at all: no measured
-            // state, and the proved seat's gate holds on it.
-            assert_eq!(dictation(WARMING_ESC, ToolKind::Claude), Dictation::Unread);
             // `classify` reads plain captures; the redacted row above the box
             // reads Unknown, and a dictation in the footer still reads Busy.
             assert_eq!(classify(IDLE, ToolKind::Claude), HarnessState::Unknown);
             assert_eq!(classify(WARMING, ToolKind::Claude), HarnessState::Busy);
             assert!(!Dictation::Clear.active() && !Dictation::Unread.active());
+        }
+
+        const HOLD_ESC: &str = include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-holding-2.1.332-120x41.esc"
+        );
+        const INTERIM_ESC: &str = include_str!(
+            "../../tests/fixtures/harness-state/claude-voice-interim-2.1.332-120x41.esc"
+        );
+        /// The measured interim box content, which the cases below replace.
+        const INTERIM_BOX: &str = "\u{1b}[38;5;246mTerm.\u{1b}[38;5;110m▅\u{1b}[39m";
+
+        fn holding_with(content: &str) -> bool {
+            assert!(INTERIM_ESC.contains(INTERIM_BOX));
+            let frame = INTERIM_ESC.replacen(INTERIM_BOX, content, 1);
+            dictation(&frame, ToolKind::Claude) == Dictation::Holding
+        }
+
+        /// A styled capture proves a recording by its runs alone: the plain
+        /// one-bar rule does not apply to it.
+        #[test]
+        fn a_styled_bar_in_the_default_colour_proves_no_recording() {
+            assert_eq!(dictation(HOLD_ESC, ToolKind::Claude), Dictation::Holding);
+            let default_bar = HOLD_ESC.replacen("\u{1b}[38;5;244m▁", "▁", 1);
+            assert_ne!(default_bar, HOLD_ESC);
+            let state = dictation(&default_bar, ToolKind::Claude);
+            assert_eq!(state, Dictation::Transcribing, "the label still blocks");
+            let printed = crate::sgr::plain_text(&default_bar);
+            assert_eq!(dictation(&printed, ToolKind::Claude), Dictation::Holding);
+        }
+
+        /// The box shapes the acceptance tests leave open: where a lone bar
+        /// sits, how a continuation row starts, and where a bar may stand.
+        #[test]
+        fn styled_hold_reads_only_the_measured_box_shapes() {
+            let bar = "\u{1b}[38;5;110m▅\u{1b}[39m";
+            let words = "\u{1b}[38;5;246mone two three";
+            assert!(holding_with(&format!("{words}\n  four{bar}")));
+            for (content, why) in [
+                (format!(" {bar}"), "a lone bar one column late"),
+                (format!("\n  {bar}"), "a lone bar on a continuation row"),
+                (
+                    format!("{words}\n  {bar}"),
+                    "a bar alone below the interim text",
+                ),
+                (
+                    format!("{words}\n four{bar}"),
+                    "a continuation indented one column",
+                ),
+                (
+                    format!("{words}\n   four{bar}"),
+                    "a continuation indented three columns",
+                ),
+                (
+                    format!("\u{1b}[38;5;246mTe▅rm.{bar}"),
+                    "a bar inside the interim run",
+                ),
+                (format!("\u{1b}[38;5;246mTerm.{bar}{bar}"), "two bars"),
+                (String::new(), "an empty box"),
+            ] {
+                assert!(!holding_with(&content), "{why}");
+            }
         }
 
         #[test]

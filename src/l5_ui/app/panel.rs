@@ -8,6 +8,16 @@ use super::{
     model, overview,
 };
 
+/// Whether this version starts a dictation from the panel mic. Off until ae
+/// can keep a hold recording alive and leave its text in Claude: every click
+/// then says [`DICTATION_INACTIVE`] and sends no key.
+const DICTATION_ACTIVE: bool = false;
+
+/// The click's one line while [`DICTATION_ACTIVE`] is off. It names this
+/// version, so it stays true for every launch, tool and pane state.
+const DICTATION_INACTIVE: &str =
+    "refused: ae dictation is not available in this version; no key was sent";
+
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
 pub(super) struct Panel {
@@ -744,13 +754,18 @@ impl App {
         .is_some()
     }
 
-    /// Why the mic starts no dictation now, each gate in its order: the bound
-    /// incarnation and its proven pane, the tool, this launch's hold-mode
-    /// proof, then one fresh capture: no dictation running, an empty
-    /// composer, an idle Claude, a footer it reads.
+    /// Why the mic starts no dictation now. While [`DICTATION_ACTIVE`] is off,
+    /// this version's own refusal wins over every other reason, so no line
+    /// promises that a relaunch or an idle Claude would help. Once on, each
+    /// gate in its order: the bound incarnation and its proven pane, the
+    /// tool, this launch's hold-mode proof, then one fresh capture: no
+    /// dictation running, an empty composer, an idle Claude, a footer it reads.
     fn mic_refusal(&self, drawn: &Drawn, label: &str) -> String {
         use crate::harness_state::{Dictation, HarnessState, classify, dictation};
 
+        if !DICTATION_ACTIVE {
+            return DICTATION_INACTIVE.to_owned();
+        }
         if let Some(why) = self.pane_refusal() {
             return why.line(label);
         }
@@ -781,7 +796,7 @@ impl App {
             None => return "refused: dictation unavailable: the seat's tool is unknown".to_owned(),
         };
         if !crate::deliver::VoiceGate::of(dir, slot, Some(tool)).proved() {
-            return "refused: this launch has no proven hold-mode dictation; relaunch the orchestrator to enable it"
+            return "refused: this launch lacks ae's hold-mode dictation proof (docs/app.md)"
                 .to_owned();
         }
         let Some(frame) =
@@ -790,7 +805,7 @@ impl App {
             return "refused: dictation could not read the orchestrator's pane".to_owned();
         };
         let plain = crate::deliver::region::plain_text(&frame);
-        let state = dictation(&plain, tool);
+        let state = dictation(&frame, tool);
         if state.active() {
             return "refused: a dictation already runs in the orchestrator's pane".to_owned();
         }
@@ -1099,9 +1114,10 @@ pub(super) fn mic_read(
         Some(_) => return draw::Mic::Unsupported,
         None => return draw::Mic::Unknown,
     };
+    // The styled capture itself: its runs tell interim text from the
+    // waveform after it, which its printed rows cannot.
     let frame = crate::transport::capture_screen(server, pane, crate::tmux::Styling::Escapes);
-    let plain = frame.map(|frame| crate::deliver::region::plain_text(&frame));
-    match plain.map(|plain| dictation(&plain, tool)) {
+    match frame.map(|frame| dictation(&frame, tool)) {
         Some(Dictation::Holding | Dictation::Tapping) => draw::Mic::Recording,
         Some(Dictation::Warming | Dictation::Transcribing) => draw::Mic::Pending,
         Some(Dictation::Clear | Dictation::Unread) | None => draw::Mic::Unknown,

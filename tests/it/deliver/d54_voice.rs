@@ -331,6 +331,27 @@ fn an_idle_frame_without_a_voice_hint_is_unknown() {
     untouched(&rig, &api);
 }
 
+fn version_refusal(rig: &Rig, pane: &str, before: &str) {
+    let after = until_screen(
+        rig,
+        pane,
+        "the click explains that this installed version cannot dictate",
+        |screen| {
+            screen.lines().skip(1).any(|row| {
+                !before.lines().any(|prior| prior == row)
+                    && row.contains("dictation")
+                    && row.contains("not available in this version")
+            })
+        },
+    );
+    assert!(
+        after.lines().skip(1).all(|row| {
+            before.lines().any(|prior| prior == row) || !row.to_lowercase().contains("relaunch")
+        }),
+        "an inactive version does not promise a relaunch helps"
+    );
+}
+
 #[test]
 fn before_measured_recording_states_the_mic_refuses_without_a_key() {
     let rig = orchestrator("voice-pending", "claude", &composer_cursor(IDLE, 3));
@@ -342,22 +363,31 @@ fn before_measured_recording_states_the_mic_refuses_without_a_key() {
         status(s, "unknown")
     });
     press_mic(&rig, &pane, &shown);
-    until_screen(
-        &rig,
-        &pane,
-        "the click explains why recording is disabled",
-        |s| {
-            s.lines()
-                .skip(1)
-                .any(|row| row.contains("dictation needs the measured voice states"))
-        },
-    );
+    version_refusal(&rig, &pane, &shown);
     rig.frame_barrier();
     assert!(
         rig.wire().is_empty(),
         "the refused click has no key or paste effect"
     );
     untouched(&rig, &sibling);
+    untouched(&rig, &api);
+}
+
+#[test]
+fn the_mic_explains_an_older_launch_without_voice_proof() {
+    let rig = orchestrator("voice-old-launch", "claude", &composer_cursor(IDLE, 3));
+    let meta = fs::read_to_string(rig.dir.join("meta")).expect("private launch metadata");
+    assert!(meta.lines().any(|row| row.starts_with("launch_id.main=")));
+    assert!(!meta.lines().any(|row| row.starts_with("voice.main=")));
+    let api = rig_world(&rig).session("api", "tui", "");
+    let pane = app(&rig, "api");
+    let shown = until_screen(&rig, &pane, "the older launch has a mic", |s| {
+        status(s, "unknown")
+    });
+    press_mic(&rig, &pane, &shown);
+    version_refusal(&rig, &pane, &shown);
+    rig.frame_barrier();
+    assert!(rig.wire().is_empty(), "the older launch receives no bytes");
     untouched(&rig, &api);
 }
 
@@ -375,9 +405,7 @@ fn a_same_name_replacement_does_not_inherit_the_drawn_control() {
     gate.held();
     seal(&rig, "99999999-1111-4111-8111-111111111111");
     drop(gate);
-    until_screen(&rig, &pane, "the held panel sees the replacement", |s| {
-        s.to_lowercase().contains("replaced")
-    });
+    version_refusal(&rig, &pane, &off);
     assert!(rig.wire().is_empty(), "the replacement receives no bytes");
     untouched(&rig, &api);
 }
@@ -404,17 +432,7 @@ fn mic_refuses_a_tap_mode_pane_without_a_bound_hold_override_before_any_key() {
     meta.push_str("voice.main=tok-before-relaunch\n");
     fs::write(rig.dir.join("meta"), meta).expect("stale launch proof");
     press_mic(&rig, &pane, &shown);
-    until_screen(
-        &rig,
-        &pane,
-        "tap would submit, so the mic refuses start",
-        |s| {
-            s.lines().skip(1).any(|row| {
-                let row = row.to_lowercase();
-                row.contains("tap") || row.contains("relaunch") || row.contains("hold mode")
-            })
-        },
-    );
+    version_refusal(&rig, &pane, &shown);
     rig.frame_barrier();
     assert!(rig.wire().is_empty(), "a tap-mode seat receives no key");
     untouched(&rig, &api);
@@ -434,17 +452,7 @@ fn mic_leaves_an_existing_composer_draft_intact() {
         mic(panel_header(s)).is_some()
     });
     press_mic(&rig, &pane, &shown);
-    until_screen(
-        &rig,
-        &pane,
-        "start explains why a pre-existing draft blocks it",
-        |s| {
-            s.lines().skip(1).any(|row| {
-                let row = row.to_lowercase();
-                row.contains("composer") || row.contains("draft")
-            })
-        },
-    );
+    version_refusal(&rig, &pane, &shown);
     rig.frame_barrier();
     assert!(
         rig.wire().is_empty(),
@@ -465,12 +473,7 @@ fn an_empty_composer_in_a_busy_frame_does_not_start_hold() {
         mic(panel_header(s)).is_some()
     });
     press_mic(&rig, &pane, &shown);
-    until_screen(&rig, &pane, "the mic reports that Claude is busy", |s| {
-        s.lines().skip(1).any(|row| {
-            let row = row.to_lowercase();
-            row.contains("busy") || row.contains("idle") || row.contains("ready")
-        })
-    });
+    version_refusal(&rig, &pane, &shown);
     rig.frame_barrier();
     assert!(rig.wire().is_empty(), "a busy Claude receives no voice key");
     untouched(&rig, &api);
@@ -491,20 +494,7 @@ fn disabled_mic(tool: &str, frame: &str) {
         "the disabled header is distinct from the usable unknown state"
     );
     press_mic(&rig, &pane, &disabled);
-    until_screen(
-        &rig,
-        &pane,
-        "the tool exposes its no-dictation reason",
-        |s| {
-            s.lines().any(|line| {
-                let line = line.to_lowercase();
-                line.contains("dictation")
-                    && (line.contains(tool)
-                        || line.contains("unsupported")
-                        || line.contains("unavailable"))
-            })
-        },
-    );
+    version_refusal(&rig, &pane, &disabled);
     assert!(
         rig.wire().is_empty(),
         "the disabled control sends no {tool} key"

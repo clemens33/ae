@@ -606,6 +606,115 @@ const MEASURED_TAP: &str =
     include_str!("../../../fixtures/harness-state/claude-voice-tap-2.1.332-120x50.txt");
 const MEASURED_TAP_STYLED: &str =
     include_str!("../../../fixtures/harness-state/claude-voice-tap-2.1.332-120x50.esc");
+const MEASURED_INTERIM: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-interim-2.1.332-120x41.txt");
+const MEASURED_INTERIM_STYLED: &str =
+    include_str!("../../../fixtures/harness-state/claude-voice-interim-2.1.332-120x41.esc");
+
+#[test]
+fn measured_interim_text_and_its_separate_waveform_read_holding() {
+    use ae::harness_state::{Dictation, HarnessState, classify, dictation};
+    use ae::tool::ToolKind;
+
+    assert!(MEASURED_INTERIM.contains("❯\u{a0}Term.▅"));
+    assert!(MEASURED_INTERIM_STYLED.contains("❯\u{a0}\x1b[38;5;246mTerm.\x1b[38;5;110m▅"));
+    let plain = dictation(MEASURED_INTERIM, ToolKind::Claude);
+    assert!(plain.active(), "the upper label still blocks delivery");
+    assert_ne!(plain, Dictation::Holding, "interim styling is required");
+
+    assert_eq!(
+        dictation(MEASURED_INTERIM_STYLED, ToolKind::Claude),
+        Dictation::Holding
+    );
+    assert_eq!(
+        classify(MEASURED_INTERIM_STYLED, ToolKind::Claude),
+        HarnessState::Busy
+    );
+    // BINARY-DERIVED. The waveform changes colour as it animates and
+    // returns to gray (indexed 244 in the silent capture) during a pause.
+    for bar in ["\x1b[38;5;146m▇", "\x1b[38;5;244m▁"] {
+        let other_color = MEASURED_INTERIM_STYLED.replace("\x1b[38;5;110m▅", bar);
+        assert_eq!(
+            dictation(&other_color, ToolKind::Claude),
+            Dictation::Holding
+        );
+    }
+}
+
+#[test]
+fn wrapped_interim_reads_holding_when_the_waveform_follows_the_final_character() {
+    use ae::harness_state::{Dictation, dictation};
+    use ae::tool::ToolKind;
+
+    // BINARY-DERIVED. The vendor overlays interim text in the composer.
+    // Its waveform sits at the cursor, after the interim range.
+    let first = "word ".repeat(23);
+    for prefix in ["  ", "  \x1b[38;5;246m"] {
+        let wrapped = MEASURED_INTERIM_STYLED.replacen(
+            "Term.",
+            &format!("{}\n{prefix}Term.", first.trim_end()),
+            1,
+        );
+        assert_ne!(wrapped, MEASURED_INTERIM_STYLED);
+        assert_eq!(dictation(&wrapped, ToolKind::Claude), Dictation::Holding);
+        let wave_before_end = wrapped.replace(
+            "Term.\x1b[38;5;110m▅\x1b[39m",
+            "\x1b[38;5;110m▅\x1b[38;5;246mTerm.\x1b[39m",
+        );
+        assert_ne!(wave_before_end, wrapped);
+        assert_ne!(
+            dictation(&wave_before_end, ToolKind::Claude),
+            Dictation::Holding
+        );
+    }
+    let wrong_first_row = MEASURED_INTERIM_STYLED.replacen(
+        "\x1b[38;5;246mTerm.",
+        &format!("{}\n  \x1b[38;5;246mTerm.", first.trim_end()),
+        1,
+    );
+    assert_ne!(wrong_first_row, MEASURED_INTERIM_STYLED);
+    assert_ne!(
+        dictation(&wrong_first_row, ToolKind::Claude),
+        Dictation::Holding,
+        "a dim continuation cannot lend its foreground to a default first row"
+    );
+}
+
+#[test]
+fn a_finished_insert_or_a_block_in_a_draft_never_proves_holding() {
+    use ae::harness_state::{Dictation, dictation};
+    use ae::tool::ToolKind;
+
+    let (label, box_rows) = MEASURED_INTERIM_STYLED
+        .split_once('\n')
+        .expect("the measured upper label");
+    let content = "\x1b[38;5;246mTerm.\x1b[38;5;110m▅\x1b[39m";
+    assert!(box_rows.contains(content));
+    let finished = box_rows.replacen(content, "Term.", 1);
+    assert!(!dictation(&finished, ToolKind::Claude).active());
+    let draft = box_rows.replacen(content, "▅", 1);
+    assert!(!dictation(&draft, ToolKind::Claude).active());
+
+    for replacement in [
+        "▅",
+        "Term.",
+        "Term.▅",
+        "Term.\x1b[38;5;110m▅\x1b[39m",
+        "\x1b[38;5;250mTerm.\x1b[38;5;110m▅\x1b[39m",
+        "\x1b[38;5;246mTerm.▅\x1b[39m",
+        "\x1b[38;5;246mTerm.\x1b[39m",
+        "\x1b[38;5;246mOne\x1b[39m \x1b[38;5;246mtwo\x1b[38;5;110m▅\x1b[39m",
+        "\x1b[38;5;246mTerm. \x1b[38;5;110m▅\x1b[39m",
+        "\x1b[38;5;246mTerm.\x1b[38;5;110m▅\x1b[39mtext",
+    ] {
+        let frame = format!("{label}\n{}", box_rows.replacen(content, replacement, 1));
+        let state = dictation(&frame, ToolKind::Claude);
+        assert!(state.active(), "the attached label blocks delivery");
+        assert_ne!(state, Dictation::Holding, "{replacement:?}");
+    }
+    let displaced = format!("{label}\nOlder output\n{box_rows}");
+    assert_ne!(dictation(&displaced, ToolKind::Claude), Dictation::Holding);
+}
 
 #[test]
 fn measured_transcribing_reads_busy_before_the_insert() {
