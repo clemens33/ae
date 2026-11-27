@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.127] - 2026-11-27
+- Move the SGR capture parser to the base layer
+- Read the measured Claude interim waveform and refuse the inactive mic first
+- Lead the README with the north star and one-line features
+- Qualify the README effort, quota, board and archive claims
+- Drop the removed `ae telegram setup` command from the docs
+- Say in the docs that auto_effort also moves spawned seats
+- Use generic client names and home paths in the public docs
+- Restrict the Telegram token file first and say what is forwarded
+- Document the auto_effort floor opt-in and the day-long window
+- Say that an effort step needs a pinned model and a twin profile
+- Qualify the README effort step and what Telegram forwards
+- Use a generic client name in two more doc examples
+- Keep scrolled chat views anchored on new turns
+- Cover chat anchoring across frame boundaries
+- Replace the web topic tabs with a left side panel
+- Say in the web docs when a selected closed topic shows All
+- List topics with an open ask under Needs you
+- Say in the web docs when a waiting topic leaves Needs you
+- Keep a selected web topic selected when it leaves its group
+- Use generic identities in tests and fixtures
+- Preserve fixture widths in layout and watchdog tests
+- Track declared banked quota reset expiries
+- Pin banked reset parser and expiry boundaries
+- Align quota regressions with the resets-in-hand column
+- Use a generic path in the app header test
+- Use a generic client in CLI error examples
+
 ## [v2026.11.126] - 2026-11-27
 - Freeze acceptance for the measured Claude hold frame
 - Read the measured Claude hold frame above the composer
