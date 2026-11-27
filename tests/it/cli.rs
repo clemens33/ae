@@ -957,7 +957,29 @@ pub(crate) fn tmux_attached_client(
     sock: &std::path::Path,
     session: &str,
 ) -> std::io::Result<OwnedChild> {
-    tmux_client(sock, &["-C", "attach-session", "-t", session])
+    tmux_client(sock, &["-C", "attach-session", "-t", session], None)
+}
+
+/// A private control client with an explicit terminal identity and no influence
+/// on the pane output stream or window size.
+pub(crate) fn tmux_control_client_with_term(
+    sock: &std::path::Path,
+    session: &str,
+    term: &str,
+) -> std::io::Result<OwnedChild> {
+    tmux_client(
+        sock,
+        &[
+            "-C",
+            "attach-session",
+            "-E",
+            "-f",
+            "no-output,ignore-size",
+            "-t",
+            session,
+        ],
+        Some(term),
+    )
 }
 
 /// `true` once `channel` is signalled (`wait-for -S`) on the server at `sock`,
@@ -968,7 +990,7 @@ pub(crate) fn tmux_signalled(
     channel: &str,
     limit: std::time::Duration,
 ) -> bool {
-    tmux_client(sock, &["wait-for", channel])
+    tmux_client(sock, &["wait-for", channel], None)
         .ok()
         .and_then(|child| bounded(child, limit))
         .is_some_and(|out| out.status.success())
@@ -979,7 +1001,7 @@ pub(crate) fn tmux_signalled(
 /// caller reaps it. Dropping it alive kills it, and a killed waiter keeps a
 /// server descriptor until the channel's next signal.
 pub(crate) fn tmux_waiter(sock: &std::path::Path, channel: &str) -> std::io::Result<OwnedChild> {
-    tmux_client(sock, &["wait-for", "--", channel])
+    tmux_client(sock, &["wait-for", "--", channel], None)
 }
 
 /// How many descriptors process `pid` holds open: `/proc/<pid>/fd` on Linux,
@@ -1038,7 +1060,11 @@ pub(crate) fn descriptor_count(pid: u32) -> usize {
     clippy::disallowed_types,
     reason = "the black-box tests' sixth door: an attached client must be a real process to be listed; see clippy.toml"
 )]
-fn tmux_client(sock: &std::path::Path, tail: &[&str]) -> std::io::Result<OwnedChild> {
+fn tmux_client(
+    sock: &std::path::Path,
+    tail: &[&str],
+    term: Option<&str>,
+) -> std::io::Result<OwnedChild> {
     let mut runner = Runner::new(Command::new("tmux"), None);
     runner
         .arg("-S")
@@ -1049,6 +1075,9 @@ fn tmux_client(sock: &std::path::Path, tail: &[&str]) -> std::io::Result<OwnedCh
         .stderr(std::process::Stdio::null())
         .env_remove("TMUX")
         .env_remove("TMUX_PANE");
+    if let Some(term) = term {
+        runner.env("TERM", term);
+    }
     runner.spawn()
 }
 

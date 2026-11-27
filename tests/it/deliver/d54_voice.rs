@@ -12,6 +12,7 @@ use std::mem::ManuallyDrop;
 use super::{PANE_WAIT, Rig, await_evidence};
 use crate::o2guard_p2_spec::{Seat, World, uuid_of};
 
+mod sidecar;
 mod warming;
 
 const ORCH: &str = "orchestrator";
