@@ -129,7 +129,7 @@ mod desklive_nudge {
                 .expect("private event journal");
             writeln!(
                 journal,
-                r#"{{"ts":"{ts}","actor":"gemini:worker","action":"{action}","actor_slot":"main","actor_session":"{PEER}","actor_session_id":"{uuid}","actor_launch_id":"tok-{PEER}"{tail}}}"#
+                r#"{{"ts":"{ts}","actor":"worker","action":"{action}","actor_slot":"main","actor_session":"{PEER}","actor_session_id":"{uuid}","actor_launch_id":"tok-{PEER}"{tail}}}"#
             )
             .expect("append fixture event");
         }
