@@ -141,12 +141,9 @@ pub fn nudge_body(rendered: &str) -> String {
     }
 }
 
-/// Hex digits of one FNV-1a 64 digest.
-const DIGEST_HEX: usize = 16;
-
 /// Return two stable dependency-free FNV-1a 64 digests, concatenated as hex:
 /// first the semantic fleet facts that decide an overview, then the
-/// `NEEDS YOU` set alone ([`needs_changed`] reads it). Neither covers an
+/// `NEEDS YOU` set alone ([`crate::watchdog::needs_changed`] reads it). Neither covers an
 /// elapsed age: the display can advance from `20m` to `22m` without spending
 /// a seat turn; a visible state, leadership reason, open-request count, goal,
 /// or topic change cannot.
@@ -157,36 +154,6 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
         fleet_digest(cards, own_session),
         needs_digest(cards, own_session)
     )
-}
-
-/// Whether the `NEEDS YOU` set in `current` differs from the one in the
-/// last delivered `prior` hash, both from [`semantic_hash`]. A prior hash
-/// without that half (none delivered, or written before it existed) proves
-/// no change, so it never bypasses the overview spacing.
-#[must_use]
-pub fn needs_changed(prior: Option<&str>, current: &str) -> bool {
-    match (prior.and_then(needs_half), needs_half(current)) {
-        (Some(prior), Some(current)) => prior != current,
-        _ => false,
-    }
-}
-
-/// Whether the last delivered `prior` hash names the same fleet as `current`,
-/// both from [`semantic_hash`]. A legacy prior of the fleet digest alone,
-/// written before the `NEEDS YOU` half existed, is the same fleet when it
-/// equals `current`'s fleet half: an upgrade spends no turn on an unchanged
-/// fleet.
-#[must_use]
-pub fn same_overview(prior: Option<&str>, current: &str) -> bool {
-    prior.is_some_and(|prior| {
-        prior == current || (prior.len() == DIGEST_HEX && current.get(..DIGEST_HEX) == Some(prior))
-    })
-}
-
-/// The `NEEDS YOU` half of a [`semantic_hash`], when it has one.
-fn needs_half(hash: &str) -> Option<&str> {
-    hash.get(DIGEST_HEX..)
-        .filter(|half| half.len() == DIGEST_HEX)
 }
 
 /// The human needs the `NEEDS YOU` section shows: per session, each seat's
@@ -464,9 +431,10 @@ fn clipped(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRAILER, WIDTH, needs_changed, nudge_body, render, same_overview, semantic_hash};
+    use super::{TRAILER, WIDTH, nudge_body, render, semantic_hash};
     use crate::attention::Reason;
     use crate::brief::{AgentLine, Card, Need, TopicLine};
+    use crate::watchdog::{needs_changed, same_overview};
 
     fn agent(name: &str, state: &str, age_secs: i64, attention: Option<Reason>) -> AgentLine {
         AgentLine {

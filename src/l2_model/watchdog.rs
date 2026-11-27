@@ -1731,6 +1731,40 @@ const NUDGE_ACTION: &str = "nudge";
 /// know that a reseat continuation carries a joined overview, which waits for
 /// a running turn's boundary like the overview's own turn.
 pub const OVERVIEW_TRAILER: &str = "— overview; declare done.";
+
+/// Hex digits of one FNV-1a 64 digest: each half of an overview hash.
+const DIGEST_HEX: usize = 16;
+
+/// Whether the `NEEDS YOU` set in `current` differs from the one in the
+/// last delivered `prior` hash, both from the overview's semantic hash. A prior hash
+/// without that half (none delivered, or written before it existed) proves
+/// no change, so it never bypasses the overview spacing.
+#[must_use]
+pub fn needs_changed(prior: Option<&str>, current: &str) -> bool {
+    match (prior.and_then(needs_half), needs_half(current)) {
+        (Some(prior), Some(current)) => prior != current,
+        _ => false,
+    }
+}
+
+/// Whether the last delivered `prior` hash names the same fleet as `current`,
+/// both from the overview's semantic hash. A legacy prior of the fleet digest alone,
+/// written before the `NEEDS YOU` half existed, is the same fleet when it
+/// equals `current`'s fleet half: an upgrade spends no turn on an unchanged
+/// fleet.
+#[must_use]
+pub fn same_overview(prior: Option<&str>, current: &str) -> bool {
+    prior.is_some_and(|prior| {
+        prior == current || (prior.len() == DIGEST_HEX && current.get(..DIGEST_HEX) == Some(prior))
+    })
+}
+
+/// The `NEEDS YOU` half of an overview hash, when it has one.
+fn needs_half(hash: &str) -> Option<&str> {
+    hash.get(DIGEST_HEX..)
+        .filter(|half| half.len() == DIGEST_HEX)
+}
+
 /// The action the orchestrator's fleet-overview prompt carries: its own, so a
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";

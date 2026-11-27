@@ -2347,12 +2347,12 @@ struct OverviewReading {
 
 impl OverviewReading {
     fn changed(&self) -> bool {
-        !crate::overview::same_overview(self.checkpoint.hash.as_deref(), &self.hash)
+        !crate::watchdog::same_overview(self.checkpoint.hash.as_deref(), &self.hash)
     }
 
     /// Whether the `NEEDS YOU` set differs from the last delivered overview's.
     fn needs_changed(&self) -> bool {
-        crate::overview::needs_changed(self.checkpoint.hash.as_deref(), &self.hash)
+        crate::watchdog::needs_changed(self.checkpoint.hash.as_deref(), &self.hash)
     }
 
     fn persisted_outstanding_since(&self) -> Option<SystemTime> {
