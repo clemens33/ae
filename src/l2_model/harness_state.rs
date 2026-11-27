@@ -1128,7 +1128,7 @@ fn opencode_welcome_layout(rows: &[Cow<'_, str>], edge: usize, last: usize) -> b
 /// the BOTTOM-MOST one and sit at that position, not the bound itself.
 fn current_opencode_identity(capture: &str) -> HarnessIdentity {
     // A styled capture reads as the text `capture-pane -p` would have printed.
-    let plain = crate::deliver::region::plain_text(capture);
+    let plain = crate::sgr::plain_text(capture);
     let rows = raw_lines(&plain);
     let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, HEAVY_EDGE)) else {
         return HarnessIdentity::default();
@@ -1322,7 +1322,7 @@ mod tests {
         fn the_measured_warmup_reads_warming_and_the_idle_frame_proves_nothing() {
             assert_eq!(dictation(IDLE, ToolKind::Claude), Dictation::Clear);
             assert_eq!(dictation(BUSY, ToolKind::Claude), Dictation::Clear);
-            let printed = crate::deliver::region::plain_text(WARMING_ESC);
+            let printed = crate::sgr::plain_text(WARMING_ESC);
             for frame in [WARMING, printed.as_str()] {
                 assert_eq!(dictation(frame, ToolKind::Claude), Dictation::Warming);
             }

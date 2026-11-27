@@ -7,6 +7,7 @@ pub mod json;
 pub mod provenance;
 pub mod redact;
 pub mod sanitize;
+pub mod sgr;
 pub mod time;
 pub mod token;
 pub mod words;

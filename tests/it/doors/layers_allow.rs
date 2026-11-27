@@ -82,7 +82,6 @@ pub(super) const DEBT: &[Row] = &[
     ("src/l2_model/harness_state.rs", "crate::deliver::region::is_braille", 2),
     ("src/l2_model/harness_state.rs", "crate::deliver::region::is_furniture", 3),
     ("src/l2_model/harness_state.rs", "crate::deliver::region::occupancy", 1),
-    ("src/l2_model/harness_state.rs", "crate::deliver::region::plain_text", 1),
     ("src/l3_services/init.rs", "crate::doctor::resolve_on_path", 1),
     ("src/l3_services/init.rs", "crate::entry::DEFAULT_CONFIG", 1),
     ("src/l3_services/init.rs", "crate::entry::EXIT_FAILED", 1),
