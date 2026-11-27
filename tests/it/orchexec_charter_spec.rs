@@ -165,6 +165,7 @@ mod desklive_nudge {
                 .env("TMUX", format!("{},0,0", rig.socket.display()))
                 .env("TMUX_PANE", &self.watcher)
                 .env_remove("AE_SENDER_OVERRIDE")
+                .env_remove("AE_WATCHDOG_SWEEP_SEC")
                 .stdout(Stdio::null())
                 .stderr(
                     fs::File::create(rig.root.join(format!("{channel}.err")))
@@ -349,6 +350,17 @@ mod desklive_nudge {
         drop(steps);
 
         let (_watchdog, mut steps) = fixture.start("desk-after-reseat");
+        assert_eq!(
+            fixture.receipt(),
+            shown,
+            "desk changes do not require an extra turn"
+        );
+        fixture.event(
+            -65,
+            "state",
+            r#","ref":"working","summary":"ordinary work resumed after the continuation""#,
+        );
+        steps.step();
         let retried = fixture.receipt();
         let tick = retried.strip_prefix(&shown).expect("append-only receipt");
         assert_eq!(
@@ -356,7 +368,11 @@ mod desklive_nudge {
             1,
             "{tick:?}"
         );
-        assert!(!tick.contains("overview; declare done."), "{tick:?}");
+        assert_eq!(
+            tick.matches("overview; declare done.").count(),
+            1,
+            "{tick:?}"
+        );
         steps.step();
         assert_eq!(fixture.receipt(), retried);
         assert_eq!(
@@ -399,16 +415,6 @@ mod desklive_nudge {
             "state",
             ",\"ref\":\"done\",\"summary\":\"fixture evidence arrived\"",
         );
-        let (watchdog, steps_within_spacing) = fixture.start("desk-spacing");
-        assert_eq!(
-            fixture.receipt(),
-            fresh,
-            "recent overview holds both messages"
-        );
-        drop(watchdog);
-        drop(steps_within_spacing);
-
-        fixture.age_overview_spacing();
         let (_watchdog, mut steps) = fixture.start("desk-stale");
         let shown = fixture.receipt();
         let combined = shown
@@ -434,90 +440,7 @@ mod desklive_nudge {
     }
 
     #[test]
-    fn desklive_nudge_detects_a_human_ask_opened_and_closed_before_the_next_read() {
-        let fixture = Fixture::new("deskask");
-        fixture.board(-700);
-        fixture.event(
-            -800,
-            "state",
-            ",\"ref\":\"done\",\"summary\":\"already finished before the board\"",
-        );
-        let (watchdog, mut steps) = fixture.start("desk-baseline");
-        let overview = fixture.receipt();
-        assert_eq!(
-            overview.matches("overview; declare done.").count(),
-            1,
-            "{overview:?}"
-        );
-        assert!(
-            !overview.to_ascii_lowercase().contains(TICK),
-            "{overview:?}"
-        );
-        steps.step();
-        assert_eq!(
-            fixture.receipt(),
-            overview,
-            "an old board alone sends no turn"
-        );
-        drop(watchdog);
-        drop(steps);
-        fixture.age_overview_spacing();
-
-        fixture.event(
-            -90,
-            "ask",
-            &format!(r#","ref":"{REF}","target":"telegram:42""#),
-        );
-        fixture.event(-80, "cancel", &format!(r#","ref":"{REF}""#));
-        let before = fixture.checkpoint();
-        let (watchdog, mut steps) = fixture.start("desk-ask-edges");
-        let shown = fixture.receipt();
-        let standalone = shown
-            .strip_prefix(&overview)
-            .expect("pane receipt is append-only");
-        assert_eq!(
-            standalone.to_ascii_lowercase().matches(TICK).count(),
-            1,
-            "{standalone:?}"
-        );
-        assert!(
-            !standalone.contains("overview; declare done."),
-            "{standalone:?}"
-        );
-        let after = fixture.checkpoint();
-        for key in [
-            "overview_hash",
-            "overview_delivered_at",
-            "overview_last_delivered_at",
-        ] {
-            assert_eq!(
-                before.get(key),
-                after.get(key),
-                "standalone refresh preserves {key}"
-            );
-        }
-        steps.step();
-        assert_eq!(
-            fixture.receipt(),
-            shown,
-            "the same journal makes no second turn"
-        );
-        drop(watchdog);
-        drop(steps);
-        assert_consumed_across_restarts(&fixture, &shown);
-    }
-
-    #[test]
-    fn desklive_nudge_retries_a_proven_pre_paste_refusal_on_the_standalone_path() {
-        assert_retries_a_proven_pre_paste_refusal(false);
-    }
-
-    #[test]
     fn desklive_nudge_retries_a_proven_pre_paste_refusal_on_the_combined_path() {
-        assert_retries_a_proven_pre_paste_refusal(true);
-    }
-
-    fn assert_retries_a_proven_pre_paste_refusal(combined: bool) {
         let fixture = Fixture::new("deskprepaste");
         let manual = fixture.board(-700);
         fixture.event(
@@ -533,20 +456,11 @@ mod desklive_nudge {
         drop(steps);
         fixture.age_overview_spacing();
 
-        if combined {
-            fixture.event(
-                -70,
-                "state",
-                r#","ref":"blocked","summary":"blocked after the board""#,
-            );
-        } else {
-            fixture.event(
-                -90,
-                "ask",
-                &format!(r#","ref":"{REF}","target":"telegram:42""#),
-            );
-            fixture.event(-80, "cancel", &format!(r#","ref":"{REF}""#));
-        }
+        fixture.event(
+            -70,
+            "state",
+            r#","ref":"blocked","summary":"blocked after the board""#,
+        );
         let dir = &fixture.rig.tool.dir;
         let messages = dir.join("messages");
         let saved = dir.join("messages-fixture-backup");
@@ -558,13 +472,10 @@ mod desklive_nudge {
         assert_eq!(fixture.receipt(), baseline, "refusal delivered nothing");
         let diagnostics = fs::read_to_string(fixture.rig.root.join("desk-refused.err"))
             .expect("send diagnostics");
-        // The standalone tick did not exist on the pre-feature base.
-        if combined {
-            assert!(
-                diagnostics.contains("message body storage failed"),
-                "{diagnostics}"
-            );
-        }
+        assert!(
+            diagnostics.contains("message body storage failed"),
+            "{diagnostics}"
+        );
         let after = fixture.checkpoint();
         for key in ["desk_tick_last_at", "desk_tick_cursor", "overview_hash"] {
             assert_eq!(
@@ -588,15 +499,9 @@ mod desklive_nudge {
         );
         assert_eq!(
             retried.matches("overview; declare done.").count(),
-            usize::from(combined),
+            1,
             "{retried:?}"
         );
-        if !combined {
-            assert!(
-                diagnostics.contains("message body storage failed"),
-                "{diagnostics}"
-            );
-        }
         steps.step();
         assert_eq!(fixture.receipt(), shown, "the retry submits one turn");
         assert_eq!(
@@ -628,6 +533,11 @@ mod desklive_nudge {
             &format!(r#","ref":"{REF}","target":"telegram:42""#),
         );
         fixture.event(-80, "cancel", &format!(r#","ref":"{REF}""#));
+        fixture.event(
+            -55,
+            "state",
+            r#","ref":"working","summary":"an overview is eligible once the launch is proved""#,
+        );
         let meta = fixture.rig.tool.dir.join("meta");
         let launch = fs::read_to_string(&meta).expect("proven launch metadata");
         assert!(launch.lines().any(|line| line == "launch_id.main=tok-rig"));
@@ -663,66 +573,13 @@ mod desklive_nudge {
             1,
             "{retried:?}"
         );
-        assert!(!retried.contains("overview; declare done."), "{retried:?}");
+        assert_eq!(
+            retried.matches("overview; declare done.").count(),
+            1,
+            "{retried:?}"
+        );
         steps.step();
         assert_eq!(fixture.receipt(), shown);
-    }
-
-    fn assert_consumed_across_restarts(fixture: &Fixture, shown: &str) {
-        let board = fixture.rig.tool.dir.join("desk-record");
-        let manual = fs::read(&board).expect("manual board before the restarts");
-        fixture.age_spacing("desk_tick_last_at");
-        fixture.event(-70, "send", r#","summary":"unrelated journal append""#);
-        let (watchdog, steps) = fixture.start("desk-consumed");
-        assert_eq!(
-            fixture.receipt(),
-            shown,
-            "restart, elapsed spacing and an unrelated append do not rearm the old edge"
-        );
-        drop(watchdog);
-        drop(steps);
-
-        let next = "ae-20261121T084012Z-00000002";
-        fixture.event(
-            -60,
-            "ask",
-            &format!(r#","ref":"{next}","target":"telegram:42""#),
-        );
-        fixture.event(-50, "cancel", &format!(r#","ref":"{next}""#));
-        let (watchdog, steps) = fixture.start("desk-next-edge");
-        let next_shown = fixture.receipt();
-        let next_turn = next_shown.strip_prefix(shown).expect("append-only receipt");
-        assert_eq!(next_turn.to_ascii_lowercase().matches(TICK).count(), 1);
-        assert!(!next_turn.contains("overview; declare done."));
-        drop(watchdog);
-        drop(steps);
-
-        fixture.event(
-            -40,
-            "state",
-            r#","ref":"blocked","summary":"a new normal overview is due""#,
-        );
-        let (watchdog, steps) = fixture.start("desk-holds-overview");
-        assert_eq!(
-            fixture.receipt(),
-            next_shown,
-            "the recent standalone tick also holds the normal overview"
-        );
-        drop(watchdog);
-        drop(steps);
-
-        fixture.age_spacing("desk_tick_last_at");
-        let (_watchdog, _steps) = fixture.start("desk-releases-overview");
-        let final_receipt = fixture.receipt();
-        let combined = final_receipt
-            .strip_prefix(&next_shown)
-            .expect("append-only receipt");
-        assert_eq!(combined.matches("overview; declare done.").count(), 1);
-        assert_eq!(combined.to_ascii_lowercase().matches(TICK).count(), 1);
-        assert_eq!(
-            fs::read(&board).expect("manual board after the restarts"),
-            manual
-        );
     }
 
     #[test]
@@ -802,9 +659,19 @@ mod desklive_nudge {
         // The closing record has no target. Only the older opening names it.
         fixture.event(-80, "cancel", &format!(r#","ref":"{review}""#));
         assert!(read().pending.iter().all(|request| request.id != review));
+        fixture.event(
+            -65,
+            "state",
+            r#","ref":"working","summary":"ordinary work resumed""#,
+        );
         let (_watchdog, _steps) = fixture.start("desk-review-closed-after-update");
         let after = fixture.receipt();
         let posted = after.strip_prefix(&held).expect("append-only pane receipt");
+        assert_eq!(
+            posted.matches("overview; declare done.").count(),
+            1,
+            "{posted}"
+        );
         assert_eq!(
             posted.to_ascii_lowercase().matches(TICK).count(),
             1,
@@ -814,6 +681,237 @@ mod desklive_nudge {
             fs::read_to_string(fixture.rig.tool.dir.join("desk-record")).expect("manual desk"),
             manual
         );
+    }
+
+    const OVERVIEW_TRAILER: &str = "overview; declare done.";
+
+    fn chatlag_sweep(fixture: &Fixture, seconds: Option<u64>) {
+        let meta = fixture.rig.tool.dir.join("meta");
+        let old = fs::read_to_string(&meta).expect("fixture launch metadata");
+        let mut lines = old
+            .lines()
+            .filter(|row| !row.starts_with("sweep_sec="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        lines.push('\n');
+        if let Some(seconds) = seconds {
+            use std::fmt::Write as _;
+            writeln!(lines, "sweep_sec={seconds}").expect("new launch spacing");
+        }
+        fs::write(meta, lines).expect("fixture spacing configuration");
+    }
+
+    fn chatlag_age_last_delivery(fixture: &Fixture, seconds: i64) {
+        let Value::Obj(mut fields) = fixture.checkpoint() else {
+            panic!("watchdog checkpoint should be an object");
+        };
+        let now = Timestamp::now().epoch();
+        let (_, Value::Num(last_delivery)) = fields
+            .iter()
+            .find(|(name, _)| name == "overview_last_delivered_at")
+            .expect("baseline overview delivery stamp")
+        else {
+            panic!("delivery stamp must be an epoch");
+        };
+        let advance = now - seconds - last_delivery;
+        for (name, value) in &mut fields {
+            if matches!(
+                name.as_str(),
+                "overview_delivered_at" | "overview_last_delivered_at"
+            ) {
+                let Value::Num(stamp) = value else {
+                    panic!("delivery stamp must be an epoch");
+                };
+                *stamp += advance;
+            }
+        }
+        fs::write(
+            fixture.rig.tool.dir.join(ae::monitor::STATE_NAME),
+            Value::Obj(fields).render(),
+        )
+        .expect("simulate elapsed time without sleeping");
+    }
+
+    fn chatlag_mark_peer(seat: &Seat, session: &str, stamp: i64, state: &str, summary: &str) {
+        let ts = Timestamp::from_epoch(stamp).to_string();
+        let uuid = uuid_of(session);
+        let mut journal = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(seat.dir.join("events.jsonl"))
+            .expect("peer journal");
+        writeln!(
+            journal,
+            r#"{{"ts":"{ts}","actor":"gemini:worker","action":"state","actor_slot":"main","actor_session":"{session}","actor_session_id":"{uuid}","actor_launch_id":"tok-{session}","ref":"{state}","summary":"{summary}"}}"#
+        )
+        .expect("append the peer declaration");
+    }
+
+    fn chatlag_spacing(seconds: Option<u64>, inside: i64, outside: i64) {
+        let fixture = Fixture::new("lag-spacing");
+        chatlag_sweep(&fixture, seconds);
+        fixture.event(
+            -40,
+            "state",
+            r#","ref":"blocked","summary":"steady owner need""#,
+        );
+        let world = ManuallyDrop::new(World {
+            root: fixture.rig.root.clone(),
+            sock: fixture.rig.socket.clone(),
+        });
+        let name = "ordinary-peer";
+        let ordinary = world.session(name, "worker", "mode=local\nlayout=vertical\n");
+        fixture
+            .rig
+            .tmux(&["set-environment", "-t", name, "AE_SESSION", name]);
+        fs::write(
+            ordinary.dir.join(".launch-attempt"),
+            (fixture.now - 1_800).to_string(),
+        )
+        .expect("ordinary session launch predates its journal");
+        chatlag_mark_peer(
+            &ordinary,
+            name,
+            fixture.now - 35,
+            "working",
+            "ordinary work",
+        );
+        let (watchdog, steps) = fixture.start("lag-space-baseline");
+        let baseline = fixture.receipt();
+        assert!(
+            baseline.contains("NEEDS YOU\n  desk-peer (1)"),
+            "{baseline}"
+        );
+        assert!(baseline.contains("WORKING\n  ordinary-peer"), "{baseline}");
+        assert_eq!(baseline.matches(OVERVIEW_TRAILER).count(), 1, "{baseline}");
+        drop(watchdog);
+        drop(steps);
+
+        chatlag_mark_peer(
+            &ordinary,
+            name,
+            fixture.now - 25,
+            "done",
+            "ordinary work done",
+        );
+        chatlag_age_last_delivery(&fixture, inside);
+        let (watchdog, steps) = fixture.start("lag-space-inside");
+        assert_eq!(
+            fixture.receipt(),
+            baseline,
+            "the stable NEEDS YOU entry grants no spacing bypass"
+        );
+        drop(watchdog);
+        drop(steps);
+
+        chatlag_age_last_delivery(&fixture, outside);
+        let (_watchdog, mut steps) = fixture.start("lag-space-outside");
+        let after = fixture.receipt();
+        let added = after
+            .strip_prefix(&baseline)
+            .expect("append-only turn receipt");
+        assert_eq!(added.matches(OVERVIEW_TRAILER).count(), 1, "{added}");
+        assert!(added.contains("NEEDS YOU\n  desk-peer (1)"), "{added}");
+        assert!(added.contains("QUIET\n  ordinary-peer (done"), "{added}");
+        steps.step();
+        assert_eq!(fixture.receipt(), after);
+    }
+
+    #[test]
+    fn chatlag_default_overview_spacing_is_five_minutes() {
+        chatlag_spacing(None, 200, 330);
+    }
+
+    #[test]
+    fn chatlag_explicit_overview_spacing_still_wins_over_default() {
+        chatlag_spacing(Some(420), 330, 450);
+    }
+
+    #[test]
+    fn chatlag_positive_overview_spacing_still_has_a_sixty_second_floor() {
+        chatlag_spacing(Some(2), 15, 75);
+    }
+
+    #[test]
+    fn chatlag_changed_needs_you_deliver_on_the_next_free_cycle() {
+        let fixture = Fixture::new("lag-need");
+        fixture.event(-55, "state", r#","ref":"done","summary":"initially quiet""#);
+        let (_watchdog, mut steps) = fixture.start("lag-need");
+        let baseline = fixture.receipt();
+        assert_eq!(baseline.matches(OVERVIEW_TRAILER).count(), 1, "{baseline}");
+        assert!(!baseline.contains("NEEDS YOU"), "{baseline}");
+
+        fixture.event(
+            -30,
+            "state",
+            r#","ref":"waiting-user","summary":"new owner decision""#,
+        );
+        steps.step();
+        let after = fixture.receipt();
+        let added = after
+            .strip_prefix(&baseline)
+            .expect("append-only turn receipt");
+        assert_eq!(added.matches(OVERVIEW_TRAILER).count(), 1, "{added}");
+        assert!(
+            added.contains("NEEDS YOU") && added.contains("new owner decision"),
+            "{added}"
+        );
+        steps.step();
+        assert_eq!(fixture.receipt(), after);
+    }
+
+    #[test]
+    fn chatlag_desk_edge_waits_for_the_next_eligible_overview() {
+        let fixture = Fixture::new("lag-desk");
+        let manual = fixture.board(-700);
+        fixture.event(
+            -800,
+            "state",
+            r#","ref":"done","summary":"finished before update""#,
+        );
+        let (watchdog, steps) = fixture.start("lag-desk-baseline");
+        let baseline = fixture.receipt();
+        assert_eq!(baseline.matches(OVERVIEW_TRAILER).count(), 1, "{baseline}");
+        assert!(!baseline.to_ascii_lowercase().contains(TICK));
+        drop(watchdog);
+        drop(steps);
+
+        fixture.event(
+            -90,
+            "ask",
+            &format!(r#","ref":"{REF}","target":"telegram:42""#),
+        );
+        fixture.event(-80, "cancel", &format!(r#","ref":"{REF}""#));
+        fixture.age_overview_spacing();
+        let (_watchdog, mut steps) = fixture.start("lag-desk-no-turn");
+        assert_eq!(
+            fixture.receipt(),
+            baseline,
+            "the desk edge alone sends no turn"
+        );
+
+        fixture.event(
+            -30,
+            "state",
+            r#","ref":"working","summary":"ordinary work resumed""#,
+        );
+        steps.step();
+        let after = fixture.receipt();
+        let added = after
+            .strip_prefix(&baseline)
+            .expect("append-only turn receipt");
+        assert_eq!(added.matches(OVERVIEW_TRAILER).count(), 1, "{added}");
+        assert_eq!(
+            added.to_ascii_lowercase().matches(TICK).count(),
+            1,
+            "{added}"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.rig.tool.dir.join("desk-record")).expect("manual desk"),
+            manual
+        );
+        steps.step();
+        assert_eq!(fixture.receipt(), after);
     }
 }
 

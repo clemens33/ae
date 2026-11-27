@@ -927,3 +927,42 @@ fn voicehint_both_submit_paths_still_hold_for_recording_and_transcribing() {
         ));
     }
 }
+
+#[test]
+fn chatlag_a_draft_started_during_overview_staging_receives_no_bytes() {
+    let rig = orchestrator("lag-draft-race", "claude", IDLE);
+    let draft_text = "I have an unfinished owner note.";
+    let draft = super::with_draft(draft_text);
+    let mut setup = before_paste_env(&rig.scratch, &rig.sock);
+    fs::write(rig.scratch.join("next-voice-frame"), &draft).expect("late draft frame");
+    setup.push(("D54_LOCK", rig.send_lock_path().display().to_string()));
+    let env: Vec<_> = setup
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+
+    let (code, why) = overview(&rig, "fleet overview must wait", &env);
+    let boundary = fs::read_to_string(rig.scratch.join("d54-trace"))
+        .expect("a draft was drawn after the delivery staged its buffer under the send lock");
+    assert!(boundary.starts_with("loaded under lock"), "{boundary}");
+    assert!(
+        rig.wire().is_empty(),
+        "neither paste nor Enter may reach the late draft: {code:?}: {why}"
+    );
+    let captured = checked(&rig, &["capture-pane", "-p", "-t", &rig.pane]);
+    assert!(
+        captured.lines().any(|line| {
+            line.strip_prefix('❯')
+                .is_some_and(|body| body.trim_start() == draft_text)
+        }),
+        "the owner draft stays intact: {captured}"
+    );
+
+    fs::write(rig.scratch.join("control"), IDLE).expect("the owner clears the draft");
+    rig.frame_barrier();
+    let (code, why) = overview(&rig, "fleet overview must wait", &[]);
+    assert_eq!(code, Some(0), "an empty pane takes the overview: {why}");
+    assert_eq!(rig.enter_count(), 1);
+    let receipt = fs::read_to_string(&rig.received).expect("pane submission");
+    assert_eq!(receipt.matches("fleet overview must wait").count(), 1);
+}

@@ -1736,7 +1736,7 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
     assert!(seeded.contains("main = orchestrator"), "{seeded}");
     assert!(seeded.contains("workers = \"\""), "{seeded}");
     assert!(seeded.contains("orchestrator = true"), "{seeded}");
-    assert!(seeded.contains("sweep = 120"), "{seeded}");
+    assert!(seeded.contains("sweep = 300"), "{seeded}");
     let seed_has = |fragment: &str| assert!(seeded.contains(fragment), "{seeded}");
     seed_has("Use only ae to orchestrate");
     seed_has("No project work, file edits, git, general shell work or\n  unrelated tools.");
@@ -1765,7 +1765,7 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
         .collect::<Vec<_>>();
     assert_eq!(seats, ["seat.main=orchestrator"], "{meta}");
     assert!(meta.lines().any(|line| line == "meta_agent=true"), "{meta}");
-    assert!(meta.lines().any(|line| line == "sweep_sec=120"), "{meta}");
+    assert!(meta.lines().any(|line| line == "sweep_sec=300"), "{meta}");
     assert!(
         meta.contains(&format!("local_config={}", config.display())),
         "the nonstandard overlay is a session fact: {meta}"
