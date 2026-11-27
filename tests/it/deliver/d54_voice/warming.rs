@@ -844,8 +844,7 @@ fn voicehint_body() -> String {
     format!("{}Final fixture line.", "Fixture line.\n".repeat(25))
 }
 
-fn voicehint_rig(tag: &str, after_paste: &str) -> Rig {
-    let rig = orchestrator(tag, "claude", IDLE);
+fn voicehint_rig(rig: Rig, after_paste: &str) -> Rig {
     record_hold_launch(&rig);
     let gate = ae::deliver::VoiceGate::of(&rig.dir, "main", Some(ae::tool::ToolKind::Claude));
     assert!(gate.proved(), "the launch requires a voice-readable frame");
@@ -868,7 +867,10 @@ fn voicehint_guarded(
 
 #[test]
 fn voicehint_watchdog_send_submits_the_just_pasted_claude_chip() {
-    let rig = voicehint_rig("voicehint-send", MEASURED_PASTE_HINT);
+    let rig = voicehint_rig(
+        orchestrator("voicehint-send", "claude", IDLE),
+        MEASURED_PASTE_HINT,
+    );
     let (code, why) = overview(&rig, &voicehint_body(), &[]);
     assert!(rig.transitions().starts_with("onpaste\n"));
     assert_eq!(rig.enter_count(), 1, "the pasted chip must submit: {why}");
@@ -881,8 +883,12 @@ fn voicehint_watchdog_send_submits_the_just_pasted_claude_chip() {
 fn voicehint_guarded_submit_accepts_the_just_pasted_claude_chip() {
     use ae::deliver::{Outcome, SubmitState};
 
-    let rig = voicehint_rig("voicehint-guard", MEASURED_PASTE_HINT);
+    let rig = voicehint_rig(
+        Rig::with_frame("voicehint-guard", "claude", IDLE),
+        MEASURED_PASTE_HINT,
+    );
     let result = voicehint_guarded(&rig, &voicehint_body());
+    assert!(matches!(result, Ok(Outcome::Sent(_))), "{result:?}");
     assert!(rig.transitions().starts_with("onpaste\n"));
     assert_eq!(
         rig.enter_count(),
@@ -899,13 +905,20 @@ fn voicehint_both_submit_paths_still_hold_for_recording_and_transcribing() {
 
     for (name, frame) in [("rec", super::HOLD), ("trans", super::TRANSCRIBING)] {
         let body = voicehint_body();
-        let rig = voicehint_rig(&format!("vh-send-{name}"), frame);
+        let rig = voicehint_rig(
+            orchestrator(&format!("vh-send-{name}"), "claude", IDLE),
+            frame,
+        );
         let (_, why) = overview(&rig, &body, &[]);
         assert_eq!(rig.transitions(), "onpaste\n", "{name}: {why}");
         assert_eq!(rig.enter_count(), 0, "{name}: {why}");
 
-        let rig = voicehint_rig(&format!("vh-guard-{name}"), frame);
+        let rig = voicehint_rig(
+            Rig::with_frame(&format!("vh-guard-{name}"), "claude", IDLE),
+            frame,
+        );
         let result = voicehint_guarded(&rig, &body);
+        assert!(matches!(result, Ok(Outcome::Sent(_))), "{name}: {result:?}");
         assert_eq!(rig.transitions(), "onpaste\n", "{name}: {result:?}");
         assert_eq!(rig.enter_count(), 0, "{name}: {result:?}");
         assert!(matches!(
