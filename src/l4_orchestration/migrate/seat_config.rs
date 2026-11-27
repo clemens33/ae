@@ -326,10 +326,10 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
             );
         }
         Verdict::Whole(tag) => (
-            SEAT_TEMPLATE.to_owned(),
+            keep_workspace_sweep(&text, SEAT_TEMPLATE),
             format!(
                 "replaced {} with the current seat template (it matched the {tag} template \
-                 byte for byte)",
+                 byte for byte; its overview spacing is kept)",
                 path.display()
             ),
         ),
@@ -342,6 +342,11 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
             ),
         ),
     };
+    if new == text {
+        // A released template that differs from the current one only in the
+        // spacing it keeps is already what this publish would write.
+        return None;
+    }
     let backup = seat_backup_path(&path, version);
     if let Err(why) = replace(&path, &text, &new, &backup) {
         return unchanged(&format!("it could not be replaced ({why})"));
@@ -352,6 +357,47 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
         backup.display(),
         restart(instance.is_some(), raised)
     ))
+}
+
+/// `new` with the `[workspace] sweep` row of the released template `old`, when
+/// `old` states one: a whole replacement keeps the overview spacing the seat
+/// ran with, and only a fresh seed takes the template's own value. `old` is a
+/// ledger template byte for byte, so its rows are known text.
+fn keep_workspace_sweep(old: &str, new: &str) -> String {
+    let Some(kept) = workspace_rows(old).find(|row| is_sweep_row(row)) else {
+        return new.to_owned();
+    };
+    let mut section = "";
+    let mut replaced = false;
+    let mut out = String::with_capacity(new.len());
+    for line in new.split_inclusive('\n') {
+        let row = line.trim_end_matches('\n');
+        if row.starts_with('[') {
+            section = row;
+        }
+        if !replaced && section == "[workspace]" && is_sweep_row(row) {
+            out.push_str(kept);
+            out.push_str(&line[row.len()..]);
+            replaced = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// The rows of `text`'s first `[workspace]` section, its header excluded.
+fn workspace_rows(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .skip_while(|row| *row != "[workspace]")
+        .skip(1)
+        .take_while(|row| !row.starts_with('['))
+}
+
+/// Whether `row` assigns the `sweep` key.
+fn is_sweep_row(row: &str) -> bool {
+    row.split_once('=')
+        .is_some_and(|(key, _)| key.trim() == "sweep")
 }
 
 /// How a replacement line tells the owner the seat loads the new file. When the
@@ -903,7 +949,12 @@ mod tests {
         let taken = scratch.0.join("orchestrator.config.pre-v9.9");
         std::fs::write(&taken, "mine\n").expect("occupied");
         let line = reconcile(&scratch.0, "9.9").expect("a line");
-        assert_eq!(std::fs::read_to_string(&path).expect("file"), SEAT_TEMPLATE);
+        assert!(old.contains("\nsweep = 120\n"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file"),
+            SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 120\n"),
+            "the current template with the released file's explicit spacing"
+        );
         assert_eq!(std::fs::read_to_string(&taken).expect("kept"), "mine\n");
         let saved = scratch.0.join("orchestrator.config.pre-v9.9-2");
         assert_eq!(std::fs::read_to_string(&saved).expect("backup"), old);
@@ -916,6 +967,34 @@ mod tests {
         // Run again: the file is current, so nothing is said and nothing is kept.
         assert_eq!(reconcile(&scratch.0, "9.9"), None);
         assert!(!scratch.0.join("orchestrator.config.pre-v9.9-3").exists());
+    }
+
+    #[test]
+    fn a_whole_replacement_keeps_an_explicit_sweep_and_a_fresh_seed_does_not() {
+        let latest = include_str!("../../../tests/fixtures/orchestrator/v2026.11.121.config");
+        assert!(latest.contains("\n[workspace]\n") && latest.contains("\nsweep = 120\n"));
+        assert!(SEAT_TEMPLATE.contains("\nsweep = 300\n"));
+        assert_eq!(
+            latest,
+            SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 120\n"),
+            "the latest release differs from the current template only in its spacing"
+        );
+        let scratch = root_with("whole-sweep", Some(latest.as_bytes()));
+        let path = scratch.0.join("orchestrator.config");
+        for _ in 0..2 {
+            assert_eq!(reconcile(&scratch.0, "9.9"), None, "nothing to replace");
+            assert_eq!(std::fs::read_to_string(&path).expect("file"), latest);
+            assert!(!scratch.0.join("orchestrator.config.pre-v9.9").exists());
+        }
+
+        let unstated = include_str!("../../../tests/fixtures/orchestrator/v2026.9.9.config");
+        assert!(!workspace_rows(unstated).any(is_sweep_row));
+        assert_eq!(keep_workspace_sweep(unstated, SEAT_TEMPLATE), SEAT_TEMPLATE);
+        let custom = latest.replace("\nsweep = 120\n", "\nsweep = 0\n");
+        assert_eq!(
+            keep_workspace_sweep(&custom, SEAT_TEMPLATE),
+            SEAT_TEMPLATE.replace("\nsweep = 300\n", "\nsweep = 0\n")
+        );
     }
 
     #[test]
