@@ -361,42 +361,137 @@ fn a_mute_socket_exhausts_the_shared_preflight_budget_without_an_attach_child() 
     }
 }
 
-struct Suspended(String);
+struct Suspended {
+    root: PathBuf,
+}
+
+impl Suspended {
+    fn mark(&self, name: &str) {
+        std::fs::write(self.root.join(name), []).expect("signal the stopped-server guardian");
+    }
+
+    fn wait(&self, name: &str) {
+        let marker = self.root.join(name);
+        until(|| marker.is_file().then_some(()), name);
+    }
+
+    fn resume(&self) {
+        self.mark("resume");
+        self.wait("resumed");
+    }
+
+    fn finish(&self) {
+        self.mark("finish");
+        self.wait("cleaned");
+    }
+}
 
 impl Drop for Suspended {
     fn drop(&mut self) {
-        let _ = super::super::run("kill", &["-CONT".to_owned(), self.0.clone()]);
+        let _ = std::fs::write(self.root.join("resume"), []);
+        let _ = std::fs::write(self.root.join("finish"), []);
     }
 }
 
 fn suspend(rig: &Rig) -> Suspended {
+    // The guardian owns the stop and runs in its own process group, so a
+    // nextest timeout can kill the test without leaving tmux stopped. Its
+    // deadline also handles a stuck test that has not been killed yet.
+    const GUARDIAN: &str = r#"
+use strict;
+use warnings;
+use Time::HiRes qw(CLOCK_MONOTONIC clock_gettime sleep);
+my ($parent, $server, $socket) = @ARGV;
+my $deadline = clock_gettime(CLOCK_MONOTONIC) + 6;
+my ($armed, $resumed, $exit) = (0, 0, 0);
+$SIG{TERM} = $SIG{INT} = sub { $exit = 1 };
+sub mark {
+    open(my $out, '>', $_[0]) or die "$!";
+    close($out) or die "$!";
+}
+sub await_mark {
+    my ($name) = @_;
+    while (!-e $name && !$exit && getppid() == $parent
+            && clock_gettime(CLOCK_MONOTONIC) < $deadline) {
+        sleep 0.010;
+    }
+}
+END {
+    if ($armed) {
+        kill 'CONT', $server unless $resumed;
+        my $closed = !-S $socket || system('tmux', '-S', $socket, 'kill-server') == 0;
+        mark('cleaned') if $closed;
+    }
+}
+exit if getppid() != $parent;
+$armed = kill 'STOP', $server;
+die 'could not stop the private test server' unless $armed;
+mark('ready');
+await_mark('resume');
+$resumed = kill 'CONT', $server;
+die 'the stopped test server could not resume' unless $resumed;
+mark('resumed');
+if (-e 'resume') {
+    # The Rust side still checks the live client's roster after resume.
+    $deadline = clock_gettime(CLOCK_MONOTONIC) + 15;
+    await_mark('finish');
+}
+"#;
     let pid = rig
         .must(&["display-message", "-p", "#{pid}"])
         .trim()
         .to_owned();
     assert!(pid.parse::<u32>().is_ok_and(|pid| pid > 1));
-    let suspended = Suspended(pid);
-    assert!(super::super::run("kill", &["-STOP".to_owned(), suspended.0.clone()]).0);
+    let suspended = Suspended {
+        root: rig.path("stopped-server-guardian"),
+    };
+    std::fs::create_dir(&suspended.root).expect("private stopped-server guardian directory");
+    let args = [
+        "-e",
+        GUARDIAN,
+        &std::process::id().to_string(),
+        &pid,
+        socket(rig).to_str().expect("fixture socket is UTF-8"),
+    ];
+    assert!(
+        super::super::spawn(
+            "perl",
+            &args,
+            &[],
+            super::super::Streams::DetachedIn(&suspended.root),
+            None,
+        )
+        .is_some(),
+        "start the stopped-server guardian before sending SIGSTOP"
+    );
+    suspended.wait("ready");
     suspended
 }
 
 #[test]
 fn a_reply_deadline_kills_and_reaps_the_client_before_returning() {
     let rig = Rig::new("d54-timeout");
-    let ((pid, sidecar), events) = wait_children_during(|| {
+    let ((pid, sidecar, stopped), events) = wait_children_during(|| {
         let mut sidecar = attach(&rig, &proof(&rig));
         let pid = sidecar.pid();
         let stopped = suspend(&rig);
+        let started = Instant::now();
         assert!(sidecar.send(SidecarCommand::Frame));
         assert_eq!(sidecar.reply(SHORT), Err(SidecarLost::Timeout));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "reply must return before the guardian can rescue it"
+        );
         assert!(!sidecar.send(SidecarCommand::Space));
-        drop(stopped);
-        (pid, sidecar)
+        stopped.resume();
+        (pid, sidecar, stopped)
     });
     assert_started_and_reaped(&events, pid);
     let ((), after) = wait_children_during(|| drop(sidecar));
     assert!(after.is_empty(), "Drop never reaps twice: {after:?}");
     rig.await_clients("current", 0);
+    assert!(rig.raw(&["has-session", "-t", "=current"]).0);
+    stopped.finish();
 }
 
 #[test]
