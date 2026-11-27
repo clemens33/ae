@@ -348,15 +348,11 @@ function deskRow(desk, slug) {
   return null;
 }
 
-// What the page remembers of a topic the owner opened that has no row of its
-// own: its slug, and whether it was closed then.
-const opening = (row) => ({ slug: row.slug, closed: row.state === "closed" });
-
-// Whether a topic may stay selected: it has a row of its own, or it is `temp`,
-// the one the owner opened, and has not closed since, unless it was closed when
-// it was opened. `temp` lives in this page only.
-const selectable = (row, pins, temp) =>
-  keeps(row, pins) || (!!temp && row.slug === temp.slug && (temp.closed || row.state !== "closed"));
+// Whether a topic may stay selected. One that is not closed may, wherever its
+// row is. A closed one needs a row of its own, unless it is `shut`: the one that
+// was closed with no row of its own when the owner opened or unpinned it.
+const selectable = (row, pins, shut) =>
+  row.state !== "closed" || keeps(row, pins) || row.slug === shut;
 
 // The desk's topics in the side panel's groups, each newest activity first: the
 // later of the last review and the newest chat turn that names the topic. The
@@ -2128,11 +2124,12 @@ function App() {
   const lines = useLines(state);
   const [problem, setProblem] = useState("");
   const tag = useRef("");
-  // The selected topic, "" for All; the topic the owner opened that has no row
-  // of its own; whether its draft goes untagged; the selected topic's card, that
+  // The selected topic, "" for All; `shut`, its slug while it may stay selected
+  // although closed with no row of its own ("" else; it lives in this page
+  // only); whether its draft goes untagged; the selected topic's card, that
   // answer's tag; and what a narrow screen shows, the chat or the panel.
   const [chosen, setChosen] = useState("");
-  const [temp, setTemp] = useState(null);
+  const [shut, setShut] = useState("");
   const [pins, writePin] = usePins();
   const [untagged, setUntagged] = useState(false);
   const [card, setCard] = useState(null);
@@ -2142,7 +2139,7 @@ function App() {
   const desk = state && state.desk ? state.desk : null;
   const chosenRow = chosen ? deskRow(desk, chosen) : null;
   // A selected topic that lost its place shows All at once.
-  const active = chosenRow && selectable(chosenRow, pins, temp) ? chosen : "";
+  const active = chosenRow && selectable(chosenRow, pins, shut) ? chosen : "";
   const lists = desk ? sideGroups(desk, pins, state.chat.rows) : [];
   const book = useRef(null);
   book.current = book.current || newBook();
@@ -2203,7 +2200,7 @@ function App() {
     cardTag.current = "";
     setCard(null);
     setChosen("");
-    setTemp(null);
+    setShut("");
     setUntagged(false);
   };
   // Selects a topic, "" for All, and shows the chat or the panel on a narrow
@@ -2219,28 +2216,28 @@ function App() {
       setUntagged(false);
     }
     const row = deskRow(desk, slug);
-    setTemp(row && !keeps(row, pins) ? opening(row) : null);
+    setShut(row && row.state === "closed" && !keeps(row, pins) ? slug : "");
     setView(shows);
   };
   const selectTab = (slug) => open(slug, "chat");
   const openTopic = (slug) => open(slug, "panel");
 
   // Unpinning the selected topic leaves it open until another one is chosen, also
-  // when nothing else keeps it.
+  // when it is closed and nothing else keeps it.
   const pinTab = (slug, pin) => {
     const next = writePin(slug, pin);
     const row = deskRow(desk, slug);
     if (next.includes(slug)) {
-      setTemp((before) => (before && before.slug === slug ? null : before));
-    } else if (slug === active && row && !keepsUnpinned(row)) {
-      setTemp(opening(row));
+      setShut((before) => (before === slug ? "" : before));
+    } else if (slug === active && row && row.state === "closed" && !keepsUnpinned(row)) {
+      setShut(slug);
     }
   };
 
-  // A selected topic that lost its place is closed for good, so it does not open
-  // again by itself when it gets one back. An opened topic the board or a pin now
-  // keeps is one of its own from then on, and one that was closed when opened and
-  // no longer is goes when it closes again.
+  // A selected topic that lost its place is dropped for good, so it does not open
+  // again by itself when it gets one back. Once the board or a pin keeps `shut`,
+  // or it is no longer closed, it is forgotten, so a later close drops it like
+  // any other topic.
   useEffect(() => {
     if (!desk) {
       return;
@@ -2249,11 +2246,9 @@ function App() {
       leave();
       return;
     }
-    const row = temp ? deskRow(desk, temp.slug) : null;
-    if (row && keeps(row, pins)) {
-      setTemp(null);
-    } else if (row && temp.closed && row.state !== "closed") {
-      setTemp(opening(row));
+    const row = shut ? deskRow(desk, shut) : null;
+    if (row && (keeps(row, pins) || row.state !== "closed")) {
+      setShut("");
     }
   }, [state, pins]);
 

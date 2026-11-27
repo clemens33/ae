@@ -95,7 +95,7 @@ fn seed(rig: &Rig) {
     let messages = [
         "#smoke Smoke-only row",
         "#calm Calm-only row",
-        "#smoke: #calm. Both-tabs row <b data-t1-hostile>",
+        "#smoke: #calm. #t1-moving Both-tabs row <b data-t1-hostile>",
         "Unknown-only row #does-not-exist",
         "Untagged row x#smoke #smoke_x",
     ];
@@ -239,16 +239,23 @@ fn tabs_and_filter(tab: &mut Tab, rig: &Rig) -> Checked {
     }
 
     choose(tab, CHECK, "t1-moving")?;
+    visible_rows(tab, CHECK, "Both-tabs row")?;
     ae::store::open(&rig.dir)
         .append_memo(b"2026-11-24T08:02:00Z\ttui\ttopic-t1-moving\tstate: quiet\n")
         .expect("quiet the selected automatic topic");
     wait(
         tab,
         CHECK,
-        "const saw = document.querySelector('[data-role=tab-all]')?.getAttribute('aria-selected'); \
-         return {ok: saw === 'true' && !document.querySelector('[role=tab][data-slug=t1-moving]'), saw};",
-        "",
+        "const fold = document.querySelector('[data-group=rest]'); \
+         const row = fold?.querySelector('[role=tab][aria-selected=true]'); \
+         const card = document.querySelector('[data-panel=topic]'); \
+         const saw = {expanded: fold?.querySelector('[data-action=toggle-group]')?.getAttribute('aria-expanded'), \
+         selected: row?.dataset.slug, card: card?.dataset.slug}; \
+         return {ok: saw.expanded === 'false' && saw.selected === want && saw.card === want, saw};",
+        "t1-moving",
     )?;
+    visible_rows(tab, CHECK, "Both-tabs row")?;
+    choose(tab, CHECK, "")?;
     tab.holds(
         CHECK,
         "const row = [...document.querySelectorAll('[data-panel=all] button.row')].find(row => \

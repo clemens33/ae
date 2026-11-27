@@ -180,6 +180,22 @@ const saw = {slug: card?.dataset.slug, height: card?.getBoundingClientRect().hei
 return {ok: saw.slug === want && saw.height > 0, saw};
 "#;
 
+const WAITING_CARD: &str = r"
+const row = document.querySelector('[data-group=needs] [data-slug=t4-order-a][aria-selected=true]');
+const card = document.querySelector('[data-panel=topic][data-slug=t4-order-a]');
+const fields = [...(card?.querySelectorAll('.fld p.raw') || [])].map(field => field.textContent);
+const waits = [...(card?.querySelectorAll('.fld.need li') || [])].map(wait => wait.textContent);
+const saw = {selected: !!row, fields, waits};
+return {ok: saw.selected && fields.includes('quiet') && waits.length === 1 && waits[0].includes(want), saw};
+";
+
+const ALL_CARD: &str = r"
+const all = document.querySelector('[data-role=tab-all]');
+const card = document.querySelector('[data-panel=all]');
+const saw = {selected: all?.getAttribute('aria-selected'), overview: !!card};
+return {ok: saw.selected === 'true' && saw.overview, saw};
+";
+
 const FIND_ALL_ROW: &str = r"
 const row = [...document.querySelectorAll('[data-panel=all] button.row')].find(button =>
   button.querySelector('.ln')?.textContent.split(' ')[0] === '#' + want);
@@ -222,6 +238,22 @@ fn turn(path: &Path, second: u8, body: &str) {
         .unwrap_or_else(|error| panic!("open T4 transcript: {error}"))
         .write_all(line.as_bytes())
         .unwrap_or_else(|error| panic!("append T4 transcript turn: {error}"));
+}
+
+fn publish_ask(rig: &Rig, id: &str, summary: &str) {
+    let ask = Value::obj([
+        ("ts", Value::str("2026-11-24T10:00:00Z")),
+        ("actor", Value::str(ae::tracked::CONSOLE_SINK)),
+        ("action", Value::str("ask")),
+        ("target", Value::str("lead")),
+        ("target_slot", Value::str("main")),
+        ("target_session", Value::str(&rig.session)),
+        ("ref", Value::str(id)),
+        ("summary", Value::str(summary)),
+    ]);
+    ae::store::open(&rig.dir)
+        .append_event(&format!("{}\n", ask.render()))
+        .unwrap_or_else(|error| panic!("publish T4 fixture ask: {error}"));
 }
 
 fn seed(rig: &Rig) -> PathBuf {
@@ -274,22 +306,11 @@ fn seed(rig: &Rig) -> PathBuf {
         "tui",
     )
     .unwrap_or_else(|error| panic!("publish T4 fixture board: {error}"));
-    let ask = Value::obj([
-        ("ts", Value::str("2026-11-24T10:00:00Z")),
-        ("actor", Value::str(ae::tracked::CONSOLE_SINK)),
-        ("action", Value::str("ask")),
-        ("target", Value::str("lead")),
-        ("target_slot", Value::str("main")),
-        ("target_session", Value::str(&rig.session)),
-        ("ref", Value::str(ASK)),
-        (
-            "summary",
-            Value::str("#s2-a #t4-bare #t4-waiting Topics with only an open ask"),
-        ),
-    ]);
-    ae::store::open(&rig.dir)
-        .append_event(&format!("{}\n", ask.render()))
-        .unwrap_or_else(|error| panic!("publish T4 fixture ask: {error}"));
+    publish_ask(
+        rig,
+        ASK,
+        "#s2-a #t4-bare #t4-waiting Topics with only an open ask",
+    );
 
     let store = rig.scratch.join("claude-t4");
     let transcript = store.join("projects/t4");
@@ -465,6 +486,60 @@ fn narrow(tab: &mut Tab) -> Checked {
     Ok(())
 }
 
+fn wait_ends(tab: &mut Tab, rig: &Rig) -> Checked {
+    const CONTROL: &str = "t4c-close-control";
+    const SETUP: &str = "t4c-waiting";
+    const KEEP: &str = "t4c-keep-selection";
+    const WAIT: &str = "ae-20261124T100000Z-00000002";
+    const NEEDS_ROW: &str = "[data-group=needs] [data-slug=t4-order-a]";
+    const EXISTS: &str = "const saw = !!document.querySelector(want); return {ok: saw, saw};";
+    const ABSENT: &str = "const saw = !!document.querySelector(want); return {ok: !saw, saw};";
+
+    tab.view(WIDE);
+    script(tab, CONTROL, "window.__aeStale = 1")?;
+    tab.call("Page.reload", Value::Obj(Vec::new()));
+    wait(tab, CONTROL, READY, "")?;
+    wait(tab, CONTROL, ALL_CARD, "")?;
+    tab.click_selector(CONTROL, FOLD)?;
+    wait(
+        tab,
+        CONTROL,
+        FOLDED,
+        r#"["true","s2-a s2-closed s2-m s2-parked s2-z",""]"#,
+    )?;
+    tab.click_selector(CONTROL, "[data-group=rest] [data-slug=s2-parked]")?;
+    wait(tab, CONTROL, CARD, "s2-parked")?;
+    tab.click_selector(CONTROL, FOLD)?;
+    wait(tab, CONTROL, FOLDED, r#"["false","s2-parked","s2-parked"]"#)?;
+    memo(
+        rig,
+        "11",
+        "s2-parked",
+        "state: closed | close: T4c topic closure",
+    );
+    wait(tab, CONTROL, ALL_CARD, "")?;
+    ok(CONTROL, WIDE);
+
+    memo(rig, "11", "t4-order-a", "state: quiet");
+    publish_ask(rig, WAIT, "#t4-order-a T4c open ask");
+    wait(tab, SETUP, EXISTS, NEEDS_ROW)?;
+    tab.click_selector(SETUP, NEEDS_ROW)?;
+    wait(tab, SETUP, WAITING_CARD, WAIT)?;
+    tab.holds(SETUP, FILTERED, "t4-order-a")?;
+    tab.holds(SETUP, FOLDED, r#"["false","",""]"#)?;
+    ok(SETUP, WIDE);
+
+    ae::console::close(&rig.dir, &rig.session, Some(WAIT))
+        .unwrap_or_else(|error| panic!("close T4c fixture ask: {error}"));
+    // First observe the new snapshot, then read the selection it rendered.
+    wait(tab, "t4c-wait-ended", ABSENT, NEEDS_ROW)?;
+    tab.holds(KEEP, FOLDED, r#"["false","t4-order-a","t4-order-a"]"#)?;
+    tab.holds(KEEP, CARD, "t4-order-a")?;
+    tab.holds(KEEP, FILTERED, "t4-order-a")?;
+    ok(KEEP, WIDE);
+    Ok(())
+}
+
 pub(super) fn check_t4(tab: &mut Tab) -> Checked {
     let rig = smoke_rig();
     let transcript = seed(&rig);
@@ -490,7 +565,8 @@ pub(super) fn check_t4(tab: &mut Tab) -> Checked {
         palette(tab)?;
         opened(tab)?;
         layout(tab)?;
-        narrow(tab)
+        narrow(tab)?;
+        wait_ends(tab, &rig)
     })();
     listener.shutdown();
     result

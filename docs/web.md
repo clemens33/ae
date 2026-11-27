@@ -74,9 +74,9 @@ the title in at most two lines (the row's tooltip has the whole title, the slug,
 counts), the unread number and the number of open DECIDE items that tag the topic.
 
 Selecting a row shows the topic's chat, tags the draft and shows its card on the right. A topic in
-the last group also opens from All, the Revisit line or the strip, and stays selected until you
-select another one; if it closes meanwhile, see **Closed topics**. A selected topic that moves from
-a group above into the last one is no longer selected, and the page shows All. The panel is 260 px
+the last group also opens from All, the Revisit line or the strip. A selected topic stays selected
+when it moves to another group, also into the last one, for example when its last wait ends. Closing
+is the exception (see **Closed topics**). The panel is 260 px
 wide (220 px below 1100 px) and scrolls on its own. A narrow screen (up to 759 px) shows one view
 at a time, chosen at the bottom: **Topics** (the panel), **Chat** or **Overview** (with a topic
 selected, **Topic**). The page opens on Chat, and a row press shows the chat.
@@ -90,8 +90,9 @@ selected, **Topic**). The page opens on Chat, and a row press shows the chat.
   browser frees the pins.
 - **Closed topics.** A closed topic is in the last group unless it is pinned or something waits for
   you on it (see **Needs you**). When the selected topic closes with neither, the page shows All,
-  also when you had opened it from the last group. A topic that is already closed and in the last
-  group when you open it stays selected until you select another one.
+  also when you had opened it from the last group. It also shows All when the last wait of a
+  selected closed topic ends and the topic is not pinned. A topic that is already closed and in the
+  last group when you open it stays selected until you select another one.
 - **Unread.** A row shows the number of turns with its tag that arrived since you last had the
   topic selected in this page; selecting it clears the number. Your own turns do not count. A tag
   that a turn gets after it arrived does not count either: a new topic can tag older turns. A turn
@@ -382,7 +383,9 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
 - Last, the side panel cases run on a listener of their own (`t4-*`): the groups (also under open
   asks and after one closes), their order and the fold, newest activity first, a long hostile title
   in two lines, the need colour and its contrast in both schemes, a topic opened from the folded
-  group, the columns at 1440, 1000 and 760 px, and the three views at 360x740.
+  group, the columns at 1440, 1000 and 760 px, and the three views at 360x740. The `t4c-*` cases
+  end them: the selected topic that closes shows All, and the one whose last wait ends stays
+  selected in the folded group.
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
