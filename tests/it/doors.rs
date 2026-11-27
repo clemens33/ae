@@ -334,6 +334,41 @@ fn run_sysctl_has_exactly_one_product_caller() {
     );
 }
 
+#[test]
+fn claude_managed_policy_fixture_has_one_checkout_only_read_from_mic_start() {
+    const DOORS: &str = "src/l1_platform/doors.rs";
+    const PANEL: &str = "src/l5_ui/app/panel.rs";
+    const ENV: &str = "AE_TEST_CLAUDE_MANAGED_DIR";
+    const READ: &str = r#"std::env::var_os("AE_TEST_CLAUDE_MANAGED_DIR")"#;
+
+    assert_eq!(src_holders(ENV), [DOORS]);
+    assert_eq!(src_holders("claude_managed_test_root("), [DOORS, PANEL]);
+
+    let doors = tree_text(DOORS);
+    let read = &doors[body_of(doors, "fn claude_managed_test_root(")];
+    assert_eq!(doors.matches(READ).count(), 1);
+    assert!(read.contains("claude_managed_test_root_with(shape, ||"));
+    assert!(read.contains(READ) && read.contains("reason = \"a door:"));
+
+    let panel = structural(PANEL, tree_text(PANEL));
+    let start = &panel[body_of(&panel, "fn mic_start(")];
+    assert_eq!(
+        panel.matches("claude_managed_test_root(").count(),
+        1,
+        "only a mic start can read the checkout fixture"
+    );
+    assert!(start.contains("claude_managed_test_root("));
+    assert_eq!(
+        start.matches("::capture_screen(").count(),
+        1,
+        "one synchronous styled preflight capture"
+    );
+    assert!(
+        !start.contains("send_keys") && !start.contains("send_raw"),
+        "the synchronous preflight must send no key"
+    );
+}
+
 /// `transport::run_agy_quota`, the network-reaching agy leg, runs on demand only,
 /// and its child's streams are never pipes that could block ae past a deadline.
 #[test]

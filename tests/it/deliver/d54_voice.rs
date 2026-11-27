@@ -174,6 +174,10 @@ fn until_screen(rig: &Rig, pane: &str, why: &str, test: impl Fn(&str) -> bool) -
 }
 
 fn app(rig: &Rig, home: &str) -> String {
+    app_env(rig, home, &[])
+}
+
+fn app_env(rig: &Rig, home: &str, extra: &[&str]) -> String {
     checked(
         rig,
         &[
@@ -189,38 +193,34 @@ fn app(rig: &Rig, home: &str) -> String {
     let gates = rig.scratch.join("gates");
     fs::create_dir(&gates).expect("private app read gates");
     fs::write(&config, "[workspace]\nchat = app\n").expect("private config");
-    let pane = checked(
-        rig,
-        &[
-            "new-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-t",
-            &format!("={home}:"),
-            "env",
-            "-u",
-            "CLAUDE_CONFIG_DIR",
-            "-u",
-            "CODEX_HOME",
-            "TMUX=",
-            "TMUX_PANE=",
-            "TERM=xterm-256color",
-            "AE_NO_AUTOSTART=1",
-            &format!("HOME={root}"),
-            &format!("TMUX_TMPDIR={root}"),
-            &format!("AE_HOME={root}"),
-            &format!("CONFIG_FILE={}", config.display()),
-            "AE_TMUX_SERVER_KIND=socket",
-            &format!("AE_TMUX_SERVER={}", rig.sock.display()),
-            "AE_SEND_DEFER_SEC=0",
-            &format!("AE_TEST_APP_READ_GATE={}", gates.display()),
-            env!("CARGO_BIN_EXE_ae"),
-            "app",
-            home,
-        ],
-    );
+    let args = [
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        &format!("={home}:"),
+        "env",
+        "-u",
+        "CLAUDE_CONFIG_DIR",
+        "-u",
+        "CODEX_HOME",
+        "TMUX=",
+        "TMUX_PANE=",
+        "TERM=xterm-256color",
+        "AE_NO_AUTOSTART=1",
+        &format!("HOME={root}"),
+        &format!("TMUX_TMPDIR={root}"),
+        &format!("AE_HOME={root}"),
+        &format!("CONFIG_FILE={}", config.display()),
+        "AE_TMUX_SERVER_KIND=socket",
+        &format!("AE_TMUX_SERVER={}", rig.sock.display()),
+        "AE_SEND_DEFER_SEC=0",
+        &format!("AE_TEST_APP_READ_GATE={}", gates.display()),
+    ];
+    let command = [env!("CARGO_BIN_EXE_ae"), "app", home];
+    let pane = checked(rig, &[args.as_slice(), extra, command.as_slice()].concat());
     let pane = pane.trim().to_owned();
     until_screen(rig, &pane, "setup: the app reads its home", |screen| {
         screen.contains(&format!("to {home}")) && screen.contains("Enter writes")
@@ -837,6 +837,161 @@ fn the_mic_explains_an_older_launch_without_voice_proof() {
     rig.frame_barrier();
     assert!(rig.wire().is_empty(), "the older launch receives no bytes");
     untouched(&rig, &api);
+}
+
+#[derive(Clone, Copy)]
+enum ManagedNode {
+    File,
+    Directory,
+    OnAttach,
+}
+
+fn managed_policy_on_attach(rig: &Rig, root: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Only the private control-mode attach creates the node. The panel's
+    // preflight has already passed. Every command still reaches real tmux.
+    const WRAPPER: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Cwd qw(abs_path);
+my $private = 0;
+for (my $i = 0; $i + 1 < @ARGV; ++$i) {
+    $private = 1 if $ARGV[$i] eq '-S'
+        && (abs_path($ARGV[$i + 1]) // '') eq $ENV{D54_POLICY_SOCKET};
+}
+if ($private && (grep { $_ eq '-C' } @ARGV) && (grep { $_ eq 'attach-session' } @ARGV)) {
+    open my $policy, '>', $ENV{D54_POLICY_NODE} or die "managed node: $!";
+    print {$policy} "not JSON";
+    close $policy or die "close managed node: $!";
+}
+exec {$ENV{D54_POLICY_TMUX}} $ENV{D54_POLICY_TMUX}, @ARGV;
+die "forward tmux: $!";
+"#;
+
+    let path = std::env::var_os("PATH").expect("fixture PATH");
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("tmux"))
+        .find(|file| file.is_file())
+        .expect("real tmux executable");
+    let bin = rig.scratch.join("policy-wrapper");
+    fs::create_dir(&bin).expect("private tmux wrapper directory");
+    let wrapper = bin.join("tmux");
+    fs::write(&wrapper, WRAPPER).expect("policy wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("wrapper executable");
+    let node = root.join("managed-settings.json");
+    let socket = rig.sock.canonicalize().expect("private socket");
+    for (name, value) in [
+        ("D54_POLICY_TMUX", real.display().to_string()),
+        ("D54_POLICY_SOCKET", socket.display().to_string()),
+        ("D54_POLICY_NODE", node.display().to_string()),
+    ] {
+        checked(rig, &["set-environment", "-t", "=api:", name, &value]);
+    }
+    // An unattached new-window client can supply its own PATH. Set the
+    // wrapper on the app's explicit env command instead.
+    format!("PATH={}:{}", bin.display(), path.to_string_lossy())
+}
+
+fn assert_managed_policy_refusal(tag: &str, node: ManagedNode) {
+    const NOTICE: &str = "managed claude settings present; ae cannot prove the dictation stays unsent; no key was sent";
+
+    let rig = orchestrator(tag, "claude", &composer_cursor(IDLE, 3));
+    record_hold_launch(&rig);
+    let api = rig_world(&rig).session("api", "tui", "");
+    let root = rig.scratch.join("managed-policy");
+    fs::create_dir(&root).expect("private checkout policy root");
+    let wrapper = match node {
+        ManagedNode::File => {
+            fs::write(root.join("managed-settings.json"), b"not JSON")
+                .expect("the policy file need only exist");
+            None
+        }
+        ManagedNode::Directory => {
+            fs::create_dir(root.join("managed-settings.d"))
+                .expect("the policy directory need only exist");
+            None
+        }
+        ManagedNode::OnAttach => Some(managed_policy_on_attach(&rig, &root)),
+    };
+    checked(
+        &rig,
+        &[
+            "set-environment",
+            "-t",
+            "=api:",
+            "AE_TEST_CLAUDE_MANAGED_DIR",
+            root.to_str().expect("private scratch path"),
+        ],
+    );
+    let pane = match wrapper.as_deref() {
+        Some(path) => app_env(&rig, "api", &[path]),
+        None => app(&rig, "api"),
+    };
+    let shown = until_screen(&rig, &pane, "the fully proved idle mic is visible", |s| {
+        status(s, "unknown")
+    });
+    let attachment = [
+        "display-message",
+        "-p",
+        "-t",
+        "=orchestrator:",
+        "#{session_last_attached}",
+    ];
+    let before = checked(&rig, &attachment);
+    arm_voice_start(&rig, HOLD);
+    press_mic(&rig, &pane, &shown);
+    let outcome = until_screen(&rig, &pane, "the click reaches a policy decision", |s| {
+        s.to_lowercase().contains("managed claude settings present") || !voice_wire(&rig).is_empty()
+    });
+    if matches!(node, ManagedNode::OnAttach) {
+        assert!(
+            root.join("managed-settings.json").is_file(),
+            "the attach wrapper created the policy before the decision"
+        );
+    }
+    assert!(
+        rig.wire().is_empty(),
+        "managed policy must refuse before the probe: {outcome}"
+    );
+    voice_report(
+        &rig,
+        &pane,
+        &shown,
+        "the click explains the refusal",
+        NOTICE,
+    );
+    let after = checked(&rig, &attachment);
+    if matches!(node, ManagedNode::OnAttach) {
+        assert_ne!(after, before, "the control client attached before refusal");
+    } else {
+        assert_eq!(
+            after, before,
+            "policy refusal precedes a control client attach"
+        );
+    }
+    assert!(
+        fs::read(&rig.received)
+            .expect("private submission receipt")
+            .is_empty(),
+        "no input was submitted"
+    );
+    untouched(&rig, &api);
+}
+
+#[test]
+fn managed_claude_settings_file_refuses_the_probe() {
+    assert_managed_policy_refusal("d54-managed-file", ManagedNode::File);
+}
+
+#[test]
+fn managed_claude_drop_in_directory_refuses_the_probe() {
+    assert_managed_policy_refusal("d54-managed-dir", ManagedNode::Directory);
+}
+
+#[test]
+fn managed_claude_settings_appearing_at_attach_refuse_the_probe() {
+    assert_managed_policy_refusal("d54-managed-late", ManagedNode::OnAttach);
 }
 
 #[test]

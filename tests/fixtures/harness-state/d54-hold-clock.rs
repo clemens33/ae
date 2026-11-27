@@ -9,8 +9,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use crate::dictate::{
-    Ack, DispatchGate, HoldClock, HoldOutcome, HoldPlan, HoldWire, Lapse, Reading, Settle, hold,
-    settle,
+    Ack, DispatchGate, HoldClock, HoldOutcome, HoldPlan, HoldWire, Lapse, Reading, Refusal, Settle,
+    hold, settle,
 };
 
 const IDLE: &str = include_str!("claude-voice-startup-effort-2.1.332-120x40.txt");
@@ -72,6 +72,7 @@ enum Operation {
         until: Duration,
         holding: bool,
     },
+    ManagedPolicy,
     Write {
         from: Duration,
     },
@@ -90,6 +91,7 @@ struct Circuit<'a> {
     stop_on_write: Option<usize>,
     stop_finished: Option<Receiver<()>>,
     acks: usize,
+    managed_settings_present: bool,
     trace: Vec<Operation>,
 }
 
@@ -107,6 +109,7 @@ impl<'a> Circuit<'a> {
             stop_on_write: None,
             stop_finished: None,
             acks: 0,
+            managed_settings_present: false,
             trace: Vec::new(),
         }
     }
@@ -141,6 +144,11 @@ impl<'a> Circuit<'a> {
 }
 
 impl HoldWire for Circuit<'_> {
+    fn managed_settings_present(&mut self) -> bool {
+        self.trace.push(Operation::ManagedPolicy);
+        self.managed_settings_present
+    }
+
     fn read(&mut self) -> Option<Reading> {
         assert!(
             self.trace.len() < 20_000,
@@ -264,6 +272,7 @@ fn each_repeat_requires_a_distinct_holding_read_after_the_previous_key_return() 
                 pending_ack = false;
                 last_end = *until;
             }
+            Operation::ManagedPolicy => {}
             Operation::Read { .. } => {
                 assert!(!pending_ack, "a read overtook the Space acknowledgement");
                 fresh_hold = None;
@@ -382,6 +391,155 @@ fn a_stalled_initial_idle_frame_cannot_authorize_the_start_probe() {
     script.reads[0] = Sample::frame(IDLE).delayed(151);
     let _ = script.run(Duration::from_secs(1));
     assert_eq!(script.spaces(), 0);
+}
+
+#[test]
+fn the_final_idle_read_precedes_the_managed_policy_check_and_every_probe() {
+    let mut refused = Circuit::start_with([Sample::frame(HOLD)]);
+    refused.managed_settings_present = true;
+    assert!(
+        matches!(
+            refused.run(Duration::from_secs(1)),
+            HoldOutcome::Refused(Refusal::ManagedSettings)
+        ),
+        "a policy that appears after the app preflight prevents the start"
+    );
+    assert!(
+        matches!(
+            refused.trace.as_slice(),
+            [
+                Operation::Read { holding: false, .. },
+                Operation::ManagedPolicy
+            ]
+        ),
+        "{:?}",
+        refused.trace
+    );
+
+    let mut allowed = Circuit::start_with([Sample::frame(HOLD)]);
+    let _ = allowed.run(Duration::from_secs(1));
+    assert!(
+        matches!(
+            allowed.trace.as_slice(),
+            [
+                Operation::Read { holding: false, .. },
+                Operation::ManagedPolicy,
+                Operation::Write { .. },
+                ..
+            ]
+        ),
+        "{:?}",
+        allowed.trace
+    );
+    assert_eq!(
+        allowed
+            .trace
+            .iter()
+            .filter(|event| matches!(event, Operation::ManagedPolicy))
+            .count(),
+        1,
+        "the circuit checks policy only before the first Space"
+    );
+}
+
+#[test]
+fn installed_shapes_never_read_the_managed_policy_fixture() {
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    use crate::doors::claude_managed_test_root_with;
+    use crate::shape::{Shape, classify};
+
+    let scratch = Path::new("/fixtures/extra-policy");
+    let published = Path::new("/owner/.ae/versions/v2026.11.126/ae-core");
+    assert_eq!(
+        claude_managed_test_root_with(&Shape::Checkout, || Some(OsString::from(scratch))),
+        Some(PathBuf::from(scratch))
+    );
+    assert_eq!(
+        claude_managed_test_root_with(&Shape::Checkout, || Some(OsString::new())),
+        None
+    );
+
+    let installed = classify(published, Some(Path::new("/owner")));
+    let displaced = classify(published, Some(Path::new("/elsewhere")));
+    assert!(matches!(installed, Shape::Installed { .. }));
+    assert!(matches!(displaced, Shape::Displaced { .. }));
+    for shape in [installed, displaced] {
+        assert_eq!(
+            claude_managed_test_root_with(&shape, || panic!("published ae read the fixture")),
+            None
+        );
+    }
+}
+
+/// Keep the simulated host and checkout roots separate. No test changes an
+/// actual system policy path or the process environment.
+#[test]
+fn checkout_policy_can_add_a_refusal_but_cannot_mask_host_policy() {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::dictate::{MANAGED, managed_policy_refusal};
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "ae-d54-managed-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&path).expect("owned private scratch");
+    let scratch = Scratch(path);
+    let host = scratch.0.join("host");
+    let extra = scratch.0.join("extra");
+    fs::create_dir(&host).expect("simulated host root");
+    fs::create_dir(&extra).expect("checkout-only root");
+
+    assert_eq!(managed_policy_refusal(Some(&host), None), None);
+    assert_eq!(managed_policy_refusal(Some(&host), Some(&extra)), None);
+    assert_eq!(managed_policy_refusal(None, Some(&extra)), Some(MANAGED));
+
+    let host_file = host.join("managed-settings.json");
+    fs::write(&host_file, b"not JSON").expect("host file need only exist");
+    assert_eq!(
+        managed_policy_refusal(Some(&host), Some(&extra)),
+        Some(MANAGED),
+        "an absent checkout file cannot mask a host policy file"
+    );
+    fs::remove_file(host_file).expect("clear simulated host policy");
+
+    let host_drop_ins = host.join("managed-settings.d");
+    fs::create_dir(&host_drop_ins).expect("empty host policy directory");
+    assert_eq!(
+        managed_policy_refusal(Some(&host), Some(&extra)),
+        Some(MANAGED),
+        "an absent checkout directory cannot mask a host policy directory"
+    );
+    fs::remove_dir(host_drop_ins).expect("clear simulated host directory");
+
+    let extra_file = extra.join("managed-settings.json");
+    fs::write(&extra_file, b"not JSON").expect("checkout file need only exist");
+    assert_eq!(
+        managed_policy_refusal(Some(&host), Some(&extra)),
+        Some(MANAGED)
+    );
+    fs::remove_file(&extra_file).expect("clear checkout file");
+
+    fs::create_dir(extra.join("managed-settings.d")).expect("empty checkout policy directory");
+    assert_eq!(
+        managed_policy_refusal(Some(&host), Some(&extra)),
+        Some(MANAGED)
+    );
+    assert_eq!(managed_policy_refusal(Some(&host), None), None);
 }
 
 #[test]
