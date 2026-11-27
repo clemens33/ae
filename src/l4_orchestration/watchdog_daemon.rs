@@ -79,6 +79,7 @@ mod continuation;
 mod cycle_apply;
 mod cycle_observe;
 mod cycle_publish;
+mod reset_expiry;
 mod self_reseat;
 
 /// The panes that are not agents: unstamped, tmux's own null, this daemon, the
@@ -3324,6 +3325,9 @@ mod limitwake_readers;
 #[cfg(test)]
 #[path = "watchdog_daemon/activity225_spec.rs"]
 mod activity225_spec;
+#[cfg(test)]
+#[path = "watchdog_daemon/banked_notice_spec.rs"]
+mod banked_notice_spec;
 #[cfg(test)]
 #[path = "watchdog_daemon/holdend315_spec.rs"]
 mod holdend315_spec;

@@ -381,7 +381,13 @@ fn overlays_replace_in_place_append_new_keys_and_keep_unmentioned_values() {
     ] {
         let client = cfg.client(key).unwrap();
         assert_eq!(client.executable, executable);
-        assert_eq!(client.manual_resets, resets);
+        assert_eq!(
+            client
+                .manual_resets
+                .as_ref()
+                .map(super::ManualResets::count),
+            resets
+        );
         assert_eq!(client.config_home, None);
         assert_eq!(client.manual_resets_note, None);
     }

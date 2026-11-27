@@ -1426,20 +1426,22 @@ when that profile's configured client changes.
 Resolution knows the operator's `HOME`, but does not inspect arbitrary pane variables. A configured
 home that depends on another variable is reported `unknown` with that variable named in the hint.
 
-### Effective headroom: `EFFECTIVE` and `CREDITS`
+### Effective headroom: `EFFECTIVE`, `RESETS-IN-HAND` and `CREDITS`
 
 `USED` is the vendor's own window percentage. It answers how much of one window is gone, which is
 not the same question as how much headroom the subscription has. Two facts move that answer, and
 ae uses only the ones it was told or was given:
 
-- **Declared manual resets.** No client reports how many manual window resets an account has in
-  hand, so ae cannot discover them. Declare them on the client row:
-  `codex = codex manual_resets=1`. The count is `0`–`9`; an unusable value is ignored, the rows stay
-  usable, and one note under the table says which value was dropped and why. Two client labels that
-  resolve to one config home are one account: the SMALLEST explicit count wins and the disagreement
-  is noted, because claiming headroom nobody declared would suppress a real advisory.
-  **ae never consumes the count.** Nothing decrements it when a reset is actually used, so a stale
-  declaration keeps claiming headroom that is already spent: edit the row after each manual reset.
+- **Declared manual resets.** ae has no local vendor source for banked resets. Set an undated count
+  from `0` to `9`, as in `codex = codex manual_resets=1`, or declare up to nine expiry times:
+  `codex = codex manual_resets=2026-12-01T23:22+01:00,2026-12-12T23:17+01:00`.
+  Use a comma between dates and include a UTC offset on every date. Whole minutes and seconds
+  are supported. An unusable value leaves the rows usable and adds one note with the reason.
+  Dates count only while they are in the future. If labels share one proven scope, the smallest
+  active count wins. At equal counts, ae prefers a dated declaration, then the earliest expiry list.
+  List one timestamp per reset. Resets at the same instant count separately and share one notice.
+  `RESETS-IN-HAND` shows the count and the time to the next expiry once per scope.
+  Edit the declaration after each use. Only an expiry or a config edit reduces the declared count.
   A used reset is visible in the table but not attributed — measured on Codex, a manual reset starts
   a FRESH window rather than zeroing the current one, so `USED` collapses and `RESETS` jumps forward
   by about a whole window in the same observation, which is also what an ordinary window roll looks
@@ -1451,6 +1453,13 @@ ae uses only the ones it was told or was given:
   is a plain non-negative decimal reads normalized — trailing fractional zeros dropped, then a bare
   trailing dot (`62500.0000000000` reads `62500`, `12.50` reads `12.5`) — never rounded or clipped;
   a literal longer than 9 characters after that, or not a plain decimal, reads `available`.
+
+For a dated reset, the quota report advises spending a scope harder when its next expiry is before
+both the vendor's weekly reset and the current weekly window's projected exhaustion at the raw
+rate. With no measured rate, it uses the weekly reset. The advice is for planning. Within 48 hours
+of expiry, the watchdog journals a `resetexpiry` notice for the session lead and sends it through
+the guarded lead notice path. It journals the full text before sending, at most once per session,
+proven scope and UTC instant. If delivery fails after that point, the journal retains the notice.
 
 Account facts are read FIELD by FIELD, each with the stamp of the record that last usably reported
 it. A record moves only the fields it actually asserts, and only when it names its own bucket and
@@ -1528,8 +1537,7 @@ that could not be read.
 oversized files, and malformed complete records are `read-error`. An invocation stops with
 an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
 table lines are at most 200 columns: the sum of the per-column caps plus the two spaces between
-each pair of columns. The two derived columns and `PACE` were paid for in that ceiling rather than
-by wrapping every scope and status cell.
+each pair of columns. To fit `RESETS-IN-HAND`, the `PROFILES` column wraps at 24 characters.
 The displayed age is when that vendor last wrote its own cache or rollout observation, not when ae
 opened the menu or ran the command. Claude can therefore honestly remain stale while another
 client scope observed more recently is fresh. The cache is refreshed by the CLIENT, and only

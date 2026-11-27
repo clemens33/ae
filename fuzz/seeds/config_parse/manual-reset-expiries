@@ -1,0 +1,6 @@
+[clients]
+codex = codex manual_resets=2026-12-01T23:22+01:00,2026-12-12T23:17Z,2026-12-26T06:48:30-07:00
+bad_day = codex manual_resets=2026-02-30T23:22+01:00
+no_offset = codex manual_resets=2026-12-01T23:22
+empty_item = codex manual_resets=2026-12-01T23:22+01:00,
+mixed = codex manual_resets=1,2026-12-01T23:22+01:00

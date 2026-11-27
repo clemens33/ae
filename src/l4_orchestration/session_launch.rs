@@ -24,6 +24,9 @@ use crate::{deliver, roster, tmux, transport};
 
 pub(crate) mod assets;
 #[cfg(test)]
+#[path = "session_launch/banked_trim_spec.rs"]
+mod banked_trim_spec;
+#[cfg(test)]
 #[path = "session_launch/blocknotice_trim_spec.rs"]
 mod blocknotice_trim_spec;
 mod caller;
@@ -3112,10 +3115,8 @@ fn trim_events(dir: &Path) {
         |dropped, window| {
             let mut held = crate::effort::retained(dropped, window, session, &live);
             held.resize(dropped.len(), false);
-            if let Some(root) = root {
-                for (keep, line) in held.iter_mut().zip(dropped) {
-                    *keep = *keep || standing_notice(root, line, now);
-                }
+            for (keep, line) in held.iter_mut().zip(dropped) {
+                *keep = *keep || standing_notice(root, line, now);
             }
             held
         },
@@ -3123,22 +3124,24 @@ fn trim_events(dir: &Path) {
 }
 
 /// Whether `line` is a vendor block notice receipt, or the event that this
-/// session's seat drew a block, whose block still stands: the cut must keep
-/// it, or the next watchdog would tell the lead again about the block it was
-/// already told of, or forget the block its own seat drew.
-fn standing_notice(root: &Path, line: &str, now: i64) -> bool {
+/// session's seat drew a block, whose block still stands, or a reset expiry
+/// receipt that still prevents a duplicate notice.
+fn standing_notice(root: Option<&Path>, line: &str, now: i64) -> bool {
     if !line.contains(crate::vendorblock::NOTICE_ACTION)
         && !line.contains(crate::vendorblock::WRITTEN_ACTION)
+        && !line.contains(crate::quota::action::RESET_EXPIRY)
     {
         return false;
     }
     crate::events::Event::parse_line(line).is_ok_and(|event| {
-        (event.action == crate::vendorblock::NOTICE_ACTION
-            || event.action == crate::vendorblock::WRITTEN_ACTION)
-            && event
-                .reference
-                .as_deref()
-                .is_some_and(|reference| crate::vendorblock::notice_stands(root, reference, now))
+        crate::quota::reset_expiry_receipt_stands(&event, now)
+            || ((event.action == crate::vendorblock::NOTICE_ACTION
+                || event.action == crate::vendorblock::WRITTEN_ACTION)
+                && root
+                    .zip(event.reference.as_deref())
+                    .is_some_and(|(root, reference)| {
+                        crate::vendorblock::notice_stands(root, reference, now)
+                    }))
     })
 }
 

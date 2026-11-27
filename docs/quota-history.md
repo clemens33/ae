@@ -26,6 +26,7 @@ vendor `observed_at`, `raw` (the original numeric string), `effective` (six deci
 places), `derivation` (`raw`, `resets`, `unlimited`, `spend-cap`) and
 `policy: {version: 1, manual_resets, credits, spend_cap}`. Credits is one of
 `unreported`, `unlimited`, `available`, `available-unknown`, `exhausted`.
+For dated declarations, `manual_resets` is the active count at collection time.
 Effective comes from the quota module's existing derivation. Samples are written
 only when the series, vendor clock or policy changed since this daemon last
 successfully wrote them; a restart may write the same evidence again.

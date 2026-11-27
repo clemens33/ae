@@ -90,15 +90,8 @@ impl Cycle<'_> {
         let Ok(_held) = crate::store::lock(&lock, crate::store::LOCK_WAIT) else {
             return;
         };
-        let events = match crate::store::open(self.meta_dir).events_source() {
-            crate::store::SourceRead::Absent => Vec::new(),
-            crate::store::SourceRead::Ready(bytes) => crate::event_text::read_lines(&bytes)
-                .into_iter()
-                .filter_map(|line| Event::parse_line(&String::from_utf8_lossy(line)).ok())
-                .collect(),
-            crate::store::SourceRead::Invalid(_) | crate::store::SourceRead::Unreadable(_) => {
-                return;
-            }
+        let Some(events) = self.notice_events() else {
+            return;
         };
         if noticed(&events, reference) {
             return;
@@ -123,33 +116,11 @@ impl Cycle<'_> {
         record: &crate::vendorblock::Record,
         reference: &str,
     ) {
-        let mut panes = observed
-            .iter()
-            .filter(|pane| pane.slot.as_deref() == Some(entry.slot.as_str()));
-        let (Some(pane), None) = (panes.next(), panes.next()) else {
-            return;
-        };
-        let launch = match self.launch_row(&entry.slot) {
-            crate::tracked::LaunchRow::Legacy => "",
-            crate::tracked::LaunchRow::Token(id) => id,
-            crate::tracked::LaunchRow::Damaged(_) => return,
-        };
         let text = record.notice();
-        let request = crate::deliver::Request {
-            dir: self.meta_dir,
-            server: self.server,
-            pane: &pane.pane_id,
-            logged_target: &entry.name,
-            target_session: self.session,
-            pane_slot: &entry.slot,
-            own_session: self.session,
-            action: NOTICE_ACTION,
-            reference,
-            actor: super::ACTOR,
-            body: &text,
-            shape: crate::deliver::Shape::Send,
-            defer: NOTICE_DEFER,
-            composed: crate::tool::Composed::NONE,
+        let Some((request, launch)) =
+            self.lead_notice_request((entry, observed), (NOTICE_ACTION, reference, &text))
+        else {
+            return;
         };
         let mut err = std::io::stderr();
         let Ok(Some(guard)) = crate::tracked::admit_leg(&request, (&entry.slot, launch), &mut err)
@@ -173,6 +144,55 @@ impl Cycle<'_> {
                 &mut err,
             );
         }
+    }
+
+    /// An unreadable or unclassified journal cannot prove a missing receipt.
+    pub(super) fn notice_events(&self) -> Option<Vec<Event>> {
+        match crate::store::open(self.meta_dir).events_source() {
+            crate::store::SourceRead::Absent => Some(Vec::new()),
+            crate::store::SourceRead::Ready(bytes) => Some(
+                crate::event_text::read_lines(&bytes)
+                    .into_iter()
+                    .filter_map(|line| Event::parse_line(&String::from_utf8_lossy(line)).ok())
+                    .collect(),
+            ),
+            crate::store::SourceRead::Invalid(_) | crate::store::SourceRead::Unreadable(_) => None,
+        }
+    }
+
+    pub(super) fn lead_notice_request<'a>(
+        &'a self,
+        (entry, observed): (&'a crate::meta::RosterEntry, &'a [crate::tmux::WatchPane]),
+        (action, reference, body): (&'a str, &'a str, &'a str),
+    ) -> Option<(crate::deliver::Request<'a>, &'a str)> {
+        let mut panes = observed
+            .iter()
+            .filter(|pane| pane.slot.as_deref() == Some(entry.slot.as_str()));
+        let (Some(pane), None) = (panes.next(), panes.next()) else {
+            return None;
+        };
+        let launch = match self.launch_row(&entry.slot) {
+            crate::tracked::LaunchRow::Legacy => "",
+            crate::tracked::LaunchRow::Token(id) => id,
+            crate::tracked::LaunchRow::Damaged(_) => return None,
+        };
+        let request = crate::deliver::Request {
+            dir: self.meta_dir,
+            server: self.server,
+            pane: &pane.pane_id,
+            logged_target: &entry.name,
+            target_session: self.session,
+            pane_slot: &entry.slot,
+            own_session: self.session,
+            action,
+            reference,
+            actor: super::ACTOR,
+            body,
+            shape: crate::deliver::Shape::Send,
+            defer: NOTICE_DEFER,
+            composed: crate::tool::Composed::NONE,
+        };
+        Some((request, launch))
     }
 }
 

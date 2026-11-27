@@ -13,6 +13,10 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
+    // Also drive the manual reset value directly, without requiring mutations
+    // to preserve an INI section and a client declaration around it.
+    let reset = format!("[clients]\ncodex = codex manual_resets={text}\n");
+    let _ = std::hint::black_box(ae::config::parse_identity(&reset));
     let reseat = ae::autoreseat::settings_in(std::path::Path::new("config"), &text);
     for (lead_pair, slot) in [
         (true, "main"),

@@ -36,6 +36,7 @@ mod credits_spec;
 #[path = "quota/credits_api_spec.rs"]
 mod credits_api_spec;
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
@@ -43,6 +44,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::config::ManualResets;
 use crate::json::Value;
 use crate::time::Timestamp;
 use crate::tool::{QuotaSource, ToolKind};
@@ -66,10 +68,12 @@ const ON_DEMAND_NOTE: &str = "on-demand spend enabled: a full window may not blo
 /// Per-column display caps. Their sum plus two spaces between each pair of
 /// columns is [`TABLE_MAX_LINE`], the table's documented width ceiling: a new
 /// column is paid for here, in width, and the ceiling says what it cost.
-const TABLE_MAX_WIDTHS: [usize; COLUMNS] = [40, 35, 22, 6, 5, 9, 9, 16, 9, 9, 20];
+const TABLE_MAX_WIDTHS: [usize; COLUMNS] = [24, 35, 22, 6, 5, 9, 9, 16, 14, 9, 9, 20];
+const PROFILE_LIST_MAX: usize = 40;
 
 /// Columns in the operator table.
-const COLUMNS: usize = 11;
+const COLUMNS: usize = 12;
+const RESETS_IN_HAND_COLUMN: usize = 8;
 
 /// The widest line the table can render, cells and separators together. The
 /// caps above produce it; `docs/reference/commands.md` publishes it.
@@ -282,7 +286,7 @@ impl Account {
 /// what a later read may replace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Policy {
-    manual_resets: Option<u8>,
+    manual_resets: Option<ManualResets>,
     account: Account,
 }
 
@@ -293,7 +297,7 @@ impl Policy {
     /// read and nowhere else, so no other module can pair one scope's
     /// declaration with another observation's facts. Elsewhere a policy exists
     /// only by being read from a [`Group`], cloned, or merged.
-    const fn new(manual_resets: Option<u8>, account: Account) -> Self {
+    const fn new(manual_resets: Option<ManualResets>, account: Account) -> Self {
         Self {
             manual_resets,
             account,
@@ -306,7 +310,11 @@ impl Policy {
     /// what keeps the constructor above the only one that exists.
     #[cfg(test)]
     pub(crate) const fn for_tests(manual_resets: Option<u8>, account: Account) -> Self {
-        Self::new(manual_resets, account)
+        let declaration = match manual_resets {
+            Some(count) => Some(ManualResets::undated(count)),
+            None => None,
+        };
+        Self::new(declaration, account)
     }
 
     /// Merge `incoming` into this policy, and report whether anything moved.
@@ -316,7 +324,7 @@ impl Policy {
     /// is vendor evidence, so it merges fact by fact on each stamp.
     pub(crate) fn absorb(&mut self, incoming: &Self) -> bool {
         let before = self.clone();
-        self.manual_resets = incoming.manual_resets;
+        self.manual_resets.clone_from(&incoming.manual_resets);
         self.account.absorb(&incoming.account);
         *self != before
     }
@@ -324,6 +332,28 @@ impl Policy {
     /// The account is spend-capped, which no window reset can free.
     pub(crate) const fn spend_capped(&self) -> bool {
         self.account.spend_capped()
+    }
+
+    fn reset_count(&self) -> Option<u8> {
+        self.manual_resets.as_ref().map(ManualResets::count)
+    }
+
+    fn reset_expiries(&self) -> &[i64] {
+        self.manual_resets
+            .as_ref()
+            .and_then(ManualResets::expiries)
+            .unwrap_or_default()
+    }
+
+    fn resets_in_hand(&self, now: i64) -> Option<String> {
+        let count = self.reset_count()?;
+        Some(self.reset_expiries().first().map_or_else(
+            || count.to_string(),
+            |expiry| {
+                let span = span_label(expiry.saturating_sub(now)).replace(' ', "");
+                format!("{count} · next {span}")
+            },
+        ))
     }
 }
 
@@ -444,7 +474,7 @@ pub(crate) fn effective(policy: &Policy, used: f64, window: Option<i64>) -> Effe
             Effective::Credits { used }
         };
     }
-    match policy.manual_resets {
+    match policy.reset_count() {
         Some(resets) => Effective::Resets {
             resets,
             percent: used / (f64::from(resets) + 1.0),
@@ -665,7 +695,7 @@ pub(crate) fn history_sample(
         derivation: derivation.to_owned(),
         policy: history::PolicyFacts {
             version: 1,
-            manual_resets: reading.policy.manual_resets,
+            manual_resets: reading.policy.reset_count(),
             credits: match reading.policy.account.credits {
                 Credits::Unreported => "unreported",
                 Credits::Unlimited => "unlimited",
@@ -757,10 +787,7 @@ impl Classified {
 
     /// Whether this is an account-wide weekly window (see [`weekly_context`]).
     fn account_weekly(&self, tool: ToolKind) -> bool {
-        let row = &self.reading.row;
-        row.window_minutes == Some(10_080)
-            && (row.qualifier.is_none()
-                || tool.adapter().quota.source == QuotaSource::CodexRollouts)
+        account_weekly(&self.reading.row, tool)
     }
 
     /// The percentage that level was decided from, for ranking one scope
@@ -899,7 +926,7 @@ pub fn run_profiles(
     let mut tables = Vec::new();
     for (name, _) in &cfg.profiles {
         let mut table = String::from(
-            "  quota SCOPE | BUCKET | WINDOW | USED | EFFECTIVE | CREDITS | PACE | RESETS | OBSERVED | STATUS | dialog first-sight level\n",
+            "  quota SCOPE | BUCKET | WINDOW | USED | EFFECTIVE | CREDITS | PACE | RESETS-IN-HAND | RESETS | OBSERVED | STATUS | dialog first-sight level\n",
         );
         let mut claimed = std::collections::BTreeSet::new();
         for group in observation
@@ -959,7 +986,8 @@ struct Scope {
     /// failed for the same reason. Empty for every scope that proved one.
     rollouts: Vec<String>,
     hint: Option<String>,
-    manual_resets: Option<u8>,
+    reset_declarations: Vec<ManualResets>,
+    manual_resets: Option<ManualResets>,
     notes: Vec<String>,
     /// An agy command that keeps the caller's HOME: [`run`] may ask agy itself.
     leg: bool,
@@ -968,11 +996,10 @@ struct Scope {
     go: bool,
 }
 
-/// What one `[clients]` row declared about its own extra headroom.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Declaration {
-    manual_resets: Option<u8>,
-    note: Option<String>,
+impl Scope {
+    fn policy(&self, account: Account) -> Policy {
+        Policy::new(self.manual_resets.clone(), account)
+    }
 }
 
 struct ScopePaths {
@@ -1014,6 +1041,77 @@ pub(crate) struct Observation {
     pub(crate) rendered: Vec<Group>,
     pub(crate) home: Option<PathBuf>,
     pub(crate) now: i64,
+}
+
+pub(crate) struct ResetExpiryNotice {
+    pub(crate) reference: String,
+    pub(crate) text: String,
+    pub(crate) expiry: i64,
+}
+
+/// One due notice per proven scope and UTC instant. Multiple rollout groups
+/// can describe the same scope, so their receipts share one identity.
+pub(crate) fn reset_expiry_notices(
+    observation: &Observation,
+    events: &[crate::events::Event],
+) -> Vec<ResetExpiryNotice> {
+    let mut receipts: BTreeSet<String> = events
+        .iter()
+        .filter(|event| is_reset_expiry_receipt(event))
+        .filter_map(|event| event.reference.clone())
+        .collect();
+    let mut notices = Vec::new();
+    let mut scopes = BTreeSet::new();
+    for group in &observation.groups {
+        let Some(source) = &group.source else {
+            continue;
+        };
+        let mut due = group
+            .policy
+            .reset_expiries()
+            .iter()
+            .copied()
+            .filter(|expiry| (1..=48 * 60 * 60).contains(&expiry.saturating_sub(observation.now)))
+            .peekable();
+        if due.peek().is_none() || !scopes.insert((group.tool.as_str(), source)) {
+            continue;
+        }
+        let hash = crate::install::sha256_hex(source.as_os_str().as_encoded_bytes());
+        for expiry in due {
+            let reference = format!("{}.{hash}.{expiry}", group.tool.as_str());
+            if receipts.insert(reference.clone()) {
+                let scope = sanitize_cell(&scope_identity(group, observation.home.as_deref()));
+                let stamp = Timestamp::from_epoch(expiry);
+                let when = reset_label(expiry, observation.now);
+                let text = format!(
+                    "A banked reset for {} · {scope} expires {when} ({stamp}). Use it before then if needed and edit the declaration after use.",
+                    group.tool.as_str()
+                );
+                notices.push(ResetExpiryNotice {
+                    reference,
+                    text,
+                    expiry,
+                });
+            }
+        }
+    }
+    notices
+}
+
+fn is_reset_expiry_receipt(event: &crate::events::Event) -> bool {
+    event.actor == crate::watchdog::WATCHDOG_ACTOR && event.action == action::RESET_EXPIRY
+}
+
+/// Keep an expiry notice receipt across journal trimming while it can still
+/// prevent another notice for the same instant.
+pub(crate) fn reset_expiry_receipt_stands(event: &crate::events::Event, now: i64) -> bool {
+    is_reset_expiry_receipt(event)
+        && event
+            .reference
+            .as_deref()
+            .and_then(|reference| reference.rsplit_once('.'))
+            .and_then(|(_, expiry)| expiry.parse::<i64>().ok())
+            .is_some_and(|expiry| expiry > now)
 }
 
 const SETTINGS_SCOPE_MAX: usize = 36;
@@ -1205,6 +1303,8 @@ pub(crate) fn project_live_seats(
 /// The wire names are a contract with every reader of the journal, so they
 /// stay byte-identical; a reader that matches on one takes it from here.
 pub(crate) mod action {
+    /// A dated banked reset is due to expire. Its reference ends in the UTC epoch.
+    pub(crate) const RESET_EXPIRY: &str = "resetexpiry";
     /// A lead-pair advisory delivery.
     pub(crate) const ADVISORY: &str = "quota-advisory";
     /// A booked advisory given up before it was delivered.
@@ -1294,6 +1394,11 @@ pub(crate) fn weekly_context<'a>(
             _ => Some(reading),
         })
         .map(|reading| reading.reading.derived().settings_cell())
+}
+
+fn account_weekly(row: &Row, tool: ToolKind) -> bool {
+    row.window_minutes == Some(10_080)
+        && (row.qualifier.is_none() || tool.adapter().quota.source == QuotaSource::CodexRollouts)
 }
 
 /// Sanitized, bounded quota facts retained across a deferred advisory.
@@ -1454,6 +1559,20 @@ impl Advisory {
 }
 
 impl Observation {
+    fn reset_expiry_advisories(&self, pace: &pace::PaceTable) -> Vec<String> {
+        if self
+            .groups
+            .iter()
+            .all(|group| group.policy.reset_expiries().is_empty())
+        {
+            return Vec::new();
+        }
+        self.dialog_scopes()
+            .iter()
+            .filter_map(|scope| scope.reset_expiry_advisory(pace, self.home.as_deref(), self.now))
+            .collect()
+    }
+
     /// The one display order: readable scopes first, most headroom first.
     /// Judge adopted windows under the merged scope policy, as the view does;
     /// exhausted windows have zero headroom and equal keys keep input order.
@@ -1630,13 +1749,19 @@ impl Observation {
         let reading = &classified.reading;
         let row = &reading.row;
         let state = classified.level().label();
-        let scope = bounded_cell(&scope_identity(group, self.home.as_deref()), 1);
-        let owner = group.owner.as_deref().map(|owner| bounded_cell(owner, 0));
+        let scope = bounded_cell(
+            &scope_identity(group, self.home.as_deref()),
+            TABLE_MAX_WIDTHS[1],
+        );
+        let owner = group
+            .owner
+            .as_deref()
+            .map(|owner| bounded_cell(owner, PROFILE_LIST_MAX));
         let bucket = row.qualifier.as_deref().map_or_else(
             || row.bucket.clone(),
             |qualifier| format!("{} {qualifier}", row.bucket),
         );
-        let bucket = bounded_cell(&bucket, 2);
+        let bucket = bounded_cell(&bucket, TABLE_MAX_WIDTHS[2]);
         let window = row
             .window_minutes
             .map_or_else(|| "-".to_owned(), window_label);
@@ -1672,6 +1797,36 @@ impl Observation {
 }
 
 impl SettingsScope {
+    fn reset_expiry_advisory(
+        &self,
+        pace: &pace::PaceTable,
+        home: Option<&Path>,
+        now: i64,
+    ) -> Option<String> {
+        let expiry = *self.policy.reset_expiries().first()?;
+        let count = self.policy.reset_count()?;
+        let source = self.group.source.as_deref()?;
+        let mut weekly = self
+            .readings
+            .iter()
+            .map(|reading| &reading.reading.row)
+            .filter(|row| account_weekly(row, self.group.tool))
+            .peekable();
+        let before_weekly_runout = weekly.peek().is_some()
+            && weekly.all(|row| {
+                row.resets_at.is_some_and(|reset| expiry < reset)
+                    && pace.current_window_outlasts(source, row, count, expiry.saturating_sub(now))
+            });
+        before_weekly_runout.then(|| {
+            let scope = sanitize_cell(&scope_identity(&self.group, home));
+            let when = reset_label(expiry, now);
+            format!(
+                "a banked reset expires {when} unused: spend {} · {scope} harder",
+                self.group.tool.as_str()
+            )
+        })
+    }
+
     fn absorb(&mut self, group: &Group, now: i64) {
         self.policy.absorb(&group.policy);
         for row in &group.rows {
@@ -1767,17 +1922,21 @@ impl SettingsScope {
     }
 
     /// The account facts that belong to the scope, not to one window: the
-    /// credit state, then the plan the client reports.
+    /// credit state, the plan the client reports and the declared resets.
     fn account_words(&self, now: i64) -> Option<String> {
         let plan = self
             .group
             .plan
             .as_ref()
             .and_then(|plan| plan_words(plan, now));
-        match (self.credit_words(), plan) {
-            (Some(credits), Some(plan)) => Some(format!("{credits} · {plan}")),
-            (credits, plan) => credits.or(plan),
-        }
+        let resets = self
+            .policy
+            .resets_in_hand(now)
+            .map(|cell| format!("resets in hand {cell}"));
+        [self.credit_words(), plan, resets]
+            .into_iter()
+            .flatten()
+            .reduce(|held, words| format!("{held} · {words}"))
     }
 
     fn credit_words(&self) -> Option<String> {
@@ -2286,7 +2445,10 @@ fn observe_scopes_budget(
     let mut series = pace::SeriesSet::default();
     let fleet = fleet_rollouts(inputs.sessions, budget);
     add_recorded_codex_scopes(&mut scopes, &fleet);
-    for scope in &scopes {
+    for scope in &mut scopes {
+        for declaration in std::mem::take(&mut scope.reset_declarations) {
+            merge_declaration(scope, declaration.active_at(inputs.now));
+        }
         if scope.go {
             let group = go_group(scope, inputs, &mut series);
             rendered.push(group.clone());
@@ -2308,7 +2470,7 @@ fn observe_scopes_budget(
                     rows: observed.rows,
                     hint: scope.hint.clone(),
                     summary: None,
-                    policy: Policy::new(scope.manual_resets, observed.account),
+                    policy: scope.policy(observed.account),
                     notes: scope.notes.clone(),
                     plan,
                 };
@@ -2359,7 +2521,7 @@ fn observe_scopes_budget(
                             .map(str::to_owned)
                     }),
                     summary: None,
-                    policy: Policy::new(scope.manual_resets, observed.account),
+                    policy: scope.policy(observed.account),
                     notes,
                     plan: None,
                 };
@@ -2544,7 +2706,7 @@ fn go_group(scope: &Scope, inputs: &Inputs<'_>, series: &mut pace::SeriesSet) ->
         rows: observed.rows,
         hint: scope.hint.clone(),
         summary: None,
-        policy: Policy::new(scope.manual_resets, observed.account),
+        policy: scope.policy(observed.account),
         notes: scope.notes.iter().cloned().chain(notes).collect(),
         plan: None,
     }
@@ -3227,7 +3389,13 @@ fn run_with(
         Format::Table => write!(
             out,
             "{}{blocked}",
-            render_with_pace(groups, &pace, home, observation.now)
+            render_with_pace(
+                groups,
+                &pace,
+                home,
+                observation.now,
+                observation.reset_expiry_advisories(&pace)
+            )
         )?,
         Format::Json => writeln!(
             out,
@@ -3797,8 +3965,7 @@ fn count_declarations(
     cfg: &crate::config::IdentityConfig,
     owned: &[(&str, usize)],
 ) {
-    for (label, _) in &cfg.clients {
-        let declaration = declaration_for(cfg, Some(label));
+    for (label, client) in &cfg.clients {
         let carrying: Vec<usize> = scopes
             .iter()
             .enumerate()
@@ -3810,12 +3977,12 @@ fn count_declarations(
         };
         // Why a declared value was unusable describes the row the operator
         // wrote, not an account, so it is said whatever the attribution is.
-        if let Some(note) = declaration.note.clone()
+        if let Some(note) = client.manual_resets_note.clone()
             && let Some(scope) = scopes.get_mut(first)
         {
             push_note(scope, Some(note));
         }
-        let Some(count) = declaration.manual_resets else {
+        let Some(declaration) = client.manual_resets.as_ref() else {
             continue;
         };
         let entitled = owned
@@ -3831,6 +3998,7 @@ fn count_declarations(
             let Some(scope) = scopes.get_mut(first) else {
                 continue;
             };
+            let count = declaration.count();
             push_note(
                 scope,
                 Some(format!(
@@ -3843,13 +4011,7 @@ fn count_declarations(
         let Some(scope) = scopes.get_mut(index) else {
             continue;
         };
-        merge_declaration(
-            scope,
-            &Declaration {
-                manual_resets: Some(count),
-                note: None,
-            },
-        );
+        scope.reset_declarations.push(declaration.clone());
         if spread {
             push_note(
                 scope,
@@ -3983,6 +4145,7 @@ fn absorb_resolved(
             accounts: account.map(str::to_owned).into_iter().collect(),
             rollouts: Vec::new(),
             hint,
+            reset_declarations: Vec::new(),
             manual_resets: None,
             notes: Vec::new(),
             leg,
@@ -4374,21 +4537,11 @@ fn unknown_scope(
         accounts: account.map(str::to_owned).into_iter().collect(),
         rollouts: Vec::new(),
         hint,
+        reset_declarations: Vec::new(),
         manual_resets: None,
         notes: Vec::new(),
         leg: false,
         go: false,
-    }
-}
-
-/// Read one `[clients]` row's declared extra headroom.
-fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> Declaration {
-    let Some(client) = label.and_then(|label| cfg.client(label)) else {
-        return Declaration::default();
-    };
-    Declaration {
-        manual_resets: client.manual_resets,
-        note: client.manual_resets_note.clone(),
     }
 }
 
@@ -4399,27 +4552,24 @@ fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> 
 /// count wins: claiming headroom the operator never declared would suppress a
 /// real advisory, while under-claiming only leaves the raw window in charge.
 /// The disagreement is said out loud either way.
-fn merge_declaration(scope: &mut Scope, declaration: &Declaration) {
-    if let Some(note) = declaration.note.clone()
-        && !scope.notes.contains(&note)
-    {
-        scope.notes.push(note);
-    }
-    let (Some(next), held) = (declaration.manual_resets, scope.manual_resets) else {
-        return;
-    };
-    let Some(held) = held else {
+fn merge_declaration(scope: &mut Scope, next: ManualResets) {
+    let Some(held) = scope.manual_resets.as_ref() else {
         scope.manual_resets = Some(next);
         return;
     };
-    if held == next {
-        return;
+    let (held_count, next_count) = (held.count(), next.count());
+    // At the same count, a dated reset promises less future headroom. Prefer
+    // that list and, between two dated lists, the earliest first difference.
+    let expires_earlier = next
+        .expiries()
+        .is_some_and(|dates| held.expiries().is_none_or(|held_dates| dates < held_dates));
+    if next_count < held_count || (next_count == held_count && expires_earlier) {
+        scope.manual_resets = Some(next);
     }
-    let (low, high) = (held.min(next), held.max(next));
-    scope.manual_resets = Some(low);
-    let note = format!("manual_resets declared as {low} and {high} for one scope; using {low}");
-    if !scope.notes.contains(&note) {
-        scope.notes.push(note);
+    if held_count != next_count {
+        let (low, high) = (held_count.min(next_count), held_count.max(next_count));
+        let note = format!("manual_resets declared as {low} and {high} for one scope; using {low}");
+        push_note(scope, Some(note));
     }
 }
 
@@ -4608,6 +4758,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         accounts: Vec::new(),
                         rollouts: Vec::new(),
                         hint: None,
+                        reset_declarations: Vec::new(),
                         manual_resets: None,
                         notes: Vec::new(),
                         leg: false,
@@ -4632,6 +4783,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                     accounts: Vec::new(),
                     rollouts: vec![rollout.id.clone()],
                     hint: Some(reason.clone()),
+                    reset_declarations: Vec::new(),
                     manual_resets: None,
                     notes: Vec::new(),
                     leg: false,
@@ -4731,7 +4883,7 @@ fn codex_groups(
                 rows: read.rows,
                 hint: scope.hint.clone(),
                 summary: None,
-                policy: Policy::new(scope.manual_resets, read.account),
+                policy: scope.policy(read.account),
                 notes: scope.notes.clone(),
                 plan: None,
             },
@@ -4872,7 +5024,7 @@ fn summarize_codex_groups(
             rows: vec![placeholder(Status::Unknown)],
             hint: scope.hint.clone(),
             summary: None,
-            policy: Policy::new(scope.manual_resets, Account::default()),
+            policy: scope.policy(Account::default()),
             notes: scope.notes.clone(),
             plan: None,
         });
@@ -5099,6 +5251,7 @@ fn render_observation_at(observation: &Observation) -> String {
         &pace::PaceTable::default(),
         observation.home.as_deref(),
         observation.now,
+        Vec::new(),
     )
 }
 
@@ -5107,6 +5260,7 @@ fn render_with_pace<'a>(
     pace: &pace::PaceTable,
     home: Option<&Path>,
     now: i64,
+    advisories: Vec<String>,
 ) -> String {
     const HEADER: [&str; COLUMNS] = [
         "PROFILES",
@@ -5117,13 +5271,15 @@ fn render_with_pace<'a>(
         "EFFECTIVE",
         "CREDITS",
         "PACE",
+        "RESETS-IN-HAND",
         "RESETS",
         "OBSERVED",
         "STATUS",
     ];
     let mut table = vec![RenderLine::Cells(HEADER.map(str::to_owned))];
     let mut notes: Vec<String> = Vec::new();
-    let mut claimed = std::collections::BTreeSet::new();
+    let mut claimed = BTreeSet::new();
+    let mut shown_resets = BTreeSet::new();
     for group in groups {
         collect_notes(&mut notes, group);
         if let Some(summary) = &group.summary {
@@ -5136,18 +5292,17 @@ fn render_with_pace<'a>(
             continue;
         }
         for (index, row) in group.rows.iter().enumerate() {
-            table.push(RenderLine::Cells(table_cells(
-                group,
-                row,
-                index,
-                pace,
-                &mut claimed,
-                home,
-                now,
-            )));
+            let mut cells = table_cells(group, row, index, pace, &mut claimed, home, now);
+            if index == 0
+                && let Some(source) = group.source.as_deref()
+                && !shown_resets.insert((group.tool.as_str(), source))
+            {
+                cells[RESETS_IN_HAND_COLUMN].clear();
+            }
+            table.push(RenderLine::Cells(cells));
         }
     }
-    for note in notes {
+    for note in notes.into_iter().chain(advisories) {
         table.push(RenderLine::Summary {
             label: note,
             status: String::new(),
@@ -5201,6 +5356,14 @@ fn table_cells(
             String::new()
         },
         pace.cell_for(group, row, claimed),
+        if index == 0 {
+            group
+                .policy
+                .resets_in_hand(now)
+                .unwrap_or_else(|| "-".to_owned())
+        } else {
+            String::new()
+        },
         trustworthy
             .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
             .flatten()
@@ -5213,11 +5376,24 @@ fn table_cells(
 
 /// Add a group's notes to the report's, each once.
 fn collect_notes(notes: &mut Vec<String>, group: &Group) {
+    let reset_note = group
+        .policy
+        .reset_count()
+        .filter(|count| *count > 0)
+        .map(|_| {
+            if group.policy.reset_expiries().is_empty() {
+                "Manual resets remain declared until a config edit. Please edit after use."
+            } else {
+                "Manual resets remain declared until expiry or a config edit. Please edit after use."
+            }
+            .to_owned()
+        });
     for note in group
         .notes
         .iter()
         .cloned()
         .chain(untrusted_credit_note(group))
+        .chain(reset_note)
     {
         if !notes.contains(&note) {
             notes.push(note);
@@ -5371,11 +5547,8 @@ fn sanitize_cell(text: &str) -> String {
     clean
 }
 
-fn bounded_cell(text: &str, column: usize) -> String {
-    sanitize_cell(text)
-        .chars()
-        .take(TABLE_MAX_WIDTHS[column])
-        .collect()
+fn bounded_cell(text: &str, limit: usize) -> String {
+    sanitize_cell(text).chars().take(limit).collect()
 }
 
 fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
@@ -5412,7 +5585,7 @@ fn profiles_label(profiles: &[String]) -> String {
     if joined.is_empty() {
         return "-".to_owned();
     }
-    if joined.chars().count() <= TABLE_MAX_WIDTHS[0] {
+    if joined.chars().count() <= PROFILE_LIST_MAX {
         return joined;
     }
     format!(
@@ -6229,9 +6402,9 @@ mod quotaburn_acceptance {
 #[cfg(test)]
 mod tests {
     use super::{
-        Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits,
-        Declaration, FRESH_SECS, FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, Group,
-        LocatedRollout, Policy, QuotaLevel, ReadRows, RenderLine, RolloutLocation, RolloutSource,
+        Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits, FRESH_SECS,
+        FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, Group, LocatedRollout,
+        ManualResets, Policy, QuotaLevel, ReadRows, RenderLine, RolloutLocation, RolloutSource,
         Row, Scope, Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file,
         classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
         effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
@@ -6484,6 +6657,7 @@ mod tests {
             accounts: Vec::new(),
             rollouts: Vec::new(),
             hint: None,
+            reset_declarations: Vec::new(),
             manual_resets: None,
             notes: Vec::new(),
             leg: false,
@@ -6508,6 +6682,7 @@ mod tests {
             accounts: accounts.iter().map(ToString::to_string).collect(),
             rollouts: Vec::new(),
             hint: None,
+            reset_declarations: Vec::new(),
             manual_resets: None,
             notes: Vec::new(),
             leg: false,
@@ -7054,6 +7229,7 @@ mod tests {
                 accounts: Vec::new(),
                 rollouts: Vec::new(),
                 hint: None,
+                reset_declarations: Vec::new(),
                 manual_resets: None,
                 notes: Vec::new(),
                 leg: false,
@@ -7104,7 +7280,7 @@ mod tests {
         // Every account here is stamped with the window it is judged against,
         // so this table is about the arithmetic, not about provenance.
         let case = |declared, account: &Account, used: f64| {
-            let policy = Policy::new(declared, account.clone());
+            let policy = Policy::for_tests(declared, account.clone());
             let effective = effective(&policy, used, Some(9_900));
             (effective.cell(), effective.judged(used))
         };
@@ -7135,7 +7311,7 @@ mod tests {
             ("95% cr".to_owned(), 0.0),
             "a usable balance carries the window: no threshold binds, its percentage stays shown"
         );
-        let label = |account: &Account| credits_label(&Policy::new(None, account.clone()));
+        let label = |account: &Account| credits_label(&Policy::for_tests(None, account.clone()));
         assert_eq!(label(&plain), "-");
         assert_eq!(label(&unlimited), "unlimited");
         assert_eq!(label(&capped), "spend-cap");
@@ -7190,7 +7366,7 @@ mod tests {
             }],
             hint: None,
             summary: None,
-            policy: Policy::new(manual_resets, Account::default()),
+            policy: Policy::for_tests(manual_resets, Account::default()),
             notes: Vec::new(),
             plan: None,
         }
@@ -7518,7 +7694,7 @@ mod tests {
         let burn = |credits: Credits| {
             let mut group = declared_group(None, "96");
             group.source = None;
-            group.policy = Policy::new(
+            group.policy = Policy::for_tests(
                 None,
                 Account {
                     credits,
@@ -7587,7 +7763,7 @@ mod tests {
         let mut stale = named("stale30", "30", None);
         stale.rows[0].observed_at = Some(9_000);
         let mut capped = named("capped", "10", None);
-        capped.policy = Policy::new(
+        capped.policy = Policy::for_tests(
             None,
             Account {
                 credits: Credits::Available("12.40".to_owned()),
@@ -8040,7 +8216,7 @@ mod tests {
     fn view_facts_name_why_the_judged_moved() {
         let reset = named("reset", "90", Some(1));
         let mut unlimited = named("unlimited", "90", None);
-        unlimited.policy = Policy::new(
+        unlimited.policy = Policy::for_tests(
             None,
             Account {
                 credits: Credits::Unlimited,
@@ -8050,7 +8226,7 @@ mod tests {
             },
         );
         let mut capped = named("capped", "10", None);
-        capped.policy = Policy::new(
+        capped.policy = Policy::for_tests(
             None,
             Account {
                 credits: Credits::Unlimited,
@@ -8087,7 +8263,7 @@ mod tests {
         let observed = named("cx", "10", None);
         let mut account_only = observed.clone();
         account_only.rows = vec![super::placeholder(Status::Unknown)];
-        account_only.policy = Policy::new(
+        account_only.policy = Policy::for_tests(
             None,
             Account {
                 credits: Credits::Unreported,
@@ -8115,19 +8291,16 @@ mod tests {
                 accounts: Vec::new(),
                 rollouts: Vec::new(),
                 hint: None,
-                manual_resets: first,
+                reset_declarations: Vec::new(),
+                manual_resets: first.map(ManualResets::undated),
                 notes: Vec::new(),
                 leg: false,
                 go: false,
             };
-            merge_declaration(
-                &mut scope,
-                &Declaration {
-                    manual_resets: second,
-                    note: None,
-                },
-            );
-            (scope.manual_resets, scope.notes)
+            if let Some(count) = second {
+                merge_declaration(&mut scope, ManualResets::undated(count));
+            }
+            (scope.policy(Account::default()).reset_count(), scope.notes)
         };
         for (first, second) in [(Some(0), Some(1)), (Some(1), Some(0))] {
             let (resets, notes) = merged(first, second);
@@ -8198,7 +8371,11 @@ mod tests {
         };
         let row_at = 9_900;
         let judge = |account: &Account| {
-            let effective = effective(&Policy::new(None, account.clone()), 95.0, Some(row_at));
+            let effective = effective(
+                &Policy::for_tests(None, account.clone()),
+                95.0,
+                Some(row_at),
+            );
             (effective.cell(), effective.judged(95.0))
         };
         assert_eq!(
@@ -8234,7 +8411,7 @@ mod tests {
 
         // The table says why a reported claim did not move the number.
         let mut group = declared_group(None, "95.0");
-        group.policy = Policy::new(None, unlimited_at(Some(row_at - 1)));
+        group.policy = Policy::for_tests(None, unlimited_at(Some(row_at - 1)));
         let table = render_at(std::slice::from_ref(&group), None, 10_000);
         assert!(
             table.contains("unlimited"),
@@ -8252,7 +8429,7 @@ mod tests {
         // Ignoring the claim leaves every other rule in force, so the note must
         // not promise the raw window either.
         let mut declared = declared_group(Some(1), "95.0");
-        declared.policy = Policy::new(Some(1), unlimited_at(Some(row_at - 1)));
+        declared.policy = Policy::for_tests(Some(1), unlimited_at(Some(row_at - 1)));
         let table = render_at(std::slice::from_ref(&declared), None, 10_000);
         assert!(
             table.contains("47.5% x1"),
@@ -8310,6 +8487,7 @@ mod tests {
             "bucket".to_owned(),
             "5h".to_owned(),
             "1%".to_owned(),
+            "-".to_owned(),
             "-".to_owned(),
             "-".to_owned(),
             "-".to_owned(),
@@ -9033,7 +9211,7 @@ mod tests {
         let mut group = unusable_claude_group(10_000, Some(9_000));
         group.plan = Some(plan_max_20x(Some(9_000)));
 
-        group.policy = Policy::new(
+        group.policy = Policy::for_tests(
             None,
             Account {
                 credits: Credits::Available("12.40".to_owned()),
@@ -9047,7 +9225,7 @@ mod tests {
             Some(format!("credits 12.40 · {plan_words}").as_str())
         );
 
-        group.policy = Policy::new(
+        group.policy = Policy::for_tests(
             None,
             Account {
                 spend_control_reached: Some(true),
@@ -9061,7 +9239,7 @@ mod tests {
             Some(format!("spend cap reached · {plan_words}").as_str())
         );
 
-        group.policy = Policy::new(None, Account::default());
+        group.policy = Policy::for_tests(None, Account::default());
         let scope = viewed(vec![group.clone()]).remove(0);
         assert_eq!(scope.account.as_deref(), Some(plan_words));
 

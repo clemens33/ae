@@ -334,6 +334,7 @@ impl Cycle<'_> {
                 // happened. Tracing before delivery would attest booking
                 // while the receipt was still absent.
                 self.apply_quota_actions(carry, actions, now, err)?;
+                self.tell_reset_expiries(&observation, inputs);
                 self.write_quota_history(carry, &observation, inputs, now, err);
                 Self::trace_quota(&summary);
                 Ok(())

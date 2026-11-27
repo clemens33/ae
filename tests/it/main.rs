@@ -48,6 +48,8 @@ mod archive_purge;
 mod autochoice_spec;
 mod autoreseat;
 mod autotrust_spec;
+mod banked_runtime_spec;
+mod banked_spec;
 mod bgmark_doctrine_spec;
 mod bgmark_spec;
 mod board;

@@ -833,7 +833,7 @@ pub struct Client {
     /// Manual window resets the operator declares are in hand for this client
     /// scope. A vendor reports none, so ae can only be told; `None` means the
     /// operator said nothing and no extra headroom may be derived.
-    pub manual_resets: Option<u8>,
+    pub manual_resets: Option<ManualResets>,
     /// Why a declared `manual_resets=` was ignored, for one visible note.
     pub manual_resets_note: Option<String>,
     /// The harness selected by the executable basename.
@@ -1614,7 +1614,7 @@ fn parse_client(file: &Path, label: &str, line: usize, value: &str) -> Result<Cl
                 ));
             } else {
                 match parse_manual_resets(raw) {
-                    Ok(count) => manual_resets = Some(count),
+                    Ok(declaration) => manual_resets = Some(declaration),
                     Err(reason) => manual_resets_note = Some(reason),
                 }
             }
@@ -1624,7 +1624,7 @@ fn parse_client(file: &Path, label: &str, line: usize, value: &str) -> Result<Cl
                 label,
                 line,
                 format!(
-                    "offending word '{word}': flags and extra words belong to [profiles]; only config_home=<path> and {CLIENT_RESETS_KEY}<0-9> may follow the executable, and config_home paths containing spaces must be quoted"
+                    "offending word '{word}': flags and extra words belong to [profiles]; only config_home=<path> and {CLIENT_RESETS_KEY}<count or expiries> may follow the executable, and config_home paths containing spaces must be quoted"
                 ),
             ));
         }
@@ -1646,20 +1646,78 @@ const CLIENT_RESETS_KEY: &str = "manual_resets=";
 /// describing something other than resets in hand.
 const MANUAL_RESETS_MAX: u8 = 9;
 
-/// Read one declared reset count, or say in one line why it was ignored.
+/// A declaration of undated resets or a bounded list of UTC expiry instants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualResets(ResetDeclaration);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResetDeclaration {
+    Count(u8),
+    Expiries(std::sync::Arc<[i64]>),
+}
+
+impl ManualResets {
+    pub(crate) const fn undated(count: u8) -> Self {
+        Self(ResetDeclaration::Count(count))
+    }
+
+    pub(crate) fn active_at(&self, now: i64) -> Self {
+        if let Some(expiries) = self.expiries() {
+            let first = expiries.partition_point(|at| *at <= now);
+            if first != 0 {
+                return Self(ResetDeclaration::Expiries(expiries[first..].into()));
+            }
+        }
+        self.clone()
+    }
+
+    pub(crate) fn count(&self) -> u8 {
+        match &self.0 {
+            ResetDeclaration::Count(count) => *count,
+            ResetDeclaration::Expiries(expiries) => {
+                u8::try_from(expiries.len()).unwrap_or(MANUAL_RESETS_MAX)
+            }
+        }
+    }
+
+    pub(crate) fn expiries(&self) -> Option<&[i64]> {
+        match &self.0 {
+            ResetDeclaration::Count(_) => None,
+            ResetDeclaration::Expiries(expiries) => Some(expiries),
+        }
+    }
+}
+
+/// Read a declaration, or say in one line why it was ignored.
 ///
-/// The grammar is one decimal digit, so the value needs no numeric conversion
-/// and a hostile spelling has nowhere to overflow.
-fn parse_manual_resets(raw: &str) -> Result<u8, String> {
+/// Counts keep their historical spelling, including leading zeroes. The
+/// expiry form accepts whole minutes or seconds with an explicit UTC offset.
+fn parse_manual_resets(raw: &str) -> Result<ManualResets, String> {
     let body = outer_quote_body(raw);
     let shown: String = body.chars().take(16).collect();
+    if body.contains(',') || body.as_bytes().get(10) == Some(&b'T') {
+        let mut expiries = Vec::new();
+        for item in body.split(',') {
+            if expiries.len() == usize::from(MANUAL_RESETS_MAX) {
+                return Err(format!(
+                    "{CLIENT_RESETS_KEY}{shown} ignored: more than {MANUAL_RESETS_MAX} expiries"
+                ));
+            }
+            let expiry = reset_expiry(item).ok_or_else(|| {
+                format!("{CLIENT_RESETS_KEY}{shown} ignored: invalid expiry or missing UTC offset")
+            })?;
+            expiries.push(expiry);
+        }
+        expiries.sort_unstable();
+        return Ok(ManualResets(ResetDeclaration::Expiries(expiries.into())));
+    }
     let digits = !body.is_empty() && body.bytes().all(|byte| byte.is_ascii_digit());
     let canonical = match body.trim_start_matches('0') {
         "" if digits => "0",
         rest => rest,
     };
     match canonical.as_bytes() {
-        [digit] if digit.is_ascii_digit() => Ok(digit.saturating_sub(b'0')),
+        [digit] if digit.is_ascii_digit() => Ok(ManualResets::undated(digit.saturating_sub(b'0'))),
         _ if digits => Err(format!(
             "{CLIENT_RESETS_KEY}{shown} ignored: above {MANUAL_RESETS_MAX}"
         )),
@@ -1667,6 +1725,25 @@ fn parse_manual_resets(raw: &str) -> Result<u8, String> {
             "{CLIENT_RESETS_KEY}{shown} ignored: not a whole count 0-{MANUAL_RESETS_MAX}"
         )),
     }
+}
+
+fn reset_expiry(text: &str) -> Option<i64> {
+    let (core, tail) = text.split_at_checked(16)?;
+    let zone = if let Some(seconds) = tail.strip_prefix(':') {
+        seconds.get(2..)?
+    } else {
+        tail
+    };
+    if zone != "Z" && (zone.len() != 6 || !zone.starts_with(['+', '-'])) {
+        return None;
+    }
+    let mut timestamp = String::with_capacity(25);
+    timestamp.push_str(core);
+    if tail == zone {
+        timestamp.push_str(":00");
+    }
+    timestamp.push_str(tail);
+    crate::time::Timestamp::parse_micros(&timestamp).map(|micros| micros.div_euclid(1_000_000))
 }
 
 fn parse_client_home(
@@ -4065,7 +4142,11 @@ mod tests {
              plain = codex\n\
              [profiles]\nsol = cx -m sol\n[roster]\nlead = sol\n[workspace]\nmain = lead\n",
         );
-        let resets = |label: &str| cfg.client(label).and_then(|client| client.manual_resets);
+        let resets = |label: &str| {
+            cfg.client(label)
+                .and_then(|client| client.manual_resets.as_ref())
+                .map(super::ManualResets::count)
+        };
         assert_eq!(resets("cx"), Some(2));
         assert_eq!(resets("cy"), Some(1));
         assert_eq!(
@@ -4104,7 +4185,14 @@ mod tests {
             let cfg = read_identity(Some(file.path()), None)
                 .unwrap_or_else(|err| panic!("{value:?} must not refuse the config: {err}"));
             let client = cfg.client("cc").expect("client parsed");
-            assert_eq!(client.manual_resets, expected, "{value:?}");
+            assert_eq!(
+                client
+                    .manual_resets
+                    .as_ref()
+                    .map(super::ManualResets::count),
+                expected,
+                "{value:?}"
+            );
             let note = client
                 .manual_resets_note
                 .as_deref()

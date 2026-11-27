@@ -551,6 +551,29 @@ impl PaceTable {
 }
 
 impl PaceTable {
+    /// Whether the current window would still have raw headroom when the banked
+    /// reset expires. The displayed rate is over all declared capacity, so
+    /// undo that scaling before comparing against one raw window's limit.
+    /// When PACE has no measured rate, the caller compares its reset alone.
+    pub(super) fn current_window_outlasts(
+        &self,
+        source: &std::path::Path,
+        row: &Row,
+        resets: u8,
+        until_expiry: i64,
+    ) -> bool {
+        let Some(Verdict {
+            pace: Pace::Rate { per_h, .. },
+            used,
+            ..
+        }) = self.verdict_for(source, row)
+        else {
+            return true;
+        };
+        let raw_rate = per_h * (1.0 + f64::from(resets));
+        secs(until_expiry) < (100.0 - used) / raw_rate * 3600.0
+    }
+
     /// The verdict of one rendered row, only when that row is the one the verdict was
     /// computed from: a shown row older than its key's winner reads nothing.
     pub(crate) fn verdict_for(&self, source: &std::path::Path, row: &Row) -> Option<&Verdict> {
@@ -1249,7 +1272,13 @@ mod tests {
     fn the_table_draws_the_pace_column_between_credits_and_resets() {
         let shown = group(vec![row(Some("16.0"), 60, RESET, Status::Fresh)], raw());
         let table = PaceTable::build(std::slice::from_ref(&shown), &history(), NOW);
-        let text = super::super::render_with_pace(std::slice::from_ref(&shown), &table, None, NOW);
+        let text = super::super::render_with_pace(
+            std::slice::from_ref(&shown),
+            &table,
+            None,
+            NOW,
+            Vec::new(),
+        );
         let header: Vec<&str> = text
             .lines()
             .next()
