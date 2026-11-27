@@ -13,6 +13,10 @@ const RECENT: &str = include_str!("../../fixtures/orchestrator/s1a-previous.conf
 const CURRENT: &str = include_str!("../../../contrib/aeorchestrator/orchestrator.config");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn current_with_released_spacing() -> String {
+    CURRENT.replacen("\nsweep = 300\n", "\nsweep = 120\n", 1)
+}
+
 fn backup(path: &Path, version: &str, suffix: &str) -> PathBuf {
     path.with_file_name(format!("orchestrator.config.pre-v{version}{suffix}"))
 }
@@ -50,18 +54,19 @@ fn released_whole_overlays_are_replaced_and_backed_up_even_without_a_seat() {
     let u = Upgrade::new(&r);
     let path = u.state().join("orchestrator.config");
     assert!(!u.state().join("sessions/orchestrator").exists());
-    for (old, version) in [
-        (OLDEST, "2026.10.60"),
-        (SEPTEMBER, "2026.10.61"),
-        (RECENT, "2026.10.62"),
+    let retained = current_with_released_spacing();
+    for (old, version, expected) in [
+        (OLDEST, "2026.10.60", CURRENT),
+        (SEPTEMBER, "2026.10.61", retained.as_str()),
+        (RECENT, "2026.10.62", retained.as_str()),
     ] {
         assert_ne!(old, CURRENT, "the positive fixture must require migration");
         fs::write(&path, old).expect("released overlay");
         let said = published(&u, version);
         assert_eq!(
             read(&path),
-            CURRENT,
-            "old overlay stayed for {version}: {said}"
+            expected,
+            "publish did not install the current prompt with the expected sweep for {version}: {said}"
         );
         let saved = backup(&path, version, "");
         assert_eq!(
@@ -72,7 +77,7 @@ fn released_whole_overlays_are_replaced_and_backed_up_even_without_a_seat() {
     }
 
     let said = published(&u, "2026.10.63");
-    assert_eq!(read(&path), CURRENT);
+    assert_eq!(read(&path), retained);
     assert!(!backup(&path, "2026.10.63", "").exists());
     assert!(
         !said.contains("orchestrator.config"),
@@ -249,7 +254,11 @@ fn named_instance_overlay_migrates_and_its_repair_names_the_instance() {
     fs::write(&path, SEPTEMBER).expect("old named-instance template");
 
     let said = published(&u, "2026.10.60");
-    assert_eq!(read(&path), CURRENT, "named overlay stayed stale: {said}");
+    assert_eq!(
+        read(&path),
+        current_with_released_spacing(),
+        "publish did not update the named overlay and retain its sweep: {said}"
+    );
     let saved = backup(&path, "2026.10.60", "");
     assert_eq!(
         fs::read(&saved).expect("named-instance backup"),
@@ -336,7 +345,7 @@ fn upgrading_the_overlay_leaves_a_running_orchestrator_pane_intact() {
         fs::read_link(dir.join("send")).expect("new helper"),
         previous_helper
     );
-    assert_eq!(read(&path), CURRENT);
+    assert_eq!(read(&path), current_with_released_spacing());
     migration_notice(&said, &path, &backup(&path, VERSION, ""));
 }
 
