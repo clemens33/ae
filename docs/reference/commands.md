@@ -595,17 +595,17 @@ needing attention; a brief says **why**, without opening a single pane.
 
 ```bash
 ae brief              # the session this pane is in, else the whole fleet
-ae brief aedev        # one session by name, running or not
+ae brief my-app       # one session by name, running or not
 ae brief --all        # every running session, most actionable first
 ae brief --all --since 4h    # ... dropping topic records older than four hours
-ae brief aedev --full        # nothing clipped, plus the uuid and each waiting seat's view token
-ae brief aedev --seat lead   # ONE seat's seed pack, for a successor on another tool
+ae brief my-app --full       # nothing clipped, plus the uuid and each waiting seat's view token
+ae brief my-app --seat lead  # ONE seat's seed pack, for a successor on another tool
 ```
 
 One card per session, plain text, no colour:
 
 ```text
-aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · started 1h ago · active 14s ago · s1-brief* · ~/projects/clemens33/ae
+my-app · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · started 1h ago · active 14s ago · s1-brief* · ~/projects/my-app
   goal: ship S1 of #113
   topics:
     decision    12m   lead          gate once per merge, release after both land
@@ -634,7 +634,7 @@ prints the same card for a reader that is not an eye, such as the orchestrator s
 nothing cut:
 
 ```bash
-ae brief aedev --full      # one session, running or stopped
+ae brief my-app --full     # one session, running or stopped
 ae brief --all --full      # every running session, most actionable first
 ```
 
@@ -728,7 +728,7 @@ text you paste into whatever tool picks it up. It **writes nothing**, sends noth
 touches no tmux, and it works on a stopped session as well as a running one.
 
 ```bash
-ae brief aedev --seat lead > /tmp/seed.md
+ae brief my-app --seat lead > /tmp/seed.md
 ```
 
 It needs exactly one session — named, or the caller's own — and takes neither `--all` (a pack
@@ -1925,7 +1925,7 @@ session records only, never tmux, so it works with no server running.
 Worktrees of /r/ae: target main @ 4f60379b, removable after 2 idle days.
 VERDICT              MERGED  IDLE  STATE    BRANCH    OWNER       PATH
 remove               yes     5d    clean    flakes2   -           /r/ae-wt/flakes2
-keep: owner          yes     0d    dirty    wtgc      aedev:wtgc  /r/ae-wt/wtgc
+keep: owner          yes     0d    dirty    wtgc      my-app:wtgc /r/ae-wt/wtgc
 keep: unmerged       no      3d    clean?   skilltab  -           /r/ae-wt/skilltab
 1 of 3 can go. To remove exactly these: ae worktree gc --idle 2 --remove 6f1c09a2b4e7d3a0
 ```

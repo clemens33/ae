@@ -294,7 +294,7 @@ which reshuffles every time you restart the fleet:
 
 ```toml
 [workspace]
-fleet_order = aedev, thinking, infra
+fleet_order = my-app, thinking, infra
 ```
 
 The sessions you name come first, in the order you named them; everything else

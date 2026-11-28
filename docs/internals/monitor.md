@@ -64,7 +64,7 @@ the bar, it only feeds tmux **user options** (interpolated literally — no shel
 no `#()` parsing — so any branch/status text is safe with zero escaping). Shape:
 
 ```text
-[ae aedev]  0:leads 1:workers 99:ae-monitor  [~/projects/clemens33/ae main*] [watch ● 2/2]
+[ae my-app]  0:leads 1:workers 99:ae-monitor  [~/projects/my-app main*] [watch ● 2/2]
 ```
 
 - **`status-left`** is the session **name only** (`[ae <session>] `) — tmux's window
