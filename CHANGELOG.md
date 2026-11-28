@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.132] - 2026-11-28
+- Price gpt-6.2-sol and gpt-6.2-astra in ae usage
+- Stop config.sample from forcing the whole test-affected lane
+- Polish the web page for daily desktop use
+- Name the ranked record that a card header names
+- Pin the clean borrow and the tied rank, drop a guard with no effect
+
 ## [v2026.11.131] - 2026-11-28
 - Confirm recorded Codex sessions after a retained launch
 
