@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.133] - 2026-11-28
+- Pin config.sample to DEFAULT_CONFIG byte for byte
+- Merge config.sample into DEFAULT_CONFIG and make the sample its exact copy
+- Say that the orchestrator's session never opens the chat window
+
 ## [v2026.11.132] - 2026-11-28
 - Price gpt-6.2-sol and gpt-6.2-astra in ae usage
 - Stop config.sample from forcing the whole test-affected lane
