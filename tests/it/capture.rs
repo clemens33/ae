@@ -677,3 +677,231 @@ fn an_explicit_opencode_seat_captures_the_session_in_its_own_seat_directory() {
         "the session-dir decoy was captured:\n{meta}"
     );
 }
+// Frozen acceptance tests for slice `regsid` (append to `tests/it/capture.rs`).
+// Authored by `regsid-rev` (Google / Gemini 4 Hydrogen Medium) before implementation.
+//
+// Invariants pinned:
+// 1. A kept-conversation reseat with a product-valid retained Codex id in its recorded
+//    `config_home.<slot>` store (rollout present with an earlier developer token, lacking
+//    the replacement launch token) causes `_register-sid <slot>` and
+//    `_register-sid <slot> <retained>` to exit 0 with a clear already-recorded
+//    confirmation, leaving `meta` byte-identical and writing no `codex.<slot>.sid` file.
+// 2. Pending, non-UUID (even with a matching rollout file), or missing-rollout recorded
+//    ids still exit 1 when no rollout proves the current launch token, leaving `meta`
+//    unchanged and writing no SID file.
+// 3. An explicit mismatched UUID (`_register-sid <slot> <other>`) still exits 1 when
+//    `<other>` does not prove the current launch token, leaving `meta` unchanged.
+// 4. Current-token authority still wins when a new rollout proves the current launch
+//    token, even if the stale recorded id also has an older rollout in the store; an
+//    explicit `[main, stale]` call still exits 1 before the implicit `[main]` repair.
+
+fn plant_token_rollout(rig: &Rig, store_home: &std::path::Path, id: &str, token: &str) {
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    let started = ae::time::Timestamp::now();
+    rig.write(
+        &store_home
+            .join("sessions")
+            .join(day)
+            .join(format!("rollout-{id}.jsonl")),
+        &format!(
+            "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+             {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={token}\"}}]}}}}\n",
+            rig.project.display()
+        ),
+    );
+}
+
+fn render_and_register(rig: &Rig, args: &[&str]) -> std::process::Output {
+    use super::cli::helper;
+
+    let rendered = ae()
+        .arg(ae::cli::SHIMS_RENDER)
+        .arg(&rig.session)
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert!(
+        rendered.status.success(),
+        "the shims render: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    helper(&rig.session.join("_register-sid"))
+        .args(args)
+        .env("HOME", &rig.home)
+        .output()
+        .unwrap_or_else(|why| panic!("the shim should run: {why}"))
+}
+
+/// A kept-conversation reseat whose retained rollout in `config_home.<slot>`
+/// carries only the earlier launch token still confirms the recorded id with
+/// exit 0 and no writes.
+#[test]
+fn a_retained_codex_id_with_prior_token_confirms_without_rewriting_meta_or_sid() {
+    let retained = "0199c0de-1111-4890-abcd-ef0123456789";
+
+    for (tag, args) in [
+        ("implicit", &["main"][..]),
+        ("explicit-match", &["main", retained][..]),
+    ] {
+        let rig = Rig::new(&format!("regsid-kept-{tag}"), "codex", 100);
+        let config_home = rig.scratch.join("recorded-codex-home");
+        let before_meta = format!(
+            "{}config_home.main={}\n",
+            rig.meta()
+                .replace(
+                    "harness_session.main=pending",
+                    &format!("harness_session.main={retained}"),
+                )
+                .replace("launch_id.main=tok-1\n", "launch_id.main=tok-2\n"),
+            config_home.display()
+        );
+        rig.write(&rig.session.join("meta"), &before_meta);
+
+        // Plant in `config_home.<slot>` (separate from ambient `HOME/.codex`).
+        plant_token_rollout(&rig, &config_home, retained, "tok-1");
+
+        let out = render_and_register(&rig, args);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{tag}: expected exit 0, got {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            out.status.code()
+        );
+        let lower = stdout.to_ascii_lowercase();
+        assert!(
+            stdout.contains("main")
+                && (lower.contains("already")
+                    || lower.contains("record")
+                    || lower.contains("retain")
+                    || lower.contains("kept")),
+            "{tag}: expected clear already-recorded confirmation on stdout, got: {stdout:?}"
+        );
+        assert_eq!(
+            rig.meta(),
+            before_meta,
+            "{tag}: meta must remain byte-identical"
+        );
+        assert!(
+            !rig.session.join("codex.main.sid").exists(),
+            "{tag}: must not create a new SID file"
+        );
+    }
+}
+
+/// Pending, unusable (even with a rollout on disk), missing-rollout, or
+/// mismatched explicit-id calls still refuse with exit 1 and leave meta and
+/// SID state untouched.
+#[test]
+fn register_sid_still_refuses_unusable_missing_store_and_mismatched_explicit_ids() {
+    let retained = "0199c0de-2222-4890-abcd-ef0123456789";
+    let other = "0199c0de-3333-4890-abcd-ef0123456789";
+
+    for (tag, recorded, rollout_id, args) in [
+        ("pending", "pending", None, &["main"][..]),
+        ("not-uuid", "NOT-A-UUID", Some("NOT-A-UUID"), &["main"][..]),
+        ("missing-rollout", retained, None, &["main"][..]),
+        (
+            "mismatched-explicit",
+            retained,
+            Some(retained),
+            &["main", other][..],
+        ),
+    ] {
+        let rig = Rig::new(&format!("regsid-refuse-{tag}"), "codex", 100);
+        let before_meta = rig
+            .meta()
+            .replace(
+                "harness_session.main=pending",
+                &format!("harness_session.main={recorded}"),
+            )
+            .replace("launch_id.main=tok-1\n", "launch_id.main=tok-2\n");
+        rig.write(&rig.session.join("meta"), &before_meta);
+
+        if let Some(id) = rollout_id {
+            plant_token_rollout(&rig, &rig.home.join(".codex"), id, "tok-1");
+        }
+
+        let out = render_and_register(&rig, args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{tag}: expected exit 1, got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            rig.meta(),
+            before_meta,
+            "{tag}: meta must remain byte-identical"
+        );
+        assert!(
+            !rig.session.join("codex.main.sid").exists(),
+            "{tag}: must not create a SID file"
+        );
+    }
+}
+
+/// Even when the stale recorded id has an older rollout in the store, a new
+/// rollout proving the current launch token still supersedes it; an explicit
+/// `[main, stale]` call refuses with exit 1 before the implicit `[main]` repair.
+#[test]
+fn current_launch_token_still_supersedes_a_stale_recorded_rollout() {
+    let stale = "0199c0de-4444-4890-abcd-ef0123456789";
+    let fresh = "0199c0de-5555-4890-abcd-ef0123456789";
+
+    let rig = Rig::new("regsid-supersede", "codex", 1);
+    let before_meta = rig
+        .meta()
+        .replace(
+            "harness_session.main=pending",
+            &format!("harness_session.main={stale}"),
+        )
+        .replace("launch_id.main=tok-1\n", "launch_id.main=tok-2\n");
+    rig.write(&rig.session.join("meta"), &before_meta);
+
+    let codex_store = rig.home.join(".codex");
+    plant_token_rollout(&rig, &codex_store, stale, "tok-1");
+    plant_token_rollout(&rig, &codex_store, fresh, "tok-2");
+
+    // Explicit `[main, stale]` must still fail when `fresh` proves `tok-2`.
+    let explicit_stale = render_and_register(&rig, &["main", stale]);
+    assert_eq!(
+        explicit_stale.status.code(),
+        Some(1),
+        "explicit stale id must be refused when current token proves fresh rollout: {}",
+        String::from_utf8_lossy(&explicit_stale.stderr)
+    );
+    assert_eq!(
+        rig.meta(),
+        before_meta,
+        "refused explicit stale call must leave meta byte-identical"
+    );
+    assert!(
+        !rig.session.join("codex.main.sid").exists(),
+        "refused explicit stale call must not create a SID file"
+    );
+
+    // Implicit `[main]` must repair to `fresh` and record `stale` as prior.
+    let out = render_and_register(&rig, &["main"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let meta = rig.meta();
+    assert!(
+        meta.contains(&format!("harness_session.main={fresh}\n")),
+        "current launch token must supersede stale recorded id:\n{meta}"
+    );
+    assert!(
+        meta.contains(&format!("harness_session_prior.main=codex:{stale}\n")),
+        "replaced stale id must move to harness_session_prior:\n{meta}"
+    );
+    assert!(
+        !rig.session.join("codex.main.sid").exists(),
+        "consumed handshake file must be removed:\n{meta}"
+    );
+}

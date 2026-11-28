@@ -705,10 +705,13 @@ fn sid_file(dir: &Path, slot: &str) -> PathBuf {
 
 /// `_register-sid <meta-dir> <slot> [<session-id>]` — codex's own handshake.
 ///
+/// When the capture scan finds nothing, a usable id already recorded in meta
+/// can be acknowledged with a read-only check of its resume store.
+///
 /// # Errors
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code: `2`
-/// for a usage error or a malformed id, `1` for a scan that matched nothing.
+/// for a usage error or a malformed id, `1` for a registration that failed.
 pub fn register_sid(
     dir: &Path,
     slot: &str,
@@ -753,14 +756,31 @@ pub fn register_sid(
         .map(|bytes| recorded_session(bytes, slot))
         .unwrap_or_default();
     let ambient_home = home_dir();
-    let Some(found) = codex_config_home(&facts, ambient_home.as_deref())
-        .as_deref()
-        .and_then(|config_home| {
-            keep_recorded(config_home, &facts, &recorded)
-                .or_else(|| scan_codex(config_home, &facts))
+    let config_home = codex_config_home(&facts, ambient_home.as_deref());
+    let found = config_home.as_deref().and_then(|home| {
+        keep_recorded(home, &facts, &recorded).or_else(|| scan_codex(home, &facts))
+    });
+    // A capture match takes precedence even if the caller supplied a different
+    // id. The resume probe only confirms a conversation already in meta.
+    if found.is_none()
+        && given.is_none_or(|given| given == recorded)
+        && is_lowercase_uuid(&recorded)
+        && config_home.is_some_and(|home| {
+            crate::conversation::probe(
+                facts.tool,
+                &recorded,
+                &crate::launch_cmd::Resolved::Path(home),
+                None,
+            ) == crate::conversation::Probe::Found
         })
-        .filter(|found| given.is_none_or(|given| found == given))
-    else {
+    {
+        writeln!(
+            out,
+            "Codex session {recorded} is already recorded for '{slot}'."
+        )?;
+        return Ok(0);
+    }
+    let Some(found) = found.filter(|found| given.is_none_or(|given| found == given)) else {
         writeln!(err, "No codex session matched seat '{slot}' yet.")?;
         return Ok(crate::state::EXIT_FAILED);
     };
