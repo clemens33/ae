@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.131] - 2026-11-28
+- Confirm recorded Codex sessions after a retained launch
+
 ## [v2026.11.130] - 2026-11-28
 - Read the reserved systems and organisation from global config
 - Pin the reason a refused reserved key reports
