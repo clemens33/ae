@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.130] - 2026-11-28
+- Read the reserved systems and organisation from global config
+- Pin the reason a refused reserved key reports
+- Make the web Topics panel accessible
+- Default ae init to GPT-6.2 and correct the README first start
+- Freeze profile successor acceptance v4
+- Resume stopped seats on their declared profile successors
+- Pin that a flagged resume decides automatic moves without the orchestrator overlay
+- Freeze chatlag landing-1 cadence, desk and late-draft acceptance
+- Give the synthetic desk peer a bare worker actor
+- Refuse a paste when a draft starts between the buffer load and the paste
+- Space orchestrator overviews five minutes apart unless NEEDS YOU changes
+- Freeze the overview hold through a running turn
+- Freeze the kept overview spacing across a template publish
+- Keep a released template's explicit overview spacing on publish
+- Read a legacy overview checkpoint as the same fleet after an upgrade
+- Hold the fleet overview through a running turn
+- Expect the kept spacing in the charter-raise migration pin
+- Hold an overview joined to a reseat continuation through a running turn
+- Rebase the overview spacing ledger row onto the reserved-systems template
+- Freeze the joined overview hold when a turn starts after the buffer load
+- Keep a refused joined overview due for the retried continuation
+- Name the cycle facts that make the sweep observation carry four flags
+- Keep the overview hash comparisons in the watchdog model, below the daemon
+- Refuse a late draft only for a quiet-gated delivery, and expect the kept spacing in the fleet reconcile pin
+- Name what the guarded ae compact still reads before its paste
+- Name the late-draft composer choice so submit stays within the line limit
+
 ## [v2026.11.129] - 2026-11-27
 - Lengthen a waiting-agent ceiling while its direct target works
 - Freeze Claude paste-hint submit acceptance
