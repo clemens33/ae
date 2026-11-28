@@ -69,7 +69,7 @@ orchestrator = gpt56luna
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
-# sharing the leads window); main stays the technical lifecycle anchor (compact
+# sharing the leads window); main stays the technical lifecycle anchor (reboot
 # handover), which is infrastructure, not seniority. Builders and reviewers are NOT
 # standing seats: either peer spawns them per slice (spawn builder --using <build-profile> / spawn
 # reviewer --using <review-profile>) and retires its own spawns when the work is verified — every spawn
@@ -80,12 +80,12 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
-# Installed ae checks for a newer release during normal use. This policy is
-# global-only: a project's .ae/config cannot enable or disable software updates.
+# Installed ae checks for newer releases during validated ordinary use. This
+# machine policy is global-only; a project's .ae/config cannot override it.
 # auto_upgrade = on
-# The order your sessions are drawn in on the fleet strip: the ones you name come
-# first, in this order, and the rest follow in creation order. Global-only, and a
-# running session's watchdog picks up an edit within one cycle.
+# The order your sessions are drawn in on the fleet strip. The ones you name come
+# first, in this order; the rest follow in creation order. Global-only, and picked
+# up by a running session's watchdog within one cycle.
 # fleet_order = aedev, thinking, infra
 # Bare ae outside tmux first resumes the sessions a crashed tmux server held.
 # Global-only, exact lowercase: on (the default) or off.
@@ -99,16 +99,17 @@ version_probe = on
 # The session's LOOK, applied at launch and refreshed by the watchdog. Both are
 # session-scoped: a non-ae session on the same tmux server keeps your own theme.
 # palette = darcula (the default) | a (neutral dark) | b (warmer neutrals).
-# icons = off draws the ASCII fallback (x ! * + ? -) rather than ✖ ⚠ ● ✓ ◌ ·.
+# icons = off draws the ASCII fallback (x ! * & ~ + ? -) rather than ✖ ⚠ ● ◉ ◔ ✓ ◌ ·.
 # theme = off leaves your own status line, pane borders and menu styles alone;
 #         ae still publishes every @ae_* value, so your format can read them.
-# motion = off freezes the spinner on its mark.
+# motion = off holds the working mark still at its accent colour.
 # palette = darcula
 # icons = on
 # theme = on
 # motion = on
 # A new or resumed session opens the human chat as its first window and attaching
-# lands there; chat = off keeps the seats' windows first.
+# lands there; chat = off keeps the seats' windows first, and chat = app runs ae app
+# in that window instead.
 # chat = on
 
 [prompt]
@@ -117,3 +118,11 @@ version_probe = on
 # ~/.ae/sessions/<name>/workspace.md. Anything set here is APPENDED on top of that; per-project
 # .ae/config overrides the global one. Uncomment to add your own house rules:
 # instructions = "Always write tests. Prefer TypeScript."
+# A long value goes in a block instead: the opener line is exactly instructions = """ and a
+# line that is exactly """ closes it. Between them every line is raw text (# is not a comment,
+# and a key = value line is not a key). A raw line that is exactly """ cannot appear inside
+# the block — it would close it, and no escape exists.
+# instructions = """
+# SPEND POLICY: keep replies short.
+# Cite the file for every claim.
+# """
