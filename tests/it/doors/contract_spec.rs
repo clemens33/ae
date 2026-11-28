@@ -182,6 +182,12 @@ fn source_symbols(path: &str, source: &str) -> BTreeSet<String> {
     // Named tests in the map are legitimate owners too, so parse the shared
     // view's comment-free WHOLE source after classification, not just production.
     source_view::classify(path, source).unwrap_or_else(|failure| panic!("{failure}"));
+    rust_symbols(path, source)
+}
+
+// The declared items of one comment-free Rust file, without the product
+// classification (a `tests/` file is not product code).
+fn rust_symbols(path: &str, source: &str) -> BTreeSet<String> {
     let text =
         source_view::without_comments(path, source).unwrap_or_else(|failure| panic!("{failure}"));
     let parsed = syn::parse_file(&text).unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -205,6 +211,377 @@ fn owner_errors(text: &str, sources: &BTreeMap<String, BTreeSet<String>>) -> Vec
             Some(_) => None,
         })
         .collect()
+}
+
+// ---- the Key invariants owner pin ---------------------------------------------
+//
+// The table is parsed from the doc at test time, so the pin follows its edits:
+// there is no hand-copied list. Each code span of an Owner cell, read left to
+// right, is one of these references, and each must resolve:
+//   `src/…/f.rs` or `tests/…/f.rs`  a file of the tree; it joins the row's named files
+//   `src/…/f.rs::a::b`              that file declares `a::b`
+//   `::a::b`                        a file the row named before it declares `a::b`
+//   `f.rs`, `f.rs::a::b`            some `src/…/f.rs` exists (and declares `a::b`)
+//   `x::a`                          a file the row named before it declares `x::a`
+//                                   (a type member such as `Kind::Fleet`), or a module
+//                                   file `src/…/x.rs` declares `a`; deeper paths split
+//                                   at each `::` (`x::y::a`: `src/…/x/y.rs` declares `a`)
+//   `crate::x::a`                   `src/lib.rs` declares `x::a`, or a module file as above
+// A span without `::` that is none of the file forms is prose (a word, a command,
+// a non-Rust path) and unchecked. Every row names at least one existing file. A
+// malformed table, row, span or path fails; a parse never passes over nothing.
+
+const INVARIANTS: &str = "## Key invariants";
+const INVARIANTS_HEADER: &str = "| Invariant | Owner |";
+
+type Symbols = BTreeMap<String, BTreeSet<String>>;
+
+// One table row: its 1-based line in the doc, its invariant and its owner cell.
+struct Row {
+    line: usize,
+    invariant: String,
+    owner: String,
+}
+
+#[derive(Clone, Copy)]
+enum Reference<'a> {
+    File(&'a str, Option<&'a str>),
+    Continuation(&'a str),
+    Basename(&'a str, Option<&'a str>),
+    // The path, and whether it was spelled from `crate::`.
+    Path(&'a str, bool),
+}
+
+#[derive(Clone, Copy)]
+enum Table {
+    Before,
+    Header,
+    Rows,
+    After,
+}
+
+fn is_ident(word: &str) -> bool {
+    let mut bytes = word.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn is_item_path(path: &str) -> bool {
+    path.split("::").all(is_ident)
+}
+
+// The cells of a table line, split at every pipe that no backslash escapes, as
+// GitHub does even inside a code span. `None` for a line outside any table.
+fn table_cells(line: &str) -> Option<Vec<&str>> {
+    let inner = line.trim_end().strip_prefix('|')?;
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let bytes = inner.as_bytes();
+    let mut cells = Vec::new();
+    let mut start = 0;
+    for (at, byte) in bytes.iter().enumerate() {
+        if *byte == b'|' && (at == 0 || bytes[at - 1] != b'\\') {
+            cells.push(inner[start..at].trim());
+            start = at + 1;
+        }
+    }
+    cells.push(inner[start..].trim());
+    Some(cells)
+}
+
+fn is_separator(cells: &[&str]) -> bool {
+    cells.len() == 2
+        && cells
+            .iter()
+            .all(|cell| !cell.is_empty() && cell.bytes().all(|byte| matches!(byte, b'-' | b':')))
+}
+
+// The rows of the one Key invariants table, and every structural failure.
+fn invariant_rows(doc: &str) -> (Vec<Row>, Vec<String>) {
+    let lines: Vec<&str> = doc.lines().collect();
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&index| lines[index] == INVARIANTS)
+        .collect();
+    let &[start] = starts.as_slice() else {
+        let found = starts.len();
+        let why = format!("{REFERENCE}: expected one `{INVARIANTS}` heading, found {found}");
+        return (Vec::new(), vec![why]);
+    };
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    let mut table = Table::Before;
+    for (index, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.starts_with("# ") || line.starts_with("## ") {
+            break;
+        }
+        let number = index + 1;
+        match (table, table_cells(line)) {
+            (Table::Before | Table::After, None) => {}
+            (Table::Before, Some(_)) => {
+                if *line != INVARIANTS_HEADER {
+                    errors.push(format!(
+                        "{REFERENCE}:{number}: the table header is not `{INVARIANTS_HEADER}`"
+                    ));
+                }
+                table = Table::Header;
+            }
+            (Table::Header, cells) => {
+                if !cells.is_some_and(|cells| is_separator(&cells)) {
+                    errors.push(format!(
+                        "{REFERENCE}:{number}: the header is not followed by a separator row"
+                    ));
+                }
+                table = Table::Rows;
+            }
+            (Table::Rows, None) => table = Table::After,
+            (Table::Rows, Some(cells)) => {
+                if let [invariant, owner] = cells[..] {
+                    rows.push(Row {
+                        line: number,
+                        invariant: invariant.to_owned(),
+                        owner: owner.to_owned(),
+                    });
+                } else {
+                    let found = cells.len();
+                    errors.push(format!(
+                        "{REFERENCE}:{number}: a row has {found} cells, not 2: escape a literal pipe as \\|"
+                    ));
+                }
+            }
+            (Table::After, Some(_)) => errors.push(format!(
+                "{REFERENCE}:{number}: a table row after the table ended"
+            )),
+        }
+    }
+    if rows.is_empty() {
+        errors.push(format!("{REFERENCE}: the Key invariants table has no rows"));
+    }
+    (rows, errors)
+}
+
+// The single-backtick code spans of one cell.
+fn code_spans(cell: &str) -> Result<Vec<&str>, String> {
+    let parts: Vec<&str> = cell.split('`').collect();
+    if parts.len() % 2 == 0 {
+        return Err("an unclosed code span".to_owned());
+    }
+    let spans: Vec<&str> = parts.into_iter().skip(1).step_by(2).collect();
+    if spans.contains(&"") {
+        return Err("an empty or double-backtick code span".to_owned());
+    }
+    Ok(spans)
+}
+
+fn owner_reference(span: &str) -> Result<Option<Reference<'_>>, String> {
+    let (head, item) = span
+        .split_once("::")
+        .map_or((span, None), |(head, item)| (head, Some(item)));
+    if item.is_some_and(|item| !is_item_path(item)) {
+        return Err("a malformed item path".to_owned());
+    }
+    if head.starts_with("src/") || head.starts_with("tests/") {
+        let rust = Path::new(head).extension().is_some_and(|ext| ext == "rs");
+        if !rust && item.is_none() {
+            return Ok(None);
+        }
+        let plain = head
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'.'));
+        if !rust || !plain {
+            return Err("a malformed file path".to_owned());
+        }
+        return Ok(Some(Reference::File(head, item)));
+    }
+    if let Some(stem) = head.strip_suffix(".rs") {
+        if is_ident(stem) {
+            return Ok(Some(Reference::Basename(stem, item)));
+        }
+        return Err("a file is spelled src/…, tests/… or a bare f.rs".to_owned());
+    }
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    if head.is_empty() {
+        Ok(Some(Reference::Continuation(item)))
+    } else if head == "crate" {
+        Ok(Some(Reference::Path(item, true)))
+    } else if is_ident(head) {
+        Ok(Some(Reference::Path(span, false)))
+    } else {
+        Err("not an owner path".to_owned())
+    }
+}
+
+fn declares(known: &Symbols, path: &str, item: &str) -> bool {
+    known.get(path).is_some_and(|items| items.contains(item))
+}
+
+fn src_files_ending<'a>(known: &'a Symbols, suffix: &'a str) -> impl Iterator<Item = &'a String> {
+    known
+        .keys()
+        .filter(move |path| path.starts_with("src/") && path.ends_with(suffix))
+}
+
+fn any_declares(known: &Symbols, paths: &[String], item: &str) -> bool {
+    paths.iter().any(|path| declares(known, path, item))
+}
+
+fn resolve(found: Reference<'_>, named: &mut Vec<String>, known: &Symbols) -> Result<(), String> {
+    match found {
+        Reference::File(path, item) => {
+            if !known.contains_key(path) {
+                return Err("no such file".to_owned());
+            }
+            if !named.iter().any(|seen| seen == path) {
+                named.push(path.to_owned());
+            }
+            match item {
+                Some(item) if !declares(known, path, item) => {
+                    Err(format!("{path} declares no {item}"))
+                }
+                _ => Ok(()),
+            }
+        }
+        Reference::Continuation(_) if named.is_empty() => {
+            Err("a continuation before the row names a file".to_owned())
+        }
+        Reference::Continuation(item) => {
+            if any_declares(known, named, item) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "no file the row named before it declares {item} (named: {})",
+                    named.join(", ")
+                ))
+            }
+        }
+        Reference::Basename(stem, item) => {
+            let suffix = format!("/{stem}.rs");
+            let candidates: Vec<&String> = src_files_ending(known, &suffix).collect();
+            if candidates.is_empty() {
+                return Err(format!("no src/…/{stem}.rs"));
+            }
+            match item {
+                Some(item) if !candidates.iter().any(|path| declares(known, path, item)) => {
+                    Err(format!("no src/…/{stem}.rs declares {item}"))
+                }
+                _ => Ok(()),
+            }
+        }
+        Reference::Path(path, rooted) => {
+            if (rooted && declares(known, "src/lib.rs", path))
+                || (!rooted && any_declares(known, named, path))
+            {
+                return Ok(());
+            }
+            let segments: Vec<&str> = path.split("::").collect();
+            for split in 1..segments.len() {
+                let suffix = format!("/{}.rs", segments[..split].join("/"));
+                let rest = segments[split..].join("::");
+                if src_files_ending(known, &suffix).any(|file| declares(known, file, &rest)) {
+                    return Ok(());
+                }
+            }
+            Err(format!(
+                "neither a file the row named before it nor a module file declares {path}"
+            ))
+        }
+    }
+}
+
+// `(rows, references)` checked, or every failure, each with its doc line and
+// the start of its row.
+fn invariant_errors(doc: &str, known: &Symbols) -> Result<(usize, usize), Vec<String>> {
+    let (rows, mut errors) = invariant_rows(doc);
+    let mut checked = 0;
+    for row in &rows {
+        let excerpt: String = row.invariant.chars().take(60).collect();
+        let line = row.line;
+        let mut fail = |what: &str| {
+            errors.push(format!("{REFERENCE}:{line}: {what} [row: {excerpt}…]"));
+        };
+        let spans = match code_spans(&row.owner) {
+            Ok(spans) => spans,
+            Err(why) => {
+                fail(&why);
+                continue;
+            }
+        };
+        let mut named = Vec::new();
+        for span in spans {
+            let outcome = owner_reference(span).and_then(|found| match found {
+                Some(found) => {
+                    checked += 1;
+                    resolve(found, &mut named, known)
+                }
+                None => Ok(()),
+            });
+            if let Err(why) = outcome {
+                fail(&format!("`{span}`: {why}"));
+            }
+        }
+        if named.is_empty() {
+            fail("the owner cell names no existing src/ or tests/ file");
+        }
+    }
+    if errors.is_empty() {
+        Ok((rows.len(), checked))
+    } else {
+        Err(errors)
+    }
+}
+
+// Every `src/` file, and every `tests/` file the doc names, with its items.
+fn tree_symbols(doc: &str) -> Symbols {
+    source_view::tree()
+        .iter()
+        .filter_map(|(path, text)| {
+            if path.starts_with("src/") {
+                Some((path.clone(), source_symbols(path, text)))
+            } else if doc.contains(path.as_str()) {
+                Some((path.clone(), rust_symbols(path, text)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// The first owner reference of each form in the table, as `(line, span)`.
+fn first_of_each_form(doc: &str) -> BTreeMap<&'static str, (usize, String)> {
+    let mut first = BTreeMap::new();
+    for row in invariant_rows(doc).0 {
+        for span in code_spans(&row.owner).unwrap_or_default() {
+            let form = match owner_reference(span) {
+                Ok(Some(Reference::File(_, Some(_)))) => "file item",
+                Ok(Some(Reference::Continuation(_))) => "continuation",
+                Ok(Some(Reference::Basename(_, Some(_)))) => "basename item",
+                Ok(Some(Reference::Path(..))) => "path",
+                _ => continue,
+            };
+            first.entry(form).or_insert((row.line, span.to_owned()));
+        }
+    }
+    first
+}
+
+// `doc` with the last occurrence of the code span `span` on line `line`
+// renamed to `<span>_gone`.
+fn renamed_on(doc: &str, line: usize, span: &str) -> String {
+    let quoted = format!("`{span}`");
+    let mut out = Vec::new();
+    for (index, text) in doc.lines().enumerate() {
+        if index + 1 == line {
+            let (before, after) = text
+                .rsplit_once(&quoted)
+                .unwrap_or_else(|| panic!("line {line} has no {quoted}"));
+            out.push(format!("{before}`{span}_gone`{after}"));
+        } else {
+            out.push(text.to_owned());
+        }
+    }
+    out.join("\n")
 }
 
 fn slug(heading: &str) -> String {
@@ -420,5 +797,249 @@ fn the_split_guards_reject_independent_planted_edits() {
             !owner_errors(changed, &sources).is_empty(),
             "missed mutation: {changed}"
         );
+    }
+}
+
+#[test]
+fn every_key_invariant_owner_resolves() {
+    let doc = read(REFERENCE);
+    let known = tree_symbols(&doc);
+    let (rows, checked) = invariant_errors(&doc, &known).unwrap_or_else(|errors| {
+        panic!(
+            "{} stale Key invariants owner(s):\n{}",
+            errors.len(),
+            errors.join("\n")
+        )
+    });
+    // An independent, simpler count: every table line of the section but the
+    // header and the separator is a parsed row.
+    let table_lines = doc
+        .lines()
+        .skip_while(|line| *line != INVARIANTS)
+        .skip(1)
+        .take_while(|line| !line.starts_with("## ") && !line.starts_with("# "))
+        .filter(|line| line.starts_with('|'))
+        .count();
+    assert_eq!(rows + 2, table_lines, "rows parsed vs table lines");
+    assert!(
+        checked >= rows,
+        "{rows} rows but {checked} owner references"
+    );
+    eprintln!("Key invariants: {rows} rows, {checked} owner references resolved");
+    // A scratch copy of the doc with one owner of each form renamed fails on
+    // exactly that owner.
+    let first = first_of_each_form(&doc);
+    for form in ["file item", "continuation"] {
+        assert!(first.contains_key(form), "no {form} owner in the table");
+    }
+    for (form, (line, span)) in first {
+        let errors = invariant_errors(&renamed_on(&doc, line, &span), &known)
+            .err()
+            .unwrap_or_default();
+        let needle = format!("{REFERENCE}:{line}: `{span}_gone`");
+        assert!(
+            errors.len() == 1 && errors[0].starts_with(&needle),
+            "{form} {span}: {errors:?}"
+        );
+    }
+}
+
+const ROW_ONE: &str = "| One `a \\| b` rule | `src/l2_model/watchdog.rs::done_progress` the episode, \
+    `::wait_progress` its rung, `Banner::Codex` the row; `tracked::AddressGuard::check`, \
+    `run.rs::resumable`, `end.rs` and `crate::run`; `ae doctor` and \
+    `src/l3_services/render/{core,worker}.txt` are prose |";
+const ROW_TWO: &str = "| Two rule | `src/l2_model/tracked.rs` (`AddressGuard::check`), pinned by `tests/it/floor.rs::pins_it` |";
+
+// Each planted edit of the fixture, and the text its failure must contain.
+const PLANTED: [(&str, &str, &str); 27] = [
+    (
+        "`::wait_progress`",
+        "`::wait_gone`",
+        ":8: `::wait_gone`: no file the row named",
+    ),
+    (
+        "::done_progress`",
+        "::done_gone`",
+        ":8: `src/l2_model/watchdog.rs::done_gone`: ",
+    ),
+    (
+        "watchdog.rs::",
+        "watchdogs.rs::",
+        ":8: `src/l2_model/watchdogs.rs::done_progress`: no such",
+    ),
+    (
+        "`::wait_progress`",
+        "`::step`",
+        ":8: `::step`: no file the row named before it",
+    ),
+    (
+        "`Banner::Codex`",
+        "`Banner::Claude`",
+        ":8: `Banner::Claude`: neither",
+    ),
+    (
+        "AddressGuard::check`,",
+        "AddressGuard::gone`,",
+        ":8: `tracked::AddressGuard::gone`",
+    ),
+    (
+        "`run.rs::resumable`",
+        "`run.rs::gone`",
+        ":8: `run.rs::gone`: no src/…/run.rs declares",
+    ),
+    (
+        "`run.rs::resumable`",
+        "`nope.rs::resumable`",
+        ":8: `nope.rs::resumable`: no src/",
+    ),
+    (
+        "`end.rs`",
+        "`ending.rs`",
+        ":8: `ending.rs`: no src/…/ending.rs",
+    ),
+    (
+        "`crate::run`",
+        "`crate::gone`",
+        ":8: `crate::gone`: neither",
+    ),
+    (
+        "::pins_it",
+        "::gone",
+        ":9: `tests/it/floor.rs::gone`: tests/it/floor.rs declares no",
+    ),
+    (
+        "`AddressGuard::check`)",
+        "`AddressGuard::gone`)",
+        ":9: `AddressGuard::gone`: neither",
+    ),
+    (
+        "`src/l2_model/tracked.rs` (`AddressGuard::check`), pinned by `tests/it/floor.rs::pins_it`",
+        "`ae doctor` only",
+        ":9: the owner cell names no existing",
+    ),
+    (
+        "rule | `src/l2_model/tracked.rs`",
+        "rule | `::AddressGuard`",
+        ":9: `::AddressGuard`: a continuation",
+    ),
+    ("`a \\| b`", "`a | b`", ":8: a row has 3 cells"),
+    ("| Owner |", "| Owners |", ":6: the table header is not"),
+    (
+        "|---|---|\n",
+        "",
+        ":7: the header is not followed by a separator",
+    ),
+    (
+        "## Key invariants",
+        "## Invariants",
+        "expected one `## Key invariants` heading, found 0",
+    ),
+    (
+        "## Config",
+        "## Key invariants",
+        "expected one `## Key invariants` heading, found 2",
+    ),
+    (
+        "\n## Config",
+        "\n| Late | `src/lib.rs::run` |\n## Config",
+        ":11: a table row after the table",
+    ),
+    (
+        "`::wait_progress` its",
+        "`::wait_progress its",
+        ":8: an unclosed code span",
+    ),
+    (
+        "`::wait_progress`",
+        "`::wait progress`",
+        ":8: `::wait progress`: a malformed item path",
+    ),
+    (
+        "watchdog.rs::done_progress`",
+        "watchdog.rs::`",
+        ":8: `src/l2_model/watchdog.rs::`: a malformed",
+    ),
+    (
+        "`run.rs::resumable`",
+        "`run.r::resumable`",
+        ":8: `run.r::resumable`: not an owner path",
+    ),
+    (
+        "`end.rs`",
+        "``end.rs``",
+        ":8: an empty or double-backtick code span",
+    ),
+    (
+        "`ae doctor`",
+        "`ae::doctor x`",
+        ":8: `ae::doctor x`: a malformed item path",
+    ),
+    (
+        "worker}.txt`",
+        "worker}.rs`",
+        ":8: `src/l3_services/render/{core,worker}.rs`: a malformed file",
+    ),
+];
+
+fn fixture() -> String {
+    format!(
+        "# Reference\n## Key invariants\n\nEach is one rule with one owner.\n\n\
+         {INVARIANTS_HEADER}\n|---|---|\n{ROW_ONE}\n{ROW_TWO}\n\n## Config\n"
+    )
+}
+
+fn fixture_known() -> Symbols {
+    [
+        ("src/lib.rs", "fn run() {}"),
+        (
+            "src/l2_model/watchdog.rs",
+            "fn done_progress() {} fn wait_progress() {} enum Banner { Codex }",
+        ),
+        (
+            "src/l2_model/tracked.rs",
+            "struct AddressGuard; impl AddressGuard { fn check() {} }",
+        ),
+        ("src/l3_services/run.rs", "fn resumable() {}"),
+        ("src/l5_ui/app/run.rs", "fn step() {}"),
+        ("src/l4_orchestration/lifecycle/end.rs", "fn finish() {}"),
+        ("tests/it/floor.rs", "#[test] fn pins_it() {}"),
+    ]
+    .into_iter()
+    .map(|(path, text)| (path.to_owned(), rust_symbols(path, text)))
+    .collect()
+}
+
+#[test]
+fn the_key_invariant_owner_pin_rejects_planted_edits() {
+    let known = fixture_known();
+    let doc = fixture();
+    // Row one has 7 references (the template path and `ae doctor` are prose),
+    // row two 3: the count pins that the parser reads every one.
+    assert_eq!(invariant_errors(&doc, &known), Ok((2, 10)));
+    for (from, to, needle) in PLANTED {
+        assert!(doc.contains(from), "the fixture lost {from}");
+        let errors = invariant_errors(&doc.replacen(from, to, 1), &known)
+            .err()
+            .unwrap_or_default();
+        assert!(
+            errors.iter().any(|error| error.contains(needle)),
+            "{from} -> {to}: wanted {needle:?}, got {errors:?}"
+        );
+    }
+    let empty = doc.replace(ROW_ONE, "").replace(ROW_TWO, "");
+    let errors = invariant_errors(&empty, &known).err().unwrap_or_default();
+    assert!(
+        errors.iter().any(|error| error.ends_with("has no rows")),
+        "{errors:?}"
+    );
+    // Renaming the first owner of each form fails on exactly that owner.
+    let first = first_of_each_form(&doc);
+    assert_eq!(first.len(), 4, "{first:?}");
+    for (form, (line, span)) in first {
+        let errors = invariant_errors(&renamed_on(&doc, line, &span), &known)
+            .err()
+            .unwrap_or_default();
+        assert_eq!(errors.len(), 1, "{form} {span}: {errors:?}");
+        assert!(errors[0].starts_with(&format!("{REFERENCE}:{line}: `{span}_gone`")));
     }
 }
