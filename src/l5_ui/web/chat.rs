@@ -1,7 +1,7 @@
 //! The orchestrator chat as the page shows it: the app panel's lane, each
 //! turn with the app's own header words. The state render is the outbound
-//! boundary: it keeps the newest [`ROWS_MAX`] rows and makes every text plain
-//! and capped with [`plain`] and [`words`], whatever built the chat.
+//! boundary: it keeps the newest [`ROWS_MAX`] rows and makes every text plain,
+//! masked and capped with [`plain`] and [`words`], whatever built the chat.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -18,6 +18,11 @@ pub const BODY_MAX: usize = 65_536;
 pub const WORDS_MAX: usize = 200;
 /// How many bytes of a row's body [`row_tags`] reads for `#slug` tags.
 pub const TAGS_WINDOW: usize = 512;
+/// What a served text shows in place of an `ae web` one-time code.
+pub const CODE_MASK: &str = "#c=\u{2026}";
+/// The fewest hex digits after `#c=` that [`mask`] reads as a code: a minted
+/// code is 32 (`auth::is_hex`).
+const CODE_HEX: usize = 32;
 
 /// One turn of the chat.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -146,30 +151,32 @@ fn window(body: &str) -> &str {
 }
 
 /// `text` with every control character but newline and tab removed, then
-/// cut at a character boundary to at most `cap` bytes; borrowed when nothing
-/// changes, which a byte scan decides (`0xC2` leads every C1 control, so it
-/// sends a text to the careful path).
+/// every one-time code masked ([`mask`]), then cut at a character boundary to
+/// at most `cap` bytes; borrowed when nothing changes, which a byte scan
+/// decides (`0xC2` leads every C1 control and `#c=` may start a code, so either
+/// sends a text to the careful path). The removal comes first, so a control
+/// character inside a code cannot hide it, and the cut comes last, so it never
+/// shows a code's first digits.
 #[must_use]
 pub fn plain(text: &str, cap: usize) -> Cow<'_, str> {
     if text.len() <= cap && clean(text.as_bytes()) {
         return Cow::Borrowed(text);
     }
-    let mut out = String::with_capacity(text.len().min(cap));
-    for ch in text
+    let kept: String = text
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
-    {
-        if out.len() + ch.len_utf8() > cap {
-            break;
-        }
-        out.push(ch);
+        .collect();
+    let masked = mask(&kept);
+    let mut end = masked.len().min(cap);
+    while !masked.is_char_boundary(end) {
+        end -= 1;
     }
-    Cow::Owned(out)
+    Cow::Owned(masked.get(..end).unwrap_or_default().to_owned())
 }
 
-/// Whether `bytes` holds no control byte but newline and tab, and no `0xC2`.
-/// An indexed loop, not an iterator chain: an unoptimized build scans the
-/// 32 MiB of a full chat in a fraction of the first-byte budget this way.
+/// Whether `bytes` holds no control byte but newline and tab, no `0xC2` and no
+/// `#c=`. An indexed loop, not an iterator chain: an unoptimized build scans
+/// the 32 MiB of a full chat in a fraction of the first-byte budget this way.
 fn clean(bytes: &[u8]) -> bool {
     let mut at = 0;
     while at < bytes.len() {
@@ -177,19 +184,53 @@ fn clean(bytes: &[u8]) -> bool {
         if (byte < 0x20 && byte != b'\n' && byte != b'\t') || byte == 0x7f || byte == 0xc2 {
             return false;
         }
+        if byte == b'#' && bytes.get(at + 1) == Some(&b'c') && bytes.get(at + 2) == Some(&b'=') {
+            return false;
+        }
         at += 1;
     }
     true
 }
 
-/// `text` as one line of words: every control character removed, then cut to
-/// at most [`WORDS_MAX`] characters.
+/// `text` as one line of words: every control character removed, every
+/// one-time code masked ([`mask`]), then cut to at most [`WORDS_MAX`]
+/// characters.
 #[must_use]
 pub fn words(text: &str) -> String {
-    text.chars()
-        .filter(|ch| !ch.is_control())
-        .take(WORDS_MAX)
-        .collect()
+    let kept: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    mask(&kept).chars().take(WORDS_MAX).collect()
+}
+
+/// `text` with each `#c=` that a run of at least [`CODE_HEX`] ASCII hex digits
+/// follows written as [`CODE_MASK`], the whole run replaced; borrowed when no
+/// code is found. A shorter run stays as written.
+#[must_use]
+pub fn mask(text: &str) -> Cow<'_, str> {
+    let mut out = String::new();
+    let (mut copied, mut at) = (0, 0);
+    while let Some(found) = text.get(at..).and_then(|rest| rest.find("#c=")) {
+        let digits = at + found + 3;
+        let run = text
+            .as_bytes()
+            .get(digits..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|byte| byte.is_ascii_hexdigit())
+            .count();
+        if run >= CODE_HEX {
+            out.push_str(text.get(copied..at + found).unwrap_or_default());
+            out.push_str(CODE_MASK);
+            copied = digits + run;
+            at = copied;
+        } else {
+            at = digits;
+        }
+    }
+    if copied == 0 {
+        return Cow::Borrowed(text);
+    }
+    out.push_str(text.get(copied..).unwrap_or_default());
+    Cow::Owned(out)
 }
 
 #[cfg(test)]

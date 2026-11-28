@@ -337,7 +337,7 @@ fn groups(tab: &mut Tab, rig: &Rig) -> Checked {
         r#"[
       ["needs","Needs you",["s2-a","smoke","t4-bare","t4-choice","t4-priority","t4-waiting"]],
       ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z"]],
-      ["other","Other",["t4-other","t4-pinned-other"]],
+      ["other","Unreadable",["t4-other","t4-pinned-other"]],
       ["rest","Quiet, parked, closed",[]]
     ]"#,
     )?;
@@ -369,7 +369,7 @@ dispatchEvent(new StorageEvent('storage', {key, storageArea: localStorage}));
       ["needs","Needs you",["s2-a","smoke","t4-bare","t4-choice","t4-priority","t4-waiting"]],
       ["moving","Moving",["calm","t4-moving-pin","t4-order-a","t4-order-z"]],
       ["pinned","Pinned",["t4-pinned","t4-pinned-other"]],
-      ["other","Other",["t4-other"]],
+      ["other","Unreadable",["t4-other"]],
       ["rest","Quiet, parked, closed",[]]
     ]"#,
     )?;
@@ -742,7 +742,7 @@ return {ok: document.activeElement === box() && saw.value === want, saw};
 /// Groups as the fresh T4 fixture shows them, with each list's name in the
 /// accessibility tree containing the group's label in any case: the headings'
 /// CSS uppercases the label, and Chrome names the list with the shown text.
-const LABELS: [&str; 4] = ["Needs you", "Moving", "Other", "Quiet, parked, closed"];
+const LABELS: [&str; 4] = ["Needs you", "Moving", "Unreadable", "Quiet, parked, closed"];
 
 /// One key, down and up, as a keyboard sends it: `text` makes the key press
 /// that activates a button.

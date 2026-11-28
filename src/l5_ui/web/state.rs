@@ -644,9 +644,11 @@ fn waits(out: &mut String, waits: &[Wait]) {
 }
 
 /// The `/api/topic/<slug>` document of `slug` in `read`, and its entity tag:
-/// the card's group, review time, unreadable text, each shown field with the
-/// record it came from, its waits and the records that show no field. `None`
-/// for a text that is no slug and for a slug no card has.
+/// the card's group, review time, the origin of its highest-ranked record
+/// (`null` for a card no record files), unreadable text, each shown field with
+/// the record it came from, its waits and the records that show no field, each
+/// with its raw text and its parts ([`record_fields`]). `None` for a text that
+/// is no slug and for a slug no card has.
 #[must_use]
 pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
     use std::fmt::Write as _;
@@ -667,6 +669,15 @@ pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
     string(&mut out, group.word());
     out.push_str(",\"reviewed\":");
     label(&mut out, &card.reviewed);
+    out.push_str(",\"origin\":");
+    match read.desk.newest.get(slug) {
+        Some(newest) => {
+            out.push('{');
+            origin(&mut out, newest);
+            out.push('}');
+        }
+        None => out.push_str("null"),
+    }
     out.push_str(",\"verdict\":");
     match crate::topic::verdicts(&card.slug, *group) {
         Some(lines) => {
@@ -721,6 +732,8 @@ pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
         origin(&mut out, &entry.origin);
         out.push_str(",\"text\":");
         body(&mut out, &entry.text);
+        out.push_str(",\"fields\":");
+        record_fields(&mut out, &entry.text);
         out.push('}');
     }
     out.push_str("]}");
@@ -745,6 +758,65 @@ fn field(out: &mut String, shown: Option<&Field>, short: bool) {
     out.push(',');
     origin(out, &shown.origin);
     out.push('}');
+}
+
+/// The parts of checkpoint record `text` as a JSON array of `[name, value]`
+/// pairs, a name as a label and a value as a body: the record split at each
+/// unescaped `|` as the card reads it ([`record_parts`]), each part at its first
+/// `:`, both sides trimmed of ASCII whitespace. An empty part is left out, a
+/// part without `:` has the name `""`, and every name is kept, also one the card
+/// does not read, such as `review`.
+fn record_fields(out: &mut String, text: &str) {
+    let trim = |text: &str| {
+        text.trim_matches(|ch: char| ch.is_ascii_whitespace())
+            .to_owned()
+    };
+    out.push('[');
+    let mut first = true;
+    for part in record_parts(text) {
+        let (name, value) = match part.split_once(':') {
+            Some((name, value)) => (trim(name), trim(value)),
+            None => (String::new(), trim(&part)),
+        };
+        if name.is_empty() && value.is_empty() {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('[');
+        label(out, &name);
+        out.push(',');
+        body(out, &value);
+        out.push(']');
+    }
+    out.push(']');
+}
+
+/// The parts of `text` split at each unescaped `|`, with `\|` read as `|` and
+/// `\\` as `\`; any other backslash stays as it is. The card's own split is
+/// private to the topic model; `record_parts_split_as_the_card_reads` pins
+/// this one to it.
+fn record_parts(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '|' => parts.push(std::mem::take(&mut part)),
+            '\\' => match chars.clone().next() {
+                Some(next @ ('|' | '\\')) => {
+                    part.push(next);
+                    chars.next();
+                }
+                _ => part.push('\\'),
+            },
+            _ => part.push(ch),
+        }
+    }
+    parts.push(part);
+    parts
 }
 
 /// A record's source session, its uuid and its time, as three labels.
@@ -1360,6 +1432,94 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let parsed = json::parse(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
         assert_eq!(array(parsed.get("history")).len(), 2, "{text}");
+    }
+
+    /// The page's split of a record reads every known field as the card does
+    /// (`topic::parse_record`): escaped pipes and backslashes, a name given
+    /// twice, an empty value, a part without `:` and space around both sides.
+    #[test]
+    fn record_parts_split_as_the_card_reads() {
+        let records = [
+            r"title: A \| B | state: quiet | what: a\\b\x | audit: kept",
+            r" next :  later  | next: latest | last: | src: c:\path | plain words",
+            r"close: done\| | | state:moving|title:x\\|y",
+        ];
+        for text in records {
+            let mut found = crate::topic::Fields::default();
+            for part in super::record_parts(text) {
+                let Some((name, value)) = part.split_once(':') else {
+                    continue;
+                };
+                let value = value.trim_matches(|ch: char| ch.is_ascii_whitespace());
+                let slot = match name.trim_matches(|ch: char| ch.is_ascii_whitespace()) {
+                    "title" => &mut found.title,
+                    "state" => &mut found.state,
+                    "what" => &mut found.what,
+                    "last" => &mut found.last,
+                    "next" => &mut found.next,
+                    "src" => &mut found.src,
+                    "close" => &mut found.close,
+                    _ => continue,
+                };
+                if !value.is_empty() {
+                    *slot = Some(value.to_owned());
+                }
+            }
+            assert_eq!(found, crate::topic::parse_record(text), "{text}");
+        }
+    }
+
+    /// docs/web.md: a card names the origin of its highest-ranked record, and
+    /// each earlier record carries its parts as `[name, value]` pairs: every
+    /// name kept, a part without `:` nameless, an empty part left out.
+    #[test]
+    fn a_topic_names_its_newest_origin_and_splits_each_earlier_record() {
+        fn pair(value: &Value) -> Vec<&str> {
+            match value {
+                Value::Arr(both) => both.iter().filter_map(Value::as_str).collect(),
+                other => panic!("no pair: {other:?}"),
+            }
+        }
+        let newest = Origin {
+            session: "orch".to_owned(),
+            uuid: "0b6f6a43-1f4e-4c1e-9a52-3d2b8c1e7f00".to_owned(),
+            at: "2026-11-23T10:09:00Z".to_owned(),
+        };
+        let mut card = Card::bare("alpha");
+        card.history = vec![Entry {
+            origin: newest.clone(),
+            rank: (0, 1),
+            text: r"title: A \| B |  | review: keep | loose words | audit: a\\b".to_owned(),
+        }];
+        let mut read = Read::default();
+        read.desk.groups = vec![(Group::Quiet, vec![card, Card::bare("bare")])];
+        read.desk.newest.insert("alpha".to_owned(), newest);
+        let (bytes, _) = topic(&read, "alpha").unwrap_or_else(|| panic!("no topic alpha"));
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let parsed = json::parse(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+        let origin = parsed.get("origin");
+        let word = |name: &str| origin.and_then(|value| value.get_str(name));
+        assert_eq!(word("session"), Some("orch"), "{text}");
+        assert_eq!(
+            word("uuid"),
+            Some("0b6f6a43-1f4e-4c1e-9a52-3d2b8c1e7f00"),
+            "{text}"
+        );
+        assert_eq!(word("at"), Some("2026-11-23T10:09:00Z"), "{text}");
+        let history = array(parsed.get("history"));
+        let fields = array(history.first().and_then(|each| each.get("fields")));
+        let pairs: Vec<Vec<&str>> = fields.iter().map(pair).collect();
+        let want = [
+            ["title", "A | B"],
+            ["review", "keep"],
+            ["", "loose words"],
+            ["audit", r"a\b"],
+        ];
+        assert_eq!(pairs, want, "{text}");
+        let (bytes, _) = topic(&read, "bare").unwrap_or_else(|| panic!("no topic bare"));
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let parsed = json::parse(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+        assert!(matches!(parsed.get("origin"), Some(Value::Null)), "{text}");
     }
 
     /// Any change of place opens a fresh console, even with the same name and

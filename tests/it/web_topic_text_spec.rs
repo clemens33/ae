@@ -77,6 +77,7 @@ fn snapshot() -> Read {
     };
     Read {
         desk: Column {
+            newest: BTreeMap::new(),
             groups: vec![
                 (Group::NeedsYou, vec![closed]),
                 (Group::Moving, Vec::new()),

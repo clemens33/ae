@@ -51,7 +51,13 @@ changes every 2 s while it is visible and every 30 s while it is hidden; an unch
 a `304` and costs no render.
 
 Every text from an agent is shown as plain text, never as markup: control characters are removed,
-a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
+a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters. An `ae web` one-time
+code in any served text, `#c=` followed by 32 or more hex digits, is shown as `#c=…`, so neither
+`GET /api/state` nor `GET /api/topic/<slug>` carries it. The journals, transcripts and memos keep
+their text unchanged.
+
+While the chat shows its newest turn, it stays at the newest turn when a turn arrives, the window
+is resized or a narrow screen switches views. Scrolled up, it stays where it is.
 
 ## Topic side panel
 
@@ -63,15 +69,16 @@ Below it come these groups; a topic is in the first one that fits, and an empty 
    `needs`.
 2. **Moving:** the state `moving`.
 3. **Pinned:** a pinned topic that fits no group above.
-4. **Other:** a filed topic (one with a title, a state or a review) whose state word cannot be
-   read.
+4. **Unreadable:** a filed topic (one with a title, a state or a review) whose state word cannot
+   be read.
 5. **Quiet, parked, closed:** every other topic.
 
 Inside a group the topic with the newest activity comes first: the later of its last review and the
 newest chat turn that tags it. The last group starts folded. Its heading opens or folds it, and a
 reload folds it again; while folded, it still shows the selected topic. A row shows the state dot,
 the title in at most two lines (the row's tooltip has the whole title, the slug, the state and the
-counts), the unread number and the number of open DECIDE items that tag the topic.
+counts), the unread number and the number of open DECIDE items that tag the topic. Opening the
+last group scrolls it into view when it is cut off: whole when it fits, else its heading at the top.
 
 Selecting a row shows the topic's chat, tags the draft and shows its card on the right. A topic in
 the last group also opens from All, the Revisit line or the strip. A selected topic stays selected
@@ -111,7 +118,8 @@ last group when its button has focus.
   every one.
 - **All** shows the whole chat. Its panel holds the new-topic line first, then the Revisit line,
   every DECIDE item under **Decisions**, **All topics** with a search over slug and title, and the
-  desk's gaps. A decision that tags no topic is answered there; a tagged one is listed with a link
+  desk's gaps. **All topics** lists every topic in the side panel's order: its groups, the folded
+  one too, each newest activity first. A decision that tags no topic is answered there; a tagged one is listed with a link
   to each tag's topic.
 - A selected topic shows the chat turns tagged with it, and the right panel its card with the
   decisions that wait on it. A turn is tagged with each `#<slug>` of a desk topic in the first 512
@@ -124,9 +132,13 @@ last group when its button has focus.
   close: …`; `\|` is a literal pipe and `\\` a backslash, other names are ignored. The states are
   `needs`, `moving`, `quiet`, `parked` and `closed`.
 - The memos come from the orchestrator seat's session and from every kept archive that the seat
-  published, renamed or not. Each field shows the newest record that carries it, with that
-  record's session and time; later incarnations rank above earlier ones and, within one memo,
-  later lines above earlier ones. The other records are the card's history.
+  published, renamed or not. Each field shows the newest record that carries it; later
+  incarnations rank above earlier ones and, within one memo, later lines above earlier ones. The
+  other records are the card's history, **Earlier records**, each shown as its fields, one
+  `name: value` line per field.
+- The card's header names the session and time of the topic's newest record once; its tooltip
+  holds that incarnation's uuid. A field or an earlier record names its own session and time only
+  when its record has another origin than the header's.
 - **Last reviewed** is the time of the topic's newest record, whatever it carries.
 - A topic needs you when its state is `needs` or when something waits for you on it: a DECIDE item
   on the orchestrator's board, or your own open ask from `ae chat`, whose text tags it with
@@ -256,6 +268,9 @@ verbatim.
     It does not answer the item.
 - **Reserved items.** An item tagged `#reserved` is shown and cannot be answered here: confirm it
   in the orchestrator pane or on Telegram. This is the page's rule, not a server one.
+- **No proven orchestrator.** Without a proven orchestrator, **Pick the recommended**, **Talk it
+  over**, the talk line's **Send** and a card's **Close with one line** are off, and they say the
+  composer's words, `No proven orchestrator to send to`. An open attempt keeps **Check again**.
 - **Ask for a new topic.** The box at the top of All's panel takes a title of 1 to 80 scalar values
   and suggests a slug: umlauts folded, lowercase, every other run of characters one hyphen, at most
   48 characters. **Edit slug** turns the slug into a field of its own, and it stays one. The line is
@@ -309,6 +324,9 @@ outcome, and does not resend automatically. An older charter may still read the 
   deviation from [RFC 9112 §3.2.2](https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2), which
   asks a server to accept it, because no browser sends absolute-form to an origin. A `GET` whose
   `Content-Length` is positive gets `400`, or `413` when the length is over the 64 KiB body limit.
+- The page's icon is `/assets/icon.svg`, a static image served like the other files, so the
+  browser asks for no `/favicon.ico` and logs no error for it. A `data:` icon would break the
+  content security policy (`img-src 'self'`). Every form field has a name.
 - The page's three library files (Preact 11.2.0, its hooks and htm 3.1.1) are vendored and pinned
   by SHA-256 in `src/l5_ui/web/assets/VENDOR.md`; there is no build step. Their licence texts
   (MIT for Preact, Apache-2.0 for htm) are served unchanged at `/assets/licenses.txt`, which needs
@@ -387,9 +405,15 @@ when `AE_WEB_SMOKE=1`, which only the recipe sets.
   group, the columns at 1440, 1000 and 760 px, and the three views at 360x740. The `t4c-*` cases
   end them: the selected topic that closes shows All, and the one whose last wait ends stays
   selected in the folded group.
-- The Topics accessibility cases finish the run (`t5-*`). They check the landmark and named
+- The Topics accessibility cases follow (`t5-*`). They check the landmark and named
   lists in Chrome's accessibility tree, the fold and current row, and keyboard navigation and
   activation. They check focus when a row moves or leaves and when the draft has focus.
+- The desktop polish cases finish the run on a listener of their own (`p1-*`): the chat's newest
+  turn across a resize and a view switch, the opened last group in view, **All topics** in the
+  panel's order, earlier records as fields, the card's provenance once, a name on every form
+  field, and the send controls off without a proven orchestrator. Every cell's console check
+  counts a `/favicon.ico` error like any other, and each wide cell checks the page's icon
+  (`favicon`).
 - Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
 
 `just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the

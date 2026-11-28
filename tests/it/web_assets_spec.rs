@@ -244,3 +244,22 @@ fn application_network_calls_use_the_api_prefix_and_literal_endpoint_names() {
         assert!(!app.contains(forbidden), "unexpected URL use: {forbidden}");
     }
 }
+
+#[test]
+fn the_index_names_the_embedded_same_origin_icon() {
+    let index = source("index.html");
+    assert!(
+        index
+            .split('<')
+            .filter_map(|text| text.split_once('>'))
+            .filter(|(tag, _)| tag.starts_with("link "))
+            .map(|(tag, _)| compact(tag))
+            .any(|tag| tag.contains(r#"rel="icon""#) && tag.contains(r#"href="/assets/icon.svg""#)),
+        "index must link the local desktop icon"
+    );
+    let served = ae::web::assets::find("/assets/icon.svg").expect("embedded desktop icon");
+    assert_eq!(served.content_type.split(';').next(), Some("image/svg+xml"));
+    let file = source("icon.svg");
+    assert!(file.trim_start().starts_with("<svg"));
+    assert_eq!(served.bytes, file.as_bytes());
+}

@@ -577,6 +577,10 @@ fn live_web_smoke() {
         let ran = web_side_panel_browser_spec::check_t5(&mut tab);
         failure = later_stage(&mut tab, out.as_deref(), ran);
     }
+    if failure.is_none() {
+        let ran = web_p1_browser_spec::check_p1(&mut tab);
+        failure = later_stage(&mut tab, out.as_deref(), ran);
+    }
     // A checked failure ends Chrome the way a pass does, before it is told:
     // the kill on drop stays for a protocol failure that panicked mid-cell.
     tab.close();
@@ -588,7 +592,7 @@ fn live_web_smoke() {
     println!(
         "web-smoke PASS: 4 cells, sends in the one send cell, then the signed-out stage, the \
          compose cases, the topic tab cases, the tab lifecycle cases, the side panel cases and \
-         the side panel's accessibility and keyboard cases"
+         the side panel's accessibility and keyboard cases, then desktop polish"
     );
 }
 
@@ -630,6 +634,9 @@ fn run_cell(tab: &mut Tab, rig: &Rig, cell: Cell, url: Option<&str>, send: bool)
         return Err(Failed::new("modules", format!("the load failed: {error}")));
     }
     tab.until("modules", READY, "", PAGE_WAIT)?;
+    if cell.wide() {
+        web_p1_browser_spec::favicon(tab, cell)?;
+    }
     tab.flush();
     if !tab.problems.is_empty() {
         return Err(Failed::new("modules", tab.problems.join("; ")));
@@ -1069,7 +1076,7 @@ impl Tab {
             Some("Log.entryAdded") => {
                 let entry = params.get("entry").cloned().unwrap_or(Value::Null);
                 let url = entry.get_str("url").unwrap_or_default();
-                if entry.get_str("level") == Some("error") && !url.ends_with("/favicon.ico") {
+                if entry.get_str("level") == Some("error") {
                     self.problems.push(format!(
                         "console {}: {} {url}",
                         entry.get_str("source").unwrap_or_default(),
@@ -1449,3 +1456,6 @@ mod web_signedout_browser;
 
 #[path = "web_side_panel_browser_spec.rs"]
 mod web_side_panel_browser_spec;
+
+#[path = "web_p1_browser_spec.rs"]
+mod web_p1_browser_spec;

@@ -269,6 +269,7 @@ mod watchdog_step_spec;
 mod web_assets_spec;
 mod web_auth_spec;
 mod web_claim_spec;
+mod web_desktop_text_spec;
 mod web_http_spec;
 mod web_licenses_spec;
 mod web_lifecycle_spec;

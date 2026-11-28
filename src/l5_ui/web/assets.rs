@@ -19,6 +19,7 @@ const HTML: &str = "text/html; charset=utf-8";
 const SCRIPT: &str = "text/javascript; charset=utf-8";
 const STYLE: &str = "text/css; charset=utf-8";
 const TEXT: &str = "text/plain; charset=utf-8";
+const IMAGE: &str = "image/svg+xml";
 
 /// Each vendored package's licence: its heading and its upstream bytes.
 const LICENCES: [(&str, &[u8]); 2] = [
@@ -63,6 +64,7 @@ pub fn find(path: &str) -> Option<Asset> {
         "/assets/preact.mjs" => (SCRIPT, include_bytes!("assets/preact.mjs")),
         "/assets/hooks.mjs" => (SCRIPT, include_bytes!("assets/hooks.mjs")),
         "/assets/htm.mjs" => (SCRIPT, include_bytes!("assets/htm.mjs")),
+        "/assets/icon.svg" => (IMAGE, include_bytes!("assets/icon.svg")),
         "/assets/licenses.txt" => (TEXT, licences()),
         _ => return None,
     };

@@ -88,6 +88,9 @@ pub struct Column {
     /// What could not be read, one line each.
     pub gaps: Vec<String>,
     pub skipped: Skipped,
+    /// Where each slug's highest-ranked record came from: the record a card
+    /// names in its header.
+    pub newest: BTreeMap<String, topic::Origin>,
 }
 
 /// What lives as long as the listener: the memos once seen over
@@ -149,8 +152,46 @@ pub fn collect(root: &Path, sticky: &mut Sticky) -> Column {
         decide_waits(seat, &mut column);
         ask_waits(seat, &mut column);
     }
+    column.newest = newest(&memos);
     column.groups = arrange(topic::cards(&memos), &column.waits);
     column
+}
+
+/// The origin of each slug's highest-ranked record of `sources`, ranked as
+/// [`topic::entries`] ranks: a later incarnation above an earlier one and,
+/// within one memo, a later record above an earlier one, whatever their
+/// timestamps say. One pass that keeps no record text.
+fn newest(sources: &[topic::Source]) -> BTreeMap<String, topic::Origin> {
+    let mut found: BTreeMap<String, ((usize, usize), &topic::Source, &[u8])> = BTreeMap::new();
+    for source in sources {
+        for (place, record) in crate::memo::records(&source.memo).enumerate() {
+            let Some(slug) = std::str::from_utf8(record.topic)
+                .ok()
+                .and_then(topic::slug_of)
+            else {
+                continue;
+            };
+            let rank = (source.incarnation, place);
+            match found.get_mut(slug) {
+                Some(kept) if kept.0 < rank => *kept = (rank, source, record.ts),
+                Some(_) => {}
+                None => {
+                    found.insert(slug.to_owned(), (rank, source, record.ts));
+                }
+            }
+        }
+    }
+    found
+        .into_iter()
+        .map(|(slug, (_, source, ts))| {
+            let origin = topic::Origin {
+                session: source.session.clone(),
+                uuid: source.uuid.clone(),
+                at: String::from_utf8_lossy(ts).into_owned(),
+            };
+            (slug, origin)
+        })
+        .collect()
 }
 
 /// The six groups in [`Group::ALL`] order, each with its cards by slug but
@@ -463,6 +504,54 @@ mod tests {
     use super::{Column, Sticky, Wait, WaitKind, arrange, collect, is_reserved, topic_tags};
     use crate::json::Value;
     use crate::topic::{self, Group};
+
+    /// docs/web.md: a card's header names its highest-ranked record. A later
+    /// incarnation ranks above an earlier one at the same timestamp, and within
+    /// one memo a later record ranks above an earlier one with a newer
+    /// timestamp. The sources' order does not matter, and the result is the
+    /// first record `topic::entries` ranks for every slug.
+    #[test]
+    fn newest_ranks_by_incarnation_and_place_not_by_timestamp() {
+        let source = |session: &str, incarnation: usize, memo: &str| topic::Source {
+            session: session.to_owned(),
+            uuid: format!("uuid-{session}"),
+            incarnation,
+            memo: memo.as_bytes().to_vec(),
+        };
+        let sources = [
+            source(
+                "archive",
+                0,
+                "2026-11-24T10:00:00Z\tlead\ttopic-tie\tstate: quiet\n\
+                 2026-11-24T12:00:00Z\tlead\ttopic-order\tstate: moving\n",
+            ),
+            source(
+                "live",
+                1,
+                "2026-11-24T10:00:00Z\tlead\ttopic-tie\tstate: moving\n\
+                 2026-11-24T11:00:00Z\tlead\ttopic-order\ttitle: First\n\
+                 2026-11-24T09:00:00Z\tlead\ttopic-order\taudit: later line, older time\n\
+                 2026-11-24T13:00:00Z\tlead\ttopic-other\tstate: quiet\n",
+            ),
+        ];
+        let newest = super::newest(&sources);
+        let at = |slug: &str| {
+            newest
+                .get(slug)
+                .map(|origin| (origin.session.as_str(), origin.at.as_str()))
+        };
+        assert_eq!(at("tie"), Some(("live", "2026-11-24T10:00:00Z")));
+        assert_eq!(at("order"), Some(("live", "2026-11-24T09:00:00Z")));
+        assert_eq!(at("other"), Some(("live", "2026-11-24T13:00:00Z")));
+        assert_eq!(newest.len(), 3);
+        let [archive, live] = sources.clone();
+        assert_eq!(super::newest(&[live, archive]), newest);
+        let entries = topic::entries(&sources);
+        for (slug, origin) in &newest {
+            let first = entries.get(slug).and_then(|list| list.first());
+            assert_eq!(first.map(|entry| &entry.origin), Some(origin), "{slug}");
+        }
+    }
 
     /// A scratch state root removed when it drops.
     struct Scratch(std::path::PathBuf);

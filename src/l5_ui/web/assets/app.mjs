@@ -16,6 +16,9 @@ const NO_SESSION = "open the newest link from ae web";
 const SEND_AGAIN_MS = 1000;
 const SEND_TRIES = 120;
 const UNREACHABLE = "ae web is not reachable";
+// Why nothing can be sent: the composer's words, also on every control that
+// would send without a route.
+const NO_ROUTE = "No proven orchestrator to send to";
 // The one thing the browser keeps beyond the session: the slugs of the pinned topics, nothing else.
 const PINS_KEY = "ae-web-pins";
 const PINS_MAX = 32;
@@ -243,18 +246,40 @@ function Row({ row }) {
 }
 
 // The shared chat; with a topic selected, the turns the server tagged with it.
+// While the newest turn is in view the stream stays at it: after a new turn, a
+// resize and a view switch alike. A hidden stream (a narrow screen's other
+// view) reads no scroll, so hiding it never lets go of the newest turn.
 function Stream({ chat, tag }) {
+  const box = useRef(null);
   const end = useRef(null);
   const pinned = useRef(true);
   const onScroll = useCallback((event) => {
     const box = event.currentTarget;
-    pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+    if (box.clientHeight) {
+      pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+    }
   }, []);
   useEffect(() => {
     if (pinned.current && end.current) {
       end.current.scrollIntoView({ block: "end" });
     }
   }, [chat]);
+  useEffect(() => {
+    const stream = box.current;
+    if (!stream || typeof ResizeObserver !== "function") {
+      return undefined;
+    }
+    const follow = new ResizeObserver(() => {
+      if (pinned.current && stream.clientHeight) {
+        stream.scrollTop = stream.scrollHeight;
+      }
+    });
+    follow.observe(stream);
+    if (stream.firstElementChild) {
+      follow.observe(stream.firstElementChild);
+    }
+    return () => follow.disconnect();
+  }, []);
   const rows = tag ? chat.rows.filter((row) => (row.tags || []).includes(tag)) : chat.rows;
   const items = [];
   let shown = "";
@@ -266,7 +291,7 @@ function Stream({ chat, tag }) {
     }
     items.push(html`<${Row} key=${row.key} row=${row} />`);
   }
-  return html`<div class="stream" onScroll=${onScroll}>
+  return html`<div class="stream" ref=${box} onScroll=${onScroll}>
     <div class="inner">
       ${chat.cut > 0 ? html`<p class="gap">${chat.cut} older turns are not shown.</p>` : null}
       ${chat.coverage.map((gap) => html`<p class="gap" key=${"c" + gap}>coverage incomplete: ${gap}</p>`)}
@@ -328,7 +353,7 @@ const SIDE_GROUPS = [
   { id: "needs", label: "Needs you", has: (row) => row.state === "needs" || row.waits.length > 0 },
   { id: "moving", label: "Moving", has: (row) => row.state === "moving" },
   { id: "pinned", label: "Pinned", has: (row, pins) => pins.includes(row.slug) },
-  { id: "other", label: "Other", has: (row) => row.state === null && filed(row) },
+  { id: "other", label: "Unreadable", has: (row) => row.state === null && filed(row) },
   { id: "rest", label: "Quiet, parked, closed", fold: true, has: () => true },
 ];
 const groupOf = (row, pins) => SIDE_GROUPS.find((group) => group.has(row, pins));
@@ -415,29 +440,35 @@ function moveSideFocus(event) {
   rows[rows.indexOf(target) + step]?.focus();
 }
 
-// How far the panel has to scroll to show its selected row whole: below zero up,
-// above zero down, zero when the row is in view.
-function cutOff(panel) {
-  const row = panel.querySelector(CURRENT_SIDE_ROW);
-  if (!row) {
+// How far the panel has to scroll to show `element` whole: below zero up, above
+// zero down, zero when it is in view. One taller than the panel gets its top
+// shown.
+function offBy(panel, element) {
+  if (!element) {
     return 0;
   }
   const box = panel.getBoundingClientRect();
-  const own = row.getBoundingClientRect();
+  const own = element.getBoundingClientRect();
   const top = own.top - box.top;
   const bottom = own.bottom - box.bottom;
   return top < 0 ? top : Math.max(0, Math.min(bottom, top));
 }
 
+// How far the panel has to scroll to show its selected row whole.
+const cutOff = (panel) => offBy(panel, panel.querySelector(CURRENT_SIDE_ROW));
+
 // All first, then the groups; `active` is "" for All. The panel scrolls to show
 // the selected row when the selection changes, and when a change would push a row
 // it showed whole out of view. A row the owner scrolled away from stays away.
 // While a narrow screen hides the panel, it neither scrolls nor reads a scroll.
-// Whether the last group is open lives in this page only.
+// Whether the last group is open lives in this page only. Opening it scrolls the
+// group into view when it is cut off: whole when it fits, else its heading at
+// the top.
 function SidePanel({ lists, unread, active, select }) {
   const panel = useRef(null);
   const follow = useRef(true);
   const last = useRef(active);
+  const opened = useRef(false);
   const [unfolded, setUnfolded] = useState(false);
   const focused = document.activeElement;
   const hadFocus = panel.current?.contains(focused);
@@ -452,9 +483,15 @@ function SidePanel({ lists, unread, active, select }) {
       follow.current = true;
     }
     show();
+    const nav = panel.current;
+    if (opened.current && nav?.clientHeight) {
+      const group = nav.querySelector("[data-action=toggle-group]")?.closest(".sgroup");
+      nav.scrollTop += offBy(nav, group);
+      follow.current = Math.abs(cutOff(nav)) <= 1;
+    }
+    opened.current = false;
     // A row can move to a new list and be remounted. Recover focus only if
     // the render left it on the document and the panel is still visible.
-    const nav = panel.current;
     if (hadFocus && nav?.clientHeight && document.activeElement === document.body) {
       const same = focused.dataset.action === "toggle-group"
         ? nav.querySelector("[data-action=toggle-group]")
@@ -525,7 +562,10 @@ function SidePanel({ lists, unread, active, select }) {
               aria-expanded=${unfolded ? "true" : "false"}
               aria-controls=${list}
               onMouseDown=${(down) => down.preventDefault()}
-              onClick=${() => setUnfolded(!unfolded)}
+              onClick=${() => {
+                opened.current = !unfolded;
+                setUnfolded(!unfolded);
+              }}
             >${label}</button>` : label}
         </h2>
         <ul id=${list} aria-labelledby=${heading}>${rows.map(topic)}</ul>
@@ -537,15 +577,17 @@ function SidePanel({ lists, unread, active, select }) {
 // The All row's panel. The new-topic line comes first, above every list that
 // grows on its own, so no control moves under the pointer. Every decision is
 // listed; one that tags no topic is answered here, a tagged one on its topic's card.
-function AllPanel({ desk, open, revisit, lines, route }) {
+// All topics lists every topic in the side panel's order (`lists`): its groups,
+// the folded one too, each newest activity first.
+function AllPanel({ desk, lists, open, revisit, lines, route }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const all = [];
-  for (const group of desk.groups) {
-    for (const row of group.rows) {
+  for (const { topics } of lists) {
+    for (const { row, server } of topics) {
       const words = (row.slug + " " + (row.title || "")).toLowerCase();
       if (!needle || words.includes(needle)) {
-        all.push(html`<${TopicRow} key=${"a" + row.slug} row=${row} group=${group.group} choose=${open} />`);
+        all.push(html`<${TopicRow} key=${"a" + row.slug} row=${row} group=${server} choose=${open} />`);
       }
     }
   }
@@ -601,6 +643,7 @@ function AllPanel({ desk, open, revisit, lines, route }) {
     <div class="grp"><span>All topics</span><span>${all.length}</span></div>
     <input
       type="search"
+      name="topic-search"
       placeholder="Search topics"
       aria-label="Search topics"
       value=${query}
@@ -635,21 +678,31 @@ const WAITS = [
   ["ask", "Owed to you"],
 ];
 
-// A record's source: its session, its incarnation's uuid and its time.
+// A record's source: its session and its time; the tooltip holds its
+// incarnation's uuid and the time as written.
 function Source({ origin }) {
-  return html`<span class="src" title=${origin.at}>
-    ${origin.session} · ${origin.uuid} · ${when(origin.at)}
+  return html`<span class="src" title=${origin.uuid + " · " + origin.at}>
+    ${origin.session} · ${when(origin.at)}
   </span>`;
 }
 
-// The selected topic's panel: its card and the decisions that wait on it.
+// Whether two records come from the same session, incarnation and time.
+const sameOrigin = (one, other) =>
+  Boolean(one && other) && one.session === other.session && one.uuid === other.uuid && one.at === other.at;
+
+// The selected topic's panel: its card and the decisions that wait on it. The
+// header names the source of the newest record once; a field or an earlier
+// record names its own only when it differs from that one.
 function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned, full, pin }) {
   const fields = card.fields;
+  const origin = card.origin || null;
+  const own = (record) => (sameOrigin(record, origin) ? null : html`<${Source} origin=${record} />`);
   // Only Quiet, Moving and Parked cards can be closed from here; a card with a
   // wait shows the button disabled and says why, a closed or unreadable one
   // shows none.
   const closable = Boolean(card.verdict);
   const blocked = card.group === "needs_you";
+  const stranded = closable && !route;
   return html`<aside class="panel card" data-panel="topic" data-slug=${card.slug} aria-label="Topic">
     <div class="hd">
       <h2>${fields.title ? fields.title.value : card.slug}</h2>
@@ -664,7 +717,11 @@ function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned,
       >${pinned ? "Unpin topic" : "Pin topic"}</button>
     </div>
     ${full ? html`<p class="note">${PINS_MAX} topics are pinned; unpin one first.</p>` : null}
-    <p class="sub">#${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
+    <p class="sub">
+      #${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}${origin
+        ? html` · <span data-role="card-origin" title=${origin.uuid}>${origin.session}</span>`
+        : null}
+    </p>
     ${WAITS.map(([kind, name]) => {
       const waits = card.waits.filter((wait) => wait.kind === kind);
       return waits.length
@@ -692,21 +749,31 @@ function Card({ card, closeLine, outcome, lines, route, decide, compose, pinned,
       : null}
     ${FIELDS.filter(([key]) => fields[key]).map(
       ([key, name]) => html`<div class="fld" key=${key}>
-        <h3><span>${name}</span><${Source} origin=${fields[key]} /></h3>
+        <h3><span>${name}</span>${own(fields[key])}</h3>
         <p class="raw">${fields[key].value}</p>
       </div>`,
     )}
     ${card.history.length
       ? html`<div class="fld">
           <h3>Earlier records</h3>
-          <ul>${card.history.map((entry, at) => html`<li key=${"h" + at}><${Source} origin=${entry} /> <span class="raw">${entry.text}</span></li>`)}</ul>
+          <ul class="hist">${card.history.map(
+            (entry, at) => html`<li key=${"h" + at}>
+              ${own(entry)}
+              ${entry.fields.map(
+                ([name, value], n) => html`<div class="raw" key=${n}>${name ? html`<span class="mute">${name + ": "}</span>` : null}${value}</div>`,
+              )}
+            </li>`,
+          )}</ul>
         </div>`
       : null}
     ${closable || blocked
       ? html`<div class="cact">
-          <button class="btn cl-line" disabled=${!closable} onClick=${closeLine}>Close with one line</button>
+          <button class="btn cl-line" disabled=${!closable || !route} title=${stranded ? NO_ROUTE : null} onClick=${closeLine}>
+            Close with one line
+          </button>
         </div>`
       : null}
+    ${stranded ? html`<p class="note" data-role="no-route">${NO_ROUTE}</p>` : null}
     ${outcome ? html`<p class="note cl-note" role="status">${outcome}</p>` : null}
     ${blocked
       ? html`<p class="note">This topic is under Needs you, so it cannot be closed from here.</p>`
@@ -992,7 +1059,7 @@ function makeLines(live, redraw) {
         return;
       }
       if (!t.body && !live.route) {
-        t.note = line("error", "No proven orchestrator to send to");
+        t.note = line("error", NO_ROUTE);
         redraw();
         return;
       }
@@ -1072,7 +1139,7 @@ function makeLines(live, redraw) {
         return;
       }
       if (!live.route) {
-        r.note = line("error", "No proven orchestrator to send to");
+        r.note = line("error", NO_ROUTE);
         redraw();
         return;
       }
@@ -1411,7 +1478,14 @@ function DecisionAnswer({ lines, route, item, text, decision, compose, mark, tag
           <div class="dq-row">
             ${answer}
             ${choices.recommend
-              ? html`<button type="button" class="dq-btn" data-action="recommend" disabled=${!idle} onClick=${() => pick(choices.recommend)}>
+              ? html`<button
+                  type="button"
+                  class="dq-btn"
+                  data-action="recommend"
+                  disabled=${!idle || !route}
+                  title=${route ? null : NO_ROUTE}
+                  onClick=${() => pick(choices.recommend)}
+                >
                   Pick the recommended
                 </button>`
               : null}
@@ -1421,6 +1495,7 @@ function DecisionAnswer({ lines, route, item, text, decision, compose, mark, tag
             ref=${input}
             class="dq-input"
             type="text"
+            name=${"answer-" + item}
             data-field="answer"
             aria-label=${"Answer to " + item}
             placeholder="Answer"
@@ -1447,20 +1522,22 @@ function DecisionAnswer({ lines, route, item, text, decision, compose, mark, tag
     ${aligned
       ? html`<${LineActions} lines=${lines} id=${key} r=${r} pasted=${pasted} said=${lines.said(item)} focus=${choices ? form : input} />`
       : html`<p class="dq-hint" data-role="problem">This text is not the board's now: waiting for the next refresh.</p>`}
-    ${aligned ? html`<${Talk} lines=${lines} item=${item} tag=${tag} />` : null}
+    ${aligned ? html`<${Talk} lines=${lines} route=${route} item=${item} tag=${tag} />` : null}
+    ${aligned && !route ? html`<p class="dq-hint" data-role="no-route">${NO_ROUTE}</p>` : null}
   </form>`;
 }
 
 // Talk about one decision instead of answering it: its own line, its own
 // status and Check again. It sits after the answer's status in the form, and
-// Enter in it never presses Answer.
-function Talk({ lines, item, tag }) {
+// Enter in it never presses Answer. Without a route nothing new is sent; an open
+// attempt still checks its own receipt.
+function Talk({ lines, route, item, tag }) {
   const t = lines.talk(item);
   const [pasted, setPasted] = useState("");
   const checked = lineText(t.text, TALK_MAX);
   const idle = t.phase === "idle";
   const open = t.phase === "open";
-  const ready = open || (idle && checked.text !== "" && checked.problem === "");
+  const ready = open || (idle && Boolean(route) && checked.text !== "" && checked.problem === "");
   const send = () => {
     if (ready) {
       lines.discuss(item, tag, checked.text);
@@ -1472,6 +1549,7 @@ function Talk({ lines, item, tag }) {
           <input
             class="dq-input"
             type="text"
+            name=${"talk-" + item}
             data-field="talk"
             aria-label=${"Question or objection about " + item}
             placeholder="Question or objection"
@@ -1501,7 +1579,14 @@ function Talk({ lines, item, tag }) {
             ${open ? "Check again" : "Send"}
           </button>
         </div>`
-      : html`<button type="button" class="dq-btn" data-action="talk" onClick=${() => lines.showTalk(item)}>
+      : html`<button
+          type="button"
+          class="dq-btn"
+          data-action="talk"
+          disabled=${!route}
+          title=${route ? null : NO_ROUTE}
+          onClick=${() => lines.showTalk(item)}
+        >
           Talk it over
         </button>`}
     ${idle && t.shown && checked.problem ? html`<p class="dq-hint" data-role="problem">${checked.problem}</p>` : null}
@@ -1550,6 +1635,7 @@ function NewTopic({ lines, route, desk }) {
         ref=${input}
         class="dq-input"
         type="text"
+        name="topic-title"
         data-field="title"
         aria-label="Title of a new topic"
         placeholder="New topic: title"
@@ -1571,6 +1657,7 @@ function NewTopic({ lines, route, desk }) {
       ? html`<input
           class="dq-input dq-slug"
           type="text"
+          name="topic-slug"
           data-field="slug"
           aria-label="Slug of a new topic"
           autocomplete="off"
@@ -1709,9 +1796,10 @@ function Composer({ route, slug, untagged, setUntagged }) {
       : null}
     <textarea
       ref=${box}
+      name="draft"
       rows="3"
       aria-label="Message to the orchestrator"
-      placeholder=${route ? "Message " + route.seat + " in " + route.to : "No proven orchestrator to send to"}
+      placeholder=${route ? "Message " + route.seat + " in " + route.to : NO_ROUTE}
       value=${text}
       readOnly=${frozen}
       onInput=${(event) => setText(event.currentTarget.value)}
@@ -2111,6 +2199,7 @@ function Walk({ walk, route, state, stop }) {
                 <input
                   class="reason"
                   type="text"
+                  name="reason"
                   ref=${reasonBox}
                   placeholder="Why it ends, in one line"
                   value=${reason}
@@ -2455,7 +2544,7 @@ function App() {
   const shown = card && card.slug === active ? card : null;
   let panel = html`<aside class="panel" aria-label="Topics"></aside>`;
   if (desk && !active) {
-    panel = html`<${AllPanel} desk=${desk} open=${openTopic} revisit=${revisitProps} lines=${lines} route=${state.route} />`;
+    panel = html`<${AllPanel} desk=${desk} lists=${lists} open=${openTopic} revisit=${revisitProps} lines=${lines} route=${state.route} />`;
   } else if (shown) {
     panel = html`<${Card}
       key=${shown.slug}
