@@ -566,8 +566,8 @@ idle_nudge_secs = 300      # positive empty-input reminder cadence; 0 disables
 sweep = 300                # orchestrator only: overview minimum spacing (a changed NEEDS YOU set skips it); 0 disables, 1-59 reads 60
 done_confirmations = 2     # later done/waiting-agent/blocked declarations required after challenges; 0 disables
 auto_reseat = off          # move seats off a vendor usage limit: on skips main, all moves it (orchestrator: only keeping its conversation); global only
-auto_reseat_sessions = a   # sessions the path acts in; absent means every session
-auto_reseat_grace_secs = 600  # limit-to-move wait; 0 moves on the first cycle past the latch
+auto_reseat_sessions = a   # sessions the path acts in; absent means every session; global only
+auto_reseat_grace_secs = 600  # limit-to-move wait; 0 moves on the first cycle past the latch; global only
 auto_reseat_at = 95        # move an idle seat once a window of its own account at least a day long reads this %; off disables, but a resume's exhausted seat still moves; global only
 auto_reseat_lead_at = 96    # the lead pair's own bar in place of auto_reseat_at (50-100 or off); absent = auto_reseat_at; global only
 auto_effort = off          # on: restart a lead-pair or spawned seat in place one effort level down at 80%, back up under 75%; global only

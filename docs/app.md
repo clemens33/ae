@@ -1314,7 +1314,9 @@ alone when neither exists,
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
-read the current global alone. Below them the tab shows the orchestrator row:
+read the current global alone. Each row shows the raw value as written and
+does not judge it: an undeclared `main` or `workers` reads `(unset)`, and an
+undeclared `fleet_order` reads `(none)`. Below them the tab shows the orchestrator row:
 `[roster] orchestrator` of the current global (`global`), the profile the saved
 orchestrator session recorded (`recorded orchestrator`, `(no session)` when none is saved, or `(unknown: …)` when the record cannot be read), and
 that a pick applies at the next fresh start (after `ae end`) while Pause/Resume
@@ -1332,7 +1334,8 @@ tells the agents of the SELECTED session (the one selected when Settings opened)
 from its records alone, so a stopped session shows too: the custom `[prompt]
 instructions` in force with the file they come from — `global` (the meta-recorded
 file) or `session` (its local overlay), the last file declaring the key wins even
-when empty — or a line saying there are none; then each generic rule text a
+when empty, and a last line with no closing newline, other than a `"""` closer,
+is not read — or a line saying there are none; then each generic rule text a
 launch hands out, ONCE, under its audience — every seat, workers, the lead
 pair — as the one renderer produces it now, with `<session>`, `<helpers>` and
 `<owner line>` standing for what a launch fills in per seat; then one line per
