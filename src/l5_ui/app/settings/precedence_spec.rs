@@ -274,10 +274,10 @@ fn global_only_keys_read_the_current_global_alone() {
 
 /// [C12] An overlay is looked for only when the meta names an `origin` or a
 /// `local_config`. No doc line, and no other test reaches the gate apart from
-/// the working directory: the mutants run needs it. Oracle: the same rule for
-/// the chat ruling, config.rs `session_chat_window`: "A meta naming no origin
-/// and no overlay reads no local file, so the caller's working directory
-/// never decides".
+/// the working directory. Oracle (lead ruling): the same rule for
+/// the chat ruling, config.rs:2843-2844 (`session_chat_window`): "A meta
+/// naming no origin and no overlay reads no local file, so the caller's
+/// working directory never decides". Lead ruling ae-20261128T092043Z-7220f868.
 #[test]
 fn only_an_origin_or_a_recorded_overlay_selects_one() {
     assert!(selects_overlay(b"origin=/work/api\n"));
