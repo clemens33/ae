@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::{
     ConfigHeader, ConfigPlan, ConfigRow, ConfigSource, ConfigView, CustomInstructions,
-    InstructionsPlan, InstructionsView, prompt_text, workspace_entries,
+    InstructionsPlan, InstructionsView, prompt_text, selects_overlay, workspace_entries,
 };
 
 const CURRENT: &str = "/home/u/.ae/config";
@@ -270,6 +270,25 @@ fn global_only_keys_read_the_current_global_alone() {
         drawn("on", ConfigSource::Default, true)
     );
     assert!(rows.iter().all(|row| row.value != "elsewhere"));
+}
+
+/// [C12] An overlay is looked for only when the meta names an `origin` or a
+/// `local_config`. No doc line, and no other test reaches the gate apart from
+/// the working directory: the mutants run needs it. Oracle: the same rule for
+/// the chat ruling, config.rs `session_chat_window`: "A meta naming no origin
+/// and no overlay reads no local file, so the caller's working directory
+/// never decides".
+#[test]
+fn only_an_origin_or_a_recorded_overlay_selects_one() {
+    assert!(selects_overlay(b"origin=/work/api\n"));
+    assert!(selects_overlay(
+        format!("local_config={OVERLAY}\n").as_bytes()
+    ));
+    assert!(selects_overlay(
+        format!("origin=/work/api\nlocal_config={OVERLAY}\n").as_bytes()
+    ));
+    assert!(!selects_overlay(format!("config={RECORDED}\n").as_bytes()));
+    assert!(!selects_overlay(b""));
 }
 
 /// [C14] No doc line. Oracle (lead ruling): settings.rs `declared`, "a
