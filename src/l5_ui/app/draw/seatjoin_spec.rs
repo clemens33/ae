@@ -536,6 +536,15 @@ fn only_the_loader_builds_live_seat_facts_from_its_one_set_of_reads() {
     let others = [
         ("app.rs", include_str!("../../app.rs")),
         ("draw.rs", include_str!("../draw.rs")),
+        ("draw/chat.rs", include_str!("chat.rs")),
+        ("draw/geometry.rs", include_str!("geometry.rs")),
+        ("draw/header.rs", include_str!("header.rs")),
+        ("draw/layout.rs", include_str!("layout.rs")),
+        ("draw/overlay.rs", include_str!("overlay.rs")),
+        ("draw/paint.rs", include_str!("paint.rs")),
+        ("draw/readers.rs", include_str!("readers.rs")),
+        ("draw/settings_tabs.rs", include_str!("settings_tabs.rs")),
+        ("draw/sidebar.rs", include_str!("sidebar.rs")),
         ("settings.rs", include_str!("../settings.rs")),
     ];
     for (name, source) in others {
