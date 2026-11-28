@@ -110,7 +110,8 @@ pub const PROFILE_CATALOG: &[Profile] = &[
     },
 ];
 
-/// The config `ae` writes on a first run.
+/// The config `ae` writes on a first run. `config.sample` in the repo is its
+/// byte-identical copy, pinned by `config_sample_is_the_seeded_config_byte_for_byte`.
 pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
 # Run `ae init` to discover installed harnesses and propose a smaller starting roster.
@@ -1528,5 +1529,16 @@ mod tests {
                 assert!(!comment.contains(banned), "`{banned}` in: {comment}");
             }
         }
+    }
+
+    /// The repo's `config.sample` is the seeded config, byte for byte: the
+    /// first line of each promises the mirror, and this keeps it true.
+    #[test]
+    fn config_sample_is_the_seeded_config_byte_for_byte() {
+        assert_eq!(
+            include_str!("../../config.sample"),
+            DEFAULT_CONFIG,
+            "config.sample drifted from DEFAULT_CONFIG: copy the const into it"
+        );
     }
 }
