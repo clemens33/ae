@@ -2052,6 +2052,18 @@ pub fn stage_into_empty(
     Err(StageFailure::Paste)
 }
 
+/// The composer the read between the load and the paste checks for a late
+/// draft: `model` for a quiet-gated shape, whose earlier reads required an
+/// empty box, and none for an interrupt or a spawn brief, which land over a
+/// draft by design and keep only the dictation read there.
+fn late_draft_composer(shape: Shape, model: InputModel) -> InputModel {
+    if matches!(shape, Shape::Interrupt | Shape::Launch) {
+        InputModel::Unmodelled
+    } else {
+        model
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one delivery's facts and its two re-proofs, spelled out"
@@ -2074,18 +2086,10 @@ fn submit(
     let diagnostic = input.diagnostic;
     let server = request.server;
     let pane = request.pane;
-    // Only a quiet-gated shape required an empty composer at its earlier
-    // reads, so only it is refused when a draft appears after the load. An
-    // interrupt or a spawn brief lands over a draft by design.
-    let composer = if matches!(request.shape, Shape::Interrupt | Shape::Launch) {
-        InputModel::Unmodelled
-    } else {
-        model
-    };
     if let Err(failure) = staged(
         request,
         (payload, diagnostic),
-        (gate, composer, input.turn),
+        (gate, late_draft_composer(request.shape, model), input.turn),
         body_file,
         err,
     )? {
@@ -2971,6 +2975,25 @@ mod tests {
             shape,
             defer: super::DEFAULT_DEFER,
             composed: Composed::NONE,
+        }
+    }
+
+    /// Only a quiet-gated shape reads the composer for a late draft; an
+    /// interrupt and a spawn brief land over a draft by design.
+    #[test]
+    fn only_a_quiet_gated_shape_refuses_a_late_draft() {
+        use super::{InputModel, Shape, late_draft_composer};
+        for model in [InputModel::BorderDelimited, InputModel::StyleDelimited] {
+            assert_eq!(late_draft_composer(Shape::Send, model), model);
+            assert_eq!(late_draft_composer(Shape::Context, model), model);
+            assert_eq!(
+                late_draft_composer(Shape::Interrupt, model),
+                InputModel::Unmodelled
+            );
+            assert_eq!(
+                late_draft_composer(Shape::Launch, model),
+                InputModel::Unmodelled
+            );
         }
     }
 
