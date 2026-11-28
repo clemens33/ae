@@ -205,6 +205,31 @@ fn bundled_prices_match_exact_then_longest_prefix_and_unknown_stays_unpriced() {
 }
 
 #[test]
+fn bundled_gpt_6_2_rows_carry_the_pinned_litellm_list_prices() {
+    // Expected values: litellm 89813239c4dadc032818ea0567bb13795ad5ee5c,
+    // model_prices_and_context_window.json, base-tier input, cache creation,
+    // cache read and output cost per token, scaled to micro-USD per million.
+    assert_eq!(
+        prices::lookup("gpt-6.2-sol"),
+        Some(prices::Price {
+            input: 2_000_000,
+            cache_write: 2_500_000,
+            cache_read: 100_000,
+            output: 10_000_000,
+        })
+    );
+    assert_eq!(
+        prices::lookup("gpt-6.2-astra"),
+        Some(prices::Price {
+            input: 8_000_000,
+            cache_write: 10_000_000,
+            cache_read: 400_000,
+            output: 40_000_000,
+        })
+    );
+}
+
+#[test]
 fn claude_observer_streams_large_files_and_skips_an_overlong_line() {
     let root = rig("large-claude");
     let store = root.join("claude");

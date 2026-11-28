@@ -12,8 +12,8 @@ pub struct Price {
     pub output: u64,
 }
 
-// Source: https://raw.githubusercontent.com/BerriAI/litellm/82a4ef40958131d36130cb5192448de09e0582b7/model_prices_and_context_window.json
-// Commit observed 2026-10-23. Base service tier/context and five-minute cache writes only.
+// Source: https://raw.githubusercontent.com/BerriAI/litellm/89813239c4dadc032818ea0567bb13795ad5ee5c/model_prices_and_context_window.json
+// Commit observed 2026-11-28. Base service tier/context and five-minute cache writes only.
 const PRICES: &[(&str, Price)] = &[
     // Each row uses: input_cost_per_token, cache_creation_input_token_cost,
     // cache_read_input_token_cost, output_cost_per_token.
@@ -89,6 +89,16 @@ const PRICES: &[(&str, Price)] = &[
     ),
     // Source key: gpt-6-luna
     ("gpt-6-luna", Price::new(100_000, 125_000, 10_000, 500_000)),
+    // Source key: gpt-6.2-sol
+    (
+        "gpt-6.2-sol",
+        Price::new(2_000_000, 2_500_000, 100_000, 10_000_000),
+    ),
+    // Source key: gpt-6.2-astra
+    (
+        "gpt-6.2-astra",
+        Price::new(8_000_000, 10_000_000, 400_000, 40_000_000),
+    ),
 ];
 
 /// Bundled prices overlaid by validated `[prices]` aliases.
