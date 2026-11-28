@@ -326,10 +326,12 @@ plain-paste head loss in 4/4 trials and bracketed-paste loss in 0/6, with receiv
 byte-exact payloads.
 
 One fresh capture between the load and the paste is the last read before any byte lands. A
-message delivery to a modelled composer refuses there, deletes the staged buffer and pastes
+quiet-gated message delivery to a modelled composer refuses there, deletes the staged buffer and pastes
 nothing when the box now holds text or reads unreadable, as it does for a dictation: a human
 who starts typing after the quiet gate keeps their draft whole (`deliver::stage_into_empty`).
-For a fleet overview the same read also refuses a harness that shows a running turn. The
+For a fleet overview the same read also refuses a harness that shows a running turn. An
+interrupt or a spawn brief lands over a draft by design and reads only the dictation gate
+there, as does the watchdog's guarded seat compaction. The
 capture and the paste stay two tmux commands, so a keystroke that lands between them is not
 seen.
 

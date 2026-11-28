@@ -2074,10 +2074,18 @@ fn submit(
     let diagnostic = input.diagnostic;
     let server = request.server;
     let pane = request.pane;
+    // Only a quiet-gated shape required an empty composer at its earlier
+    // reads, so only it is refused when a draft appears after the load. An
+    // interrupt or a spawn brief lands over a draft by design.
+    let composer = if matches!(request.shape, Shape::Interrupt | Shape::Launch) {
+        InputModel::Unmodelled
+    } else {
+        model
+    };
     if let Err(failure) = staged(
         request,
         (payload, diagnostic),
-        (gate, model, input.turn),
+        (gate, composer, input.turn),
         body_file,
         err,
     )? {
@@ -2591,11 +2599,12 @@ fn under_lock(
         return Ok(Outcome::Skipped(Leg::Mismatch));
     }
     // (4) The paste, then the bounded submit under the same lock.
-    match stage_into_empty(
+    match stage_and_paste(
         request.server,
-        (&buffer_name(request.pane), request.text.as_bytes()),
+        &buffer_name(request.pane),
+        request.text.as_bytes(),
         request.pane,
-        (gate, request.model, None),
+        gate,
     ) {
         Ok(()) => {}
         Err(StageFailure::Held(state)) => {

@@ -2660,11 +2660,18 @@ mod tests {
         std::fs::write(root.join("orchestrator.config"), old).expect("old seat file");
         // A root the sweep settled is reconciled.
         let notes = reconcile_fleet(base, "2099.1.1", std::slice::from_ref(&root));
+        assert!(
+            old.contains("\nsweep = 120\n"),
+            "the released explicit spacing"
+        );
         assert_eq!(
             seat(&root),
             Some(crate::store::SourceRead::Ready(
-                crate::config::SEAT_TEMPLATE.as_bytes().to_vec()
-            ))
+                crate::config::SEAT_TEMPLATE
+                    .replace("\nsweep = 300\n", "\nsweep = 120\n")
+                    .into_bytes()
+            )),
+            "the current template with the released explicit spacing"
         );
         let [line] = notes.as_slice() else {
             panic!("one note: {notes:?}");
