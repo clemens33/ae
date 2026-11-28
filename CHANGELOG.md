@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.134] - 2026-11-28
+- Use a neutral session name and path in the doc examples
+- Pin every Key invariants owner reference to a declared item
+- Resolve a Key invariants continuation against the owner before it
+- Anchor the stale Key invariants owners and escape their pipes
+- Decide the Settings tab precedence in pure functions over already-read inputs
+- Say which Settings rows are global only, raw, and which last line is read
+- Take the instructions overlay by reference and satisfy clippy in the precedence tests
+- Name the Settings-only single read of the prompt winners at its call site
+- Point the prompt winners at the one validated read and word the raw Config rows exactly
+- Pin which meta selects a local overlay for the Config tab
+- Name the config.rs line the overlay-selection test takes as its oracle
+
 ## [v2026.11.133] - 2026-11-28
 - Pin config.sample to DEFAULT_CONFIG byte for byte
 - Merge config.sample into DEFAULT_CONFIG and make the sample its exact copy
