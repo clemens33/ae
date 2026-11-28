@@ -864,6 +864,8 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
     };
     let local = crate::config::local_overlay(dir, &crate::lifecycle::meta_value(&bytes, "origin"));
     let plan = InstructionsPlan::of(&bytes, local.as_deref());
+    // One read per file: both prompt winners resolve from these validated texts
+    // (see [`InstructionsPlan::view`]).
     let mut texts = Vec::new();
     for file in plan.files() {
         match prompt_text(file, crate::config::read_global_text(file)) {

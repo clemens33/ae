@@ -1314,9 +1314,10 @@ alone when neither exists,
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
-read the current global alone. Each row shows the raw value as written and
-does not judge it: an undeclared `main` or `workers` reads `(unset)`, and an
-undeclared `fleet_order` reads `(none)`. Below them the tab shows the orchestrator row:
+read the current global alone. Each row shows the declared value and does not
+apply the policy of the reader that owns the key. A declaration outside the
+entry grammar shows `unusable`. An undeclared `main` or `workers` reads
+`(unset)`, and an undeclared `fleet_order` reads `(none)`. Below them the tab shows the orchestrator row:
 `[roster] orchestrator` of the current global (`global`), the profile the saved
 orchestrator session recorded (`recorded orchestrator`, `(no session)` when none is saved, or `(unknown: …)` when the record cannot be read), and
 that a pick applies at the next fresh start (after `ae end`) while Pause/Resume
