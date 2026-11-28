@@ -1078,15 +1078,56 @@ pub(crate) fn spawn_instructions(config_files: &[PathBuf]) -> Option<(usize, Str
     winning_prompt_row(config_files, "prompt.spawn_instructions")
 }
 
-/// The one winner rule behind both `[prompt]` text keys.
+/// [`prompt_instructions`] over config texts already read: one `(file, text)`
+/// per config file in layering order, `None` for a file there is no text of.
+pub(crate) fn prompt_instructions_in(texts: &[(&Path, Option<&str>)]) -> Option<(usize, String)> {
+    winning_prompt_row_in(text_rows(texts), "prompt.instructions")
+}
+
+/// [`spawn_instructions`] over config texts already read, as
+/// [`prompt_instructions_in`] takes them.
+pub(crate) fn spawn_instructions_in(texts: &[(&Path, Option<&str>)]) -> Option<(usize, String)> {
+    winning_prompt_row_in(text_rows(texts), "prompt.spawn_instructions")
+}
+
+/// The rows of each text already read, parsed as [`config_entries`] parses a
+/// file it read; no text is no rows.
+fn text_rows<'a>(
+    texts: &'a [(&'a Path, Option<&'a str>)],
+) -> impl DoubleEndedIterator<Item = Vec<(String, String)>> + ExactSizeIterator + 'a {
+    texts.iter().map(|&(file, text)| {
+        text.map_or_else(Vec::new, |text| {
+            crate::config::text_entries(file, text)
+                .into_iter()
+                .map(|entry| (entry.key, entry.value))
+                .collect()
+        })
+    })
+}
+
+/// The one winner rule behind both `[prompt]` text keys, over the files.
 fn winning_prompt_row(config_files: &[PathBuf], wanted: &str) -> Option<(usize, String)> {
-    config_files
-        .iter()
+    winning_prompt_row_in(
+        config_files
+            .iter()
+            .map(|file| config_entries(std::slice::from_ref(file))),
+        wanted,
+    )
+}
+
+/// The one winner rule behind both `[prompt]` text keys, over the rows of each
+/// config file in layering order: the LAST file that declares `wanted` at all,
+/// and the last row in it; an empty winner is `None`. The files are taken
+/// from the back, so a lazy reader opens no file layered under the winner.
+fn winning_prompt_row_in(
+    files: impl DoubleEndedIterator<Item = Vec<(String, String)>> + ExactSizeIterator,
+    wanted: &str,
+) -> Option<(usize, String)> {
+    files
         .enumerate()
         .rev()
-        .find_map(|(at, file)| {
-            config_entries(std::slice::from_ref(file))
-                .into_iter()
+        .find_map(|(at, rows)| {
+            rows.into_iter()
                 .rev()
                 .find(|(key, _)| key == wanted)
                 .map(|(_, text)| (at, text))

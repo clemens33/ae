@@ -712,73 +712,133 @@ pub(crate) fn resolve_config(meta_dir: Option<&Path>, current_global: &Path) -> 
             ));
         }
     };
-    let value = |key| crate::lifecycle::meta_value(&bytes, key);
-    let pins: BTreeMap<&str, String> = [
-        "layout",
-        "quota",
-        "quota_every_secs",
-        "idle_nudge_secs",
-        "done_confirmations",
-    ]
-    .into_iter()
-    .map(|key| (key, value(key)))
-    .filter(|(_, pin)| !pin.is_empty())
-    .collect();
-    let origin = value("origin");
+    let origin = crate::lifecycle::meta_value(&bytes, "origin");
     let overlay = meta_dir
-        .filter(|_| !origin.is_empty() || !value(crate::config::LOCAL_CONFIG_KEY).is_empty())
+        .filter(|_| selects_overlay(&bytes))
         .and_then(|dir| crate::config::local_overlay(dir, &origin));
-    let recorded = value("config");
-    let global = if recorded.is_empty() {
-        current_global.to_path_buf()
-    } else {
-        PathBuf::from(recorded)
-    };
-    let current = current_global.to_path_buf();
-    let mut files: Vec<PathBuf> = Vec::new();
-    for candidate in overlay.iter().chain([&global, &current]) {
-        if !files.contains(candidate) {
-            files.push(candidate.clone());
-        }
-    }
-    let mut read: BTreeMap<PathBuf, BTreeMap<String, Option<String>>> = BTreeMap::new();
-    for file in &files {
-        match read_workspace_file(file) {
-            Ok(entries) => drop(read.insert(file.clone(), entries)),
+    let plan = ConfigPlan::of(&bytes, overlay, current_global);
+    let mut read = BTreeMap::new();
+    for file in plan.files() {
+        match workspace_entries(&file, crate::config::read_global_text(&file)) {
+            Ok(entries) => drop(read.insert(file, entries)),
             Err(why) => return ConfigView::Unreadable(why),
         }
     }
-    let entries = |file: &Path| read.get(file);
-    let overlay_entries = overlay.as_ref().and_then(|file| entries(file));
-    let global_entries = entries(&global);
-    let current_entries = entries(current_global);
-    let rows = KEYS
-        .iter()
-        .map(|(key, default, scope)| match scope {
-            Scope::Pinned => match pins.get(key) {
-                Some(pin) => row(key, pin.clone(), ConfigSource::Launch, false),
-                None => layered_row(key, default, overlay_entries, global_entries),
-            },
-            Scope::Layered => layered_row(key, default, overlay_entries, global_entries),
-            Scope::GlobalOnly => {
-                let (value, source) = current_entries
-                    .and_then(|entries| declared(entries, key))
-                    .map_or_else(
-                        || ((*default).to_owned(), ConfigSource::Default),
-                        |value| (value, ConfigSource::Global),
-                    );
-                row(key, value, source, true)
+    plan.view(&read)
+}
+
+/// One config file as read: its text, `None` when there is no file, or why it
+/// could not be read.
+type FileRead = Result<Option<String>, String>;
+
+/// The `[workspace]` entries one file declares, last wins; `None` is a
+/// declaration outside the entry grammar.
+type Entries = BTreeMap<String, Option<String>>;
+
+/// The `[workspace]` keys a launch pins in the session meta.
+const PINNED: [&str; 5] = [
+    "layout",
+    "quota",
+    "quota_every_secs",
+    "idle_nudge_secs",
+    "done_confirmations",
+];
+
+/// Whether `meta` selects a local overlay at all: an `origin` or a
+/// `local_config` row. A meta naming neither reads no local file, so the app's
+/// working directory never decides.
+fn selects_overlay(meta: &[u8]) -> bool {
+    let value = |key| crate::lifecycle::meta_value(meta, key);
+    !value("origin").is_empty() || !value(crate::config::LOCAL_CONFIG_KEY).is_empty()
+}
+
+/// What the config tab reads for one session, decided from its meta alone:
+/// the launch pins, the selected overlay, the file `global` stands for and
+/// the current global. [`resolve_config`] reads [`Self::files`];
+/// [`Self::view`] decides every row from what was read, reading nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfigPlan {
+    /// The non-empty meta rows of the [`PINNED`] keys.
+    pins: BTreeMap<&'static str, String>,
+    /// The overlay the meta selected.
+    overlay: Option<PathBuf>,
+    /// The meta-recorded global, else the current global.
+    global: PathBuf,
+    current: PathBuf,
+}
+
+impl ConfigPlan {
+    /// Plan the tab from `meta` (empty with no session), the `overlay` it
+    /// selected and the `current` global. An empty pin row is no pin.
+    pub(crate) fn of(meta: &[u8], overlay: Option<PathBuf>, current: &Path) -> Self {
+        let value = |key| crate::lifecycle::meta_value(meta, key);
+        let pins = PINNED
+            .into_iter()
+            .map(|key| (key, value(key)))
+            .filter(|(_, pin)| !pin.is_empty())
+            .collect();
+        let recorded = value("config");
+        let global = if recorded.is_empty() {
+            current.to_path_buf()
+        } else {
+            PathBuf::from(recorded)
+        };
+        Self {
+            pins,
+            overlay,
+            global,
+            current: current.to_path_buf(),
+        }
+    }
+
+    /// The files to read, each once, in the order a failure is named: the
+    /// overlay, the global, the current global.
+    pub(crate) fn files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = Vec::new();
+        for candidate in self.overlay.iter().chain([&self.global, &self.current]) {
+            if !files.contains(candidate) {
+                files.push(candidate.clone());
             }
-        })
-        .collect();
-    ConfigView::Rows {
-        header: ConfigHeader {
-            session: overlay.as_ref().map(|path| path.display().to_string()),
-            global: global.display().to_string(),
-            current_global: (global.as_path() != current_global)
-                .then(|| current_global.display().to_string()),
-        },
-        rows,
+        }
+        files
+    }
+
+    /// The rows from the entries `read` holds for each file. `launch >
+    /// session > global > default` for a pinned key, `session > global >
+    /// default` for a layered one, the current global alone for a global-only
+    /// one; a file `read` lacks declares nothing.
+    pub(crate) fn view(&self, read: &BTreeMap<PathBuf, Entries>) -> ConfigView {
+        let overlay_entries = self.overlay.as_ref().and_then(|file| read.get(file));
+        let global_entries = read.get(&self.global);
+        let current_entries = read.get(&self.current);
+        let rows = KEYS
+            .iter()
+            .map(|(key, default, scope)| match scope {
+                Scope::Pinned => match self.pins.get(key) {
+                    Some(pin) => row(key, pin.clone(), ConfigSource::Launch, false),
+                    None => layered_row(key, default, overlay_entries, global_entries),
+                },
+                Scope::Layered => layered_row(key, default, overlay_entries, global_entries),
+                Scope::GlobalOnly => {
+                    let (value, source) = current_entries
+                        .and_then(|entries| declared(entries, key))
+                        .map_or_else(
+                            || ((*default).to_owned(), ConfigSource::Default),
+                            |value| (value, ConfigSource::Global),
+                        );
+                    row(key, value, source, true)
+                }
+            })
+            .collect();
+        ConfigView::Rows {
+            header: ConfigHeader {
+                session: self.overlay.as_ref().map(|path| path.display().to_string()),
+                global: self.global.display().to_string(),
+                current_global: (self.global != self.current)
+                    .then(|| self.current.display().to_string()),
+            },
+            rows,
+        }
     }
 }
 
@@ -802,66 +862,116 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
             ));
         }
     };
-    let value = |key| crate::lifecycle::meta_value(&bytes, key);
-    let recorded = value("config");
-    let global = (!recorded.is_empty()).then(|| PathBuf::from(recorded));
-    let local = crate::config::local_overlay(dir, &value("origin"));
-    let files = crate::config::ctx_config_files(global.as_deref(), local.as_deref());
-    let sources: Vec<ConfigSource> = global
-        .iter()
-        .map(|_| ConfigSource::Global)
-        .chain(local.iter().map(|_| ConfigSource::Session))
-        .collect();
-    for file in &files {
-        if let Err(why) = readable_config(file) {
-            return gap(why);
+    let local = crate::config::local_overlay(dir, &crate::lifecycle::meta_value(&bytes, "origin"));
+    let plan = InstructionsPlan::of(&bytes, local);
+    let mut texts = Vec::new();
+    for file in plan.files() {
+        match prompt_text(file, crate::config::read_global_text(file)) {
+            Ok(text) => texts.push(text),
+            Err(why) => return gap(why),
         }
     }
-    let in_force = |won: Option<(usize, String)>| {
-        won.and_then(|(at, text)| {
-            Some(CustomInstructions {
-                source: *sources.get(at)?,
-                file: files.get(at)?.display().to_string(),
-                text,
-            })
-        })
-    };
-    let custom = in_force(crate::render::prompt_instructions(&files));
-    let spawn = in_force(crate::render::spawn_instructions(&files));
-    let session = value("session");
-    let session = if session.is_empty() {
-        name.to_owned()
-    } else {
-        session
-    };
-    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
-    if meta.roster().is_empty() {
-        return gap(format!("{session}: the records name no seats"));
+    let mut view = plan.view(name, &bytes, &texts);
+    if let InstructionsView::Ready(protocol) = &mut view {
+        protocol.rules = crate::render::generic_rules(dir, plan.files());
     }
-    let seats = meta
-        .roster()
-        .iter()
-        .map(|entry| {
-            let role = crate::render::seat_role(&bytes, &entry.slot);
-            SeatLine {
-                name: entry.name.clone(),
-                slot: entry.slot.clone(),
-                role: role.word(),
-                receives: receives(&entry.slot, role),
-            }
-        })
-        .collect();
-    InstructionsView::Ready(Protocol {
-        session,
-        files: files
+    view
+}
+
+/// What the instructions tab reads for one session, decided from its meta
+/// alone: the config files a launch layers, global first, and the source word
+/// each stands for. [`resolve_instructions`] reads [`Self::files`];
+/// [`Self::view`] decides the tab from what was read, reading nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstructionsPlan {
+    files: Vec<PathBuf>,
+    sources: Vec<ConfigSource>,
+}
+
+impl InstructionsPlan {
+    /// Plan from `meta` and the `local` overlay it selected. Only the meta's
+    /// `config` row is a global: with none, no file stands in for it.
+    pub(crate) fn of(meta: &[u8], local: Option<PathBuf>) -> Self {
+        let recorded = crate::lifecycle::meta_value(meta, "config");
+        let global = (!recorded.is_empty()).then(|| PathBuf::from(recorded));
+        let files = crate::config::ctx_config_files(global.as_deref(), local.as_deref());
+        let sources = global
             .iter()
-            .map(|file| file.display().to_string())
-            .collect(),
-        custom,
-        spawn,
-        rules: crate::render::generic_rules(dir, &files),
-        seats,
-    })
+            .map(|_| ConfigSource::Global)
+            .chain(local.iter().map(|_| ConfigSource::Session))
+            .collect();
+        Self { files, sources }
+    }
+
+    /// The config files in layering order: the recorded global, then the
+    /// local overlay.
+    pub(crate) fn files(&self) -> &[PathBuf] {
+        &self.files
+    }
+
+    /// The tab for session `name` from `meta` and `texts`, one per
+    /// [`Self::files`] entry as [`prompt_text`] passed it (`None`: no file).
+    /// The winners are render's own rule over those texts. The generic rules
+    /// are left empty: the caller reads them for a `Ready` tab alone.
+    pub(crate) fn view(
+        &self,
+        name: &str,
+        meta: &[u8],
+        texts: &[Option<String>],
+    ) -> InstructionsView {
+        let read: Vec<(&Path, Option<&str>)> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(at, file)| (file.as_path(), texts.get(at).and_then(Option::as_deref)))
+            .collect();
+        let in_force = |won: Option<(usize, String)>| {
+            won.and_then(|(at, text)| {
+                Some(CustomInstructions {
+                    source: *self.sources.get(at)?,
+                    file: self.files.get(at)?.display().to_string(),
+                    text,
+                })
+            })
+        };
+        let custom = in_force(crate::render::prompt_instructions_in(&read));
+        let spawn = in_force(crate::render::spawn_instructions_in(&read));
+        let session = crate::lifecycle::meta_value(meta, "session");
+        let session = if session.is_empty() {
+            name.to_owned()
+        } else {
+            session
+        };
+        let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(meta));
+        if parsed.roster().is_empty() {
+            return InstructionsView::Gap(format!("{session}: the records name no seats"));
+        }
+        let seats = parsed
+            .roster()
+            .iter()
+            .map(|entry| {
+                let role = crate::render::seat_role(meta, &entry.slot);
+                SeatLine {
+                    name: entry.name.clone(),
+                    slot: entry.slot.clone(),
+                    role: role.word(),
+                    receives: receives(&entry.slot, role),
+                }
+            })
+            .collect();
+        InstructionsView::Ready(Protocol {
+            session,
+            files: self
+                .files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect(),
+            custom,
+            spawn,
+            rules: Vec::new(),
+            seats,
+        })
+    }
 }
 
 /// The generic rules a seat of `role` receives, or the fact that stops it.
@@ -872,17 +982,17 @@ fn receives(slot: &str, role: crate::render::SeatRole) -> Result<&'static [Audie
     Ok(role.receives())
 }
 
-/// Why `file` cannot be rendered from, when it exists but cannot be read or
-/// is torn. Only the verdict is taken from the generic reader: the text a
-/// launch injects is `render`'s own grammar.
-fn readable_config(file: &Path) -> Result<(), String> {
-    let text = crate::config::read_global_text(file)
-        .map_err(|why| format!("{}: {why}", file.display()))?;
-    if let Some(text) = text {
-        crate::config::section_entries(file, &text, "prompt")
+/// One config file as the instructions tab takes it: its text, `None` when
+/// there is no file. A read failure, or a text that is not config text, names
+/// the file and the reason. Only the verdict is taken from the generic
+/// reader: the text a launch injects is `render`'s own grammar.
+fn prompt_text(file: &Path, read: FileRead) -> Result<Option<String>, String> {
+    let text = read.map_err(|why| format!("{}: {why}", file.display()))?;
+    if let Some(text) = &text {
+        crate::config::section_entries(file, text, "prompt")
             .map_err(|why| format!("{}: {}", file.display(), why.escape_debug()))?;
     }
-    Ok(())
+    Ok(text)
 }
 
 /// One layered row: the overlay wins over the meta-recorded global, which
@@ -926,11 +1036,11 @@ fn declared(entries: &BTreeMap<String, Option<String>>, key: &str) -> Option<Str
         .map(|value| value.clone().unwrap_or_else(|| "unusable".to_owned()))
 }
 
-/// The `[workspace]` entries `file` declares, last wins. A missing file is
-/// no entries; anything else unreadable names the file and the reason.
-fn read_workspace_file(file: &Path) -> Result<BTreeMap<String, Option<String>>, String> {
-    let text = crate::config::read_global_text(file)
-        .map_err(|why| format!("{}: {why}", file.display()))?;
+/// The `[workspace]` entries `file` declares, from its `read`, last wins. A
+/// missing file is no entries; anything else unreadable names the file and
+/// the reason.
+fn workspace_entries(file: &Path, read: FileRead) -> Result<Entries, String> {
+    let text = read.map_err(|why| format!("{}: {why}", file.display()))?;
     let Some(text) = text else {
         return Ok(BTreeMap::new());
     };
@@ -942,3 +1052,6 @@ fn read_workspace_file(file: &Path) -> Result<BTreeMap<String, Option<String>>, 
     }
     Ok(last)
 }
+
+#[cfg(test)]
+mod precedence_spec;
