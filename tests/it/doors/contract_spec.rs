@@ -220,14 +220,17 @@ fn owner_errors(text: &str, sources: &BTreeMap<String, BTreeSet<String>>) -> Vec
 // right, is one of these references, and each must resolve:
 //   `src/…/f.rs` or `tests/…/f.rs`  a file of the tree; it joins the row's named files
 //   `src/…/f.rs::a::b`              that file declares `a::b`
-//   `::a::b`                        a file the row named before it declares `a::b`
+//   `::a::b`                        a member of the owner before it or of one of its
+//                                   containers (`::Classified::first` / `::adopt` is
+//                                   `Classified::adopt`), else a top-level item of a
+//                                   file the row named before it
 //   `f.rs`, `f.rs::a::b`            some `src/…/f.rs` exists (and declares `a::b`)
 //   `x::a`                          a file the row named before it declares `x::a`
 //                                   (a type member such as `Kind::Fleet`), or a module
 //                                   file `src/…/x.rs` declares `a`; deeper paths split
 //                                   at each `::` (`x::y::a`: `src/…/x/y.rs` declares `a`)
 //   `crate::x::a`                   `src/lib.rs` declares `x::a`, or a module file as above
-// A span without `::` that is none of the file forms is prose (a word, a command,
+// `p::{a, b}` stands for `p::a` and `p::b`. A span without `::` that is none of the file forms is prose (a word, a command,
 // a non-Rust path) and unchecked. Every row names at least one existing file. A
 // malformed table, row, span or path fails; a parse never passes over nothing.
 
@@ -363,7 +366,7 @@ fn invariant_rows(doc: &str) -> (Vec<Row>, Vec<String>) {
 // The single-backtick code spans of one cell.
 fn code_spans(cell: &str) -> Result<Vec<&str>, String> {
     let parts: Vec<&str> = cell.split('`').collect();
-    if parts.len() % 2 == 0 {
+    if parts.len().is_multiple_of(2) {
         return Err("an unclosed code span".to_owned());
     }
     let spans: Vec<&str> = parts.into_iter().skip(1).step_by(2).collect();
@@ -423,71 +426,128 @@ fn src_files_ending<'a>(known: &'a Symbols, suffix: &'a str) -> impl Iterator<It
         .filter(move |path| path.starts_with("src/") && path.ends_with(suffix))
 }
 
-fn any_declares(known: &Symbols, paths: &[String], item: &str) -> bool {
-    paths.iter().any(|path| declares(known, path, item))
+// A `path::{a, b}` group as its members `path::a` and `path::b`; any other
+// span as itself.
+fn expanded(span: &str) -> Vec<String> {
+    if let Some((head, group)) = span.split_once("::{")
+        && let Some(members) = group.strip_suffix('}')
+    {
+        return members
+            .split(',')
+            .map(|member| format!("{head}::{}", member.trim()))
+            .collect();
+    }
+    vec![span.to_owned()]
 }
 
-fn resolve(found: Reference<'_>, named: &mut Vec<String>, known: &Symbols) -> Result<(), String> {
-    match found {
+// What a row has named so far: its existing files in order, and the owner it
+// resolved last as `(file, item path)`, which a continuation may extend.
+#[derive(Default)]
+struct Named {
+    files: Vec<String>,
+    last: Option<(String, String)>,
+}
+
+// Where `::item` lands, nearest first: a member of the owner resolved last or
+// of one of its containers (`::Classified::first` / `::adopt` names
+// `Classified::adopt`), else a top-level item of a file the row named.
+fn continued(named: &Named, known: &Symbols, item: &str) -> Option<(String, String)> {
+    if let Some((path, last)) = &named.last {
+        let segments: Vec<&str> = last.split("::").collect();
+        for keep in (1..=segments.len()).rev() {
+            let candidate = format!("{}::{item}", segments[..keep].join("::"));
+            if declares(known, path, &candidate) {
+                return Some((path.clone(), candidate));
+            }
+        }
+    }
+    named
+        .files
+        .iter()
+        .find(|path| declares(known, path, item))
+        .map(|path| (path.clone(), item.to_owned()))
+}
+
+// Where a module or type path lands: a file the row named (`src/lib.rs` for a
+// `crate::` path) declares it whole, or the module file of a prefix declares
+// the rest.
+fn path_target(
+    named: &Named,
+    known: &Symbols,
+    path: &str,
+    rooted: bool,
+) -> Option<(String, String)> {
+    let whole = if rooted {
+        declares(known, "src/lib.rs", path).then(|| ("src/lib.rs".to_owned(), path.to_owned()))
+    } else {
+        named
+            .files
+            .iter()
+            .find(|file| declares(known, file, path))
+            .map(|file| (file.clone(), path.to_owned()))
+    };
+    if whole.is_some() {
+        return whole;
+    }
+    let segments: Vec<&str> = path.split("::").collect();
+    (1..segments.len()).find_map(|split| {
+        let suffix = format!("/{}.rs", segments[..split].join("/"));
+        let rest = segments[split..].join("::");
+        src_files_ending(known, &suffix)
+            .find(|file| declares(known, file, &rest))
+            .map(|file| (file.clone(), rest))
+    })
+}
+
+fn resolve(found: Reference<'_>, named: &mut Named, known: &Symbols) -> Result<(), String> {
+    let target = match found {
         Reference::File(path, item) => {
             if !known.contains_key(path) {
                 return Err("no such file".to_owned());
             }
-            if !named.iter().any(|seen| seen == path) {
-                named.push(path.to_owned());
+            if !named.files.iter().any(|seen| seen == path) {
+                named.files.push(path.to_owned());
             }
             match item {
-                Some(item) if !declares(known, path, item) => {
-                    Err(format!("{path} declares no {item}"))
+                None => None,
+                Some(item) if declares(known, path, item) => {
+                    Some((path.to_owned(), item.to_owned()))
                 }
-                _ => Ok(()),
+                Some(item) => return Err(format!("{path} declares no {item}")),
             }
         }
-        Reference::Continuation(_) if named.is_empty() => {
-            Err("a continuation before the row names a file".to_owned())
+        Reference::Continuation(_) if named.files.is_empty() => {
+            return Err("a continuation before the row names a file".to_owned());
         }
-        Reference::Continuation(item) => {
-            if any_declares(known, named, item) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "no file the row named before it declares {item} (named: {})",
-                    named.join(", ")
-                ))
-            }
-        }
+        Reference::Continuation(item) => Some(continued(named, known, item).ok_or_else(|| {
+            format!(
+                "neither the owner before it nor a file the row named declares {item} (named: {})",
+                named.files.join(", ")
+            )
+        })?),
         Reference::Basename(stem, item) => {
             let suffix = format!("/{stem}.rs");
-            let candidates: Vec<&String> = src_files_ending(known, &suffix).collect();
-            if candidates.is_empty() {
+            if src_files_ending(known, &suffix).next().is_none() {
                 return Err(format!("no src/…/{stem}.rs"));
             }
             match item {
-                Some(item) if !candidates.iter().any(|path| declares(known, path, item)) => {
-                    Err(format!("no src/…/{stem}.rs declares {item}"))
-                }
-                _ => Ok(()),
+                None => None,
+                Some(item) => Some(
+                    src_files_ending(known, &suffix)
+                        .find(|path| declares(known, path, item))
+                        .map(|path| (path.clone(), item.to_owned()))
+                        .ok_or_else(|| format!("no src/…/{stem}.rs declares {item}"))?,
+                ),
             }
         }
         Reference::Path(path, rooted) => {
-            if (rooted && declares(known, "src/lib.rs", path))
-                || (!rooted && any_declares(known, named, path))
-            {
-                return Ok(());
-            }
-            let segments: Vec<&str> = path.split("::").collect();
-            for split in 1..segments.len() {
-                let suffix = format!("/{}.rs", segments[..split].join("/"));
-                let rest = segments[split..].join("::");
-                if src_files_ending(known, &suffix).any(|file| declares(known, file, &rest)) {
-                    return Ok(());
-                }
-            }
-            Err(format!(
-                "neither a file the row named before it nor a module file declares {path}"
-            ))
+            Some(path_target(named, known, path, rooted).ok_or_else(|| {
+                format!("neither a file the row named before it nor a module file declares {path}")
+            })?)
         }
-    }
+    };
+    named.last = target;
+    Ok(())
 }
 
 // `(rows, references)` checked, or every failure, each with its doc line and
@@ -508,9 +568,9 @@ fn invariant_errors(doc: &str, known: &Symbols) -> Result<(usize, usize), Vec<St
                 continue;
             }
         };
-        let mut named = Vec::new();
-        for span in spans {
-            let outcome = owner_reference(span).and_then(|found| match found {
+        let mut named = Named::default();
+        for one in spans.into_iter().flat_map(expanded) {
+            let outcome = owner_reference(&one).and_then(|found| match found {
                 Some(found) => {
                     checked += 1;
                     resolve(found, &mut named, known)
@@ -518,10 +578,10 @@ fn invariant_errors(doc: &str, known: &Symbols) -> Result<(usize, usize), Vec<St
                 None => Ok(()),
             });
             if let Err(why) = outcome {
-                fail(&format!("`{span}`: {why}"));
+                fail(&format!("`{one}`: {why}"));
             }
         }
-        if named.is_empty() {
+        if named.files.is_empty() {
             fail("the owner cell names no existing src/ or tests/ file");
         }
     }
@@ -848,14 +908,15 @@ const ROW_ONE: &str = "| One `a \\| b` rule | `src/l2_model/watchdog.rs::done_pr
     `::wait_progress` its rung, `Banner::Codex` the row; `tracked::AddressGuard::check`, \
     `run.rs::resumable`, `end.rs` and `crate::run`; `ae doctor` and \
     `src/l3_services/render/{core,worker}.txt` are prose |";
-const ROW_TWO: &str = "| Two rule | `src/l2_model/tracked.rs` (`AddressGuard::check`), pinned by `tests/it/floor.rs::pins_it` |";
+const ROW_TWO: &str = "| Two rule | `src/l2_model/tracked.rs` (`AddressGuard::check` / `::check_at`, \
+    `::{admit, refuse}`), pinned by `tests/it/floor.rs::pins_it` |";
 
 // Each planted edit of the fixture, and the text its failure must contain.
-const PLANTED: [(&str, &str, &str); 27] = [
+const PLANTED: [(&str, &str, &str); 30] = [
     (
         "`::wait_progress`",
         "`::wait_gone`",
-        ":8: `::wait_gone`: no file the row named",
+        ":8: `::wait_gone`: neither the owner before it",
     ),
     (
         "::done_progress`",
@@ -870,7 +931,7 @@ const PLANTED: [(&str, &str, &str); 27] = [
     (
         "`::wait_progress`",
         "`::step`",
-        ":8: `::step`: no file the row named before it",
+        ":8: `::step`: neither the owner before it",
     ),
     (
         "`Banner::Codex`",
@@ -908,14 +969,29 @@ const PLANTED: [(&str, &str, &str); 27] = [
         ":9: `tests/it/floor.rs::gone`: tests/it/floor.rs declares no",
     ),
     (
-        "`AddressGuard::check`)",
-        "`AddressGuard::gone`)",
+        "`AddressGuard::check` /",
+        "`AddressGuard::gone` /",
         ":9: `AddressGuard::gone`: neither",
     ),
     (
-        "`src/l2_model/tracked.rs` (`AddressGuard::check`), pinned by `tests/it/floor.rs::pins_it`",
-        "`ae doctor` only",
-        ":9: the owner cell names no existing",
+        "`::check_at`",
+        "`::check_gone`",
+        ":9: `::check_gone`: neither the owner before it",
+    ),
+    (
+        "`AddressGuard::check` /",
+        "`tracked::admit` /",
+        ":9: `::check_at`: neither the owner before it",
+    ),
+    (
+        "{admit, refuse}",
+        "{admit, refused}",
+        ":9: `::refused`: neither the owner before it",
+    ),
+    (
+        "{admit, refuse}",
+        "{admit, }",
+        ":9: `::`: a malformed item path",
     ),
     (
         "rule | `src/l2_model/tracked.rs`",
@@ -997,7 +1073,7 @@ fn fixture_known() -> Symbols {
         ),
         (
             "src/l2_model/tracked.rs",
-            "struct AddressGuard; impl AddressGuard { fn check() {} }",
+            "struct AddressGuard; impl AddressGuard { fn check() {} fn check_at() {} } fn admit() {} fn refuse() {}",
         ),
         ("src/l3_services/run.rs", "fn resumable() {}"),
         ("src/l5_ui/app/run.rs", "fn step() {}"),
@@ -1014,8 +1090,8 @@ fn the_key_invariant_owner_pin_rejects_planted_edits() {
     let known = fixture_known();
     let doc = fixture();
     // Row one has 7 references (the template path and `ae doctor` are prose),
-    // row two 3: the count pins that the parser reads every one.
-    assert_eq!(invariant_errors(&doc, &known), Ok((2, 10)));
+    // row two 6 (its group is two): the count pins that the parser reads every one.
+    assert_eq!(invariant_errors(&doc, &known), Ok((2, 13)));
     for (from, to, needle) in PLANTED {
         assert!(doc.contains(from), "the fixture lost {from}");
         let errors = invariant_errors(&doc.replacen(from, to, 1), &known)
@@ -1026,6 +1102,13 @@ fn the_key_invariant_owner_pin_rejects_planted_edits() {
             "{from} -> {to}: wanted {needle:?}, got {errors:?}"
         );
     }
+    let prose = doc.replace(ROW_TWO, "| Two rule | `ae doctor` only |");
+    let errors = invariant_errors(&prose, &known).err().unwrap_or_default();
+    let needle = ":9: the owner cell names no existing src/ or tests/ file";
+    assert!(
+        errors.iter().any(|error| error.contains(needle)),
+        "{errors:?}"
+    );
     let empty = doc.replace(ROW_ONE, "").replace(ROW_TWO, "");
     let errors = invariant_errors(&empty, &known).err().unwrap_or_default();
     assert!(
