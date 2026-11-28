@@ -331,9 +331,12 @@ nothing when the box now holds text or reads unreadable, as it does for a dictat
 who starts typing after the quiet gate keeps their draft whole (`deliver::stage_into_empty`).
 For a fleet overview the same read also refuses a harness that shows a running turn. An
 interrupt or a spawn brief lands over a draft by design and reads only the dictation gate
-there, as does the watchdog's guarded seat compaction. The
-capture and the paste stay two tmux commands, so a keystroke that lands between them is not
-seen.
+there. The guarded `ae compact` (`deliver::deliver_guarded`) keeps its earlier quiet check
+under both locks and the post-load dictation check, but has no post-load draft read: a draft
+that starts while its buffer loads is not seen. The pre-Enter payload proof planned for the
+watchdog's actions does not reach it, because it submits through `submit_bounded` on its own.
+The capture and the paste stay two tmux commands, so a keystroke that lands between them is
+not seen.
 
 The transport threshold is 8192 framed bytes. Bodies at or below it are pasted directly;
 larger Claude/Codex bodies are published once in the sender's `messages/` directory and
