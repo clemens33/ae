@@ -255,9 +255,7 @@ function Stream({ chat, tag }) {
   const pinned = useRef(true);
   const onScroll = useCallback((event) => {
     const box = event.currentTarget;
-    if (box.clientHeight) {
-      pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
-    }
+    pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   }, []);
   useEffect(() => {
     if (pinned.current && end.current) {

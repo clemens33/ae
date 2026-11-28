@@ -275,4 +275,17 @@ mod tests {
         assert_eq!(plain("a\u{7}b", 64), "ab");
         assert_eq!(plain("a\u{7f}b\u{85}c", 64), "abc");
     }
+
+    /// docs/web.md and `plain`: only `#c=` starts a code, so a text with an
+    /// equals sign elsewhere, or a `#c` that no `=` follows, is clean and is
+    /// borrowed unchanged.
+    #[test]
+    fn plain_borrows_an_equals_sign_and_a_hash_c_that_starts_no_code() {
+        for clean in ["key=value", "a #c tag", "#c", "#cx=1"] {
+            assert!(
+                matches!(plain(clean, 64), Cow::Borrowed(text) if text == clean),
+                "{clean:?} is borrowed unchanged"
+            );
+        }
+    }
 }

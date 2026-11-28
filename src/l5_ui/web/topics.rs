@@ -564,6 +564,26 @@ mod tests {
         }
     }
 
+    /// `newest` ranks as `topic::entries` ranks, ties included: on an equal
+    /// rank, which `collect` never builds, the record read first stays first.
+    #[test]
+    fn newest_keeps_the_first_of_equal_ranks_as_entries_does() {
+        let source = |session: &str| topic::Source {
+            session: session.to_owned(),
+            uuid: format!("uuid-{session}"),
+            incarnation: 0,
+            memo: b"2026-11-24T10:00:00Z\tlead\ttopic-twin\tstate: quiet\n".to_vec(),
+        };
+        let sources = [source("first"), source("second")];
+        let entries = topic::entries(&sources);
+        let first = entries
+            .get("twin")
+            .and_then(|list| list.first())
+            .map(|entry| &entry.origin);
+        assert_eq!(first.map(|origin| origin.session.as_str()), Some("first"));
+        assert_eq!(super::newest(&sources).get("twin"), first);
+    }
+
     /// A scratch state root removed when it drops.
     struct Scratch(std::path::PathBuf);
 
