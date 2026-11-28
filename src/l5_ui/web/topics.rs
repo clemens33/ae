@@ -157,12 +157,19 @@ pub fn collect(root: &Path, sticky: &mut Sticky) -> Column {
     column
 }
 
+/// One record seen by [`newest`]: its rank, its memo and its timestamp.
+struct Ranked<'a> {
+    rank: (usize, usize),
+    source: &'a topic::Source,
+    ts: &'a [u8],
+}
+
 /// The origin of each slug's highest-ranked record of `sources`, ranked as
 /// [`topic::entries`] ranks: a later incarnation above an earlier one and,
 /// within one memo, a later record above an earlier one, whatever their
 /// timestamps say. One pass that keeps no record text.
 fn newest(sources: &[topic::Source]) -> BTreeMap<String, topic::Origin> {
-    let mut found: BTreeMap<String, ((usize, usize), &topic::Source, &[u8])> = BTreeMap::new();
+    let mut found: BTreeMap<String, Ranked<'_>> = BTreeMap::new();
     for source in sources {
         for (place, record) in crate::memo::records(&source.memo).enumerate() {
             let Some(slug) = std::str::from_utf8(record.topic)
@@ -171,19 +178,23 @@ fn newest(sources: &[topic::Source]) -> BTreeMap<String, topic::Origin> {
             else {
                 continue;
             };
-            let rank = (source.incarnation, place);
+            let seen = Ranked {
+                rank: (source.incarnation, place),
+                source,
+                ts: record.ts,
+            };
             match found.get_mut(slug) {
-                Some(kept) if kept.0 < rank => *kept = (rank, source, record.ts),
+                Some(kept) if kept.rank < seen.rank => *kept = seen,
                 Some(_) => {}
                 None => {
-                    found.insert(slug.to_owned(), (rank, source, record.ts));
+                    found.insert(slug.to_owned(), seen);
                 }
             }
         }
     }
     found
         .into_iter()
-        .map(|(slug, (_, source, ts))| {
+        .map(|(slug, Ranked { source, ts, .. })| {
             let origin = topic::Origin {
                 session: source.session.clone(),
                 uuid: source.uuid.clone(),
