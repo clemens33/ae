@@ -934,6 +934,12 @@ impl InstructionsPlan {
                 })
             })
         };
+        // A Settings-only delta (lead ruling, review ae-20261128T080318Z-8c25dfc5):
+        // both winners come from the texts this tab validated, one read per file,
+        // where the tab used to read each file again through render's own reader.
+        // A file changed between the two reads now shows its validated text. A
+        // launch still reads through `render::prompt_instructions`, and the
+        // generic rules below keep their own reads.
         let custom = in_force(crate::render::prompt_instructions_in(&read));
         let spawn = in_force(crate::render::spawn_instructions_in(&read));
         let session = crate::lifecycle::meta_value(meta, "session");
