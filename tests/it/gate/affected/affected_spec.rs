@@ -1265,6 +1265,59 @@ fn unreferenced_documentation_fuzz_and_the_mac_manifest_do_not_force_whole() {
 }
 
 #[test]
+fn config_sample_alone_adds_only_the_guards_and_a_reader_that_names_it_is_selected() {
+    fn change_config_sample(input: &mut Input) {
+        input.changes = vec![Change {
+            status: Status::Modified,
+            path: "config.sample".to_owned(),
+        }];
+        input.old.clear();
+        input.tracked.insert("config.sample".to_owned());
+    }
+
+    let mut input = fixture();
+    change_config_sample(&mut input);
+    let got = select(&input);
+    subset(&got);
+    assert_eq!(
+        got.owners,
+        BTreeSet::from(["doors".to_owned(), "floor".to_owned(), "gate".to_owned()])
+    );
+    assert_eq!((got.not_selected, got.total), (4, 7));
+    assert!(!got.doctests);
+
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "sample_literal",
+        "#[test] fn reads() { let _ = std::fs::read(root().join(\"config.sample\")); }",
+    );
+    add_it(
+        &mut input,
+        "sample_include",
+        "#[test] fn reads() { let _ = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/config.sample\")); }",
+    );
+    change_config_sample(&mut input);
+    let got = select(&input);
+    subset(&got);
+    for owner in ["sample_literal", "sample_include"] {
+        assert!(
+            got.why
+                .iter()
+                .any(|pick| pick.owner == owner && pick.target == "config.sample"),
+            "missing reader {owner}"
+        );
+    }
+    assert_eq!(
+        got.owners,
+        BTreeSet::from(
+            ["doors", "floor", "gate", "sample_literal", "sample_include"].map(str::to_owned)
+        )
+    );
+    assert_eq!((got.not_selected, got.total), (4, 9));
+}
+
+#[test]
 fn a_module_prefix_never_selects_a_sibling_with_a_similar_name() {
     let mut input = fixture();
     add_it(&mut input, "direct_extra", "#[test] fn sibling() {}");

@@ -151,6 +151,8 @@ const LAYER_MODULES: [&str; 7] = [
 const BIN_ROOT: &str = "src/main.rs";
 const IT_ROOT: &str = "tests/it/main.rs";
 const MAC_MANIFEST: &str = ".config/macos-subset";
+/// The repo copy of the first-run config: no test reads it unless a source names it.
+const CONFIG_SAMPLE: &str = "config.sample";
 const FIXTURE_ROOT: &str = "tests/fixtures/";
 
 /// The extension of a repository path's last component.
@@ -499,12 +501,13 @@ fn trigger(path: &str) -> Option<&'static str> {
     }
 }
 
-/// A path that adds nothing when nobody names it: docs, top-level Markdown, fuzz inputs and the
-/// Mac subset manifest.
+/// A path that adds nothing when nobody names it: docs, top-level Markdown, `config.sample`, fuzz
+/// inputs and the Mac subset manifest.
 fn exempt(path: &str) -> bool {
     path.starts_with("docs/")
         || path.starts_with("fuzz/")
         || path == MAC_MANIFEST
+        || path == CONFIG_SAMPLE
         || (!path.contains('/') && extension(path) == Some("md"))
 }
 

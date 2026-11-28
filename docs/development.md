@@ -590,10 +590,11 @@ fixture, the whole lane runs. A checked-in source view can name a read set by it
 Rust sources it classifies under `src/`. `module_family()` matches its literal root file and the
 Rust files in the matching directory. A filesystem reader with a known checkout directory matches
 the files beneath it, including non-Rust files. The selector follows literal path joins and uses
-the known directory when a later join is computed. Docs, top-level Markdown, `fuzz/` and
-`.config/macos-subset` add nothing when nobody names them. A selected module becomes a filter term
-when a test name is under it, or when a `macro_rules!` body in it writes a `#[test] fn $name`. A
-selected module with neither is explained by its `why` lines and adds no term.
+the known directory when a later join is computed. Docs, top-level Markdown, `config.sample`,
+`fuzz/` and `.config/macos-subset` add nothing when nobody names them. A selected module becomes
+a filter term when a test name is under it, or when a `macro_rules!` body in it writes a
+`#[test] fn $name`. A selected module with neither is explained by its `why` lines and adds no
+term.
 
 **What runs the whole lane.** Each reason prints as `test-affected: whole: <id>: <detail>`:
 `selector-source` (the selector, its walk or its example), `build-input` (`Cargo.toml`,
