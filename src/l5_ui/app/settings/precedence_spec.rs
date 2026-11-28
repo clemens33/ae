@@ -137,10 +137,11 @@ fn no_session_is_the_current_global_alone() {
 /// `launch`.
 #[test]
 fn exactly_the_five_launch_pins_win_over_every_file() {
-    let every_key: String = super::KEYS
+    let every_key = super::KEYS
         .iter()
         .map(|(key, _, _)| format!("{key}=pinned\n"))
-        .collect();
+        .collect::<Vec<_>>()
+        .concat();
     let meta = format!("{every_key}origin=/work/api\nconfig={RECORDED}\n");
     let file = "[workspace]\nlayout = vertical\nquota = on\nquota_every_secs = 60\n\
                 idle_nudge_secs = 60\ndone_confirmations = 1\npalette = a\n";
@@ -237,10 +238,11 @@ fn global_only_keys_read_the_current_global_alone() {
         "auto_reseat_lead_at",
     ];
     global_only.sort_unstable();
-    let rows: String = global_only
+    let rows = global_only
         .iter()
         .map(|key| format!("{key} = elsewhere\n"))
-        .collect();
+        .collect::<Vec<_>>()
+        .concat();
     let elsewhere = format!("[workspace]\n{rows}");
     let meta = format!("origin=/work/api\nconfig={RECORDED}\n");
     let (_, rows) = config_tab(
@@ -306,14 +308,14 @@ fn a_torn_or_unreadable_config_file_names_itself() {
 }
 
 /// [C17] With no file every key draws its default: config.md's default column
-/// for layout :251, quota :254, quota_every_secs :255, idle_nudge_secs :256,
-/// done_confirmations :257, auto_reseat :258, auto_reseat_grace_secs :260,
-/// auto_reseat_at :261, auto_upgrade :275, restore :277, auto_trust :279,
-/// palette :280, icons :281, theme :282, motion :283, chat :284, and
-/// purge_agent_history commands.md:3004 (unset keeps the history: `off`).
-/// Lead ruling D3: the tab draws the raw config, so main, workers,
-/// fleet_order, auto_reseat_sessions and auto_reseat_lead_at draw their raw
-/// spellings, pinned as table data.
+/// for `layout` :251, `quota` :254, `quota_every_secs` :255,
+/// `idle_nudge_secs` :256, `done_confirmations` :257, `auto_reseat` :258,
+/// `auto_reseat_grace_secs` :260, `auto_reseat_at` :261, `auto_upgrade` :275,
+/// `restore` :277, `auto_trust` :279, `palette` :280, `icons` :281, `theme`
+/// :282, `motion` :283, `chat` :284, and `purge_agent_history` commands.md:3004
+/// (unset keeps the history: `off`). Lead ruling D3: the tab draws the raw
+/// config, so `main`, `workers`, `fleet_order`, `auto_reseat_sessions` and
+/// `auto_reseat_lead_at` draw their raw spellings, pinned as table data.
 #[test]
 fn every_key_draws_its_default_when_no_file_declares_it() {
     let (_, rows) = config_tab("", None, &[]);
@@ -357,14 +359,14 @@ const SEATS: &str = "seat.main=lead\n";
 /// The winner in force: source, file and text.
 type Won = Option<(ConfigSource, String, String)>;
 
-fn won(source: ConfigSource, file: &str, text: &str) -> Won {
-    Some((source, file.to_owned(), text.to_owned()))
+fn won(source: ConfigSource, file: &str, text: &str) -> (ConfigSource, String, String) {
+    (source, file.to_owned(), text.to_owned())
 }
 
 /// The instructions tab of session `api` with `meta` and the selected `local`
 /// overlay, where `files` holds the text of every file that exists.
 fn instructions(meta: &str, local: Option<&str>, files: &[(&str, &str)]) -> InstructionsView {
-    let plan = InstructionsPlan::of(meta.as_bytes(), local.map(PathBuf::from));
+    let plan = InstructionsPlan::of(meta.as_bytes(), local.map(Path::new));
     let texts: Vec<Option<String>> = plan
         .files()
         .iter()
@@ -403,7 +405,7 @@ fn the_last_file_declaring_instructions_wins_and_is_named() {
     );
     assert_eq!(
         in_force(&view).0,
-        won(ConfigSource::Session, OVERLAY, "from session")
+        Some(won(ConfigSource::Session, OVERLAY, "from session"))
     );
     let view = instructions(
         &meta,
@@ -412,7 +414,7 @@ fn the_last_file_declaring_instructions_wins_and_is_named() {
     );
     assert_eq!(
         in_force(&view).0,
-        won(ConfigSource::Global, RECORDED, "from global")
+        Some(won(ConfigSource::Global, RECORDED, "from global"))
     );
 }
 
@@ -449,7 +451,7 @@ fn spawn_instructions_resolve_apart_with_their_own_mask() {
     );
     assert_eq!(
         in_force(&view),
-        (None, won(ConfigSource::Global, RECORDED, "spend"))
+        (None, Some(won(ConfigSource::Global, RECORDED, "spend")))
     );
     let view = instructions(
         &meta,
@@ -461,7 +463,7 @@ fn spawn_instructions_resolve_apart_with_their_own_mask() {
     );
     assert_eq!(
         in_force(&view),
-        (won(ConfigSource::Global, RECORDED, "rules"), None)
+        (Some(won(ConfigSource::Global, RECORDED, "rules")), None)
     );
 }
 
@@ -469,7 +471,7 @@ fn spawn_instructions_resolve_apart_with_their_own_mask() {
 /// `config` row no file stands in for it, and a lone overlay is `session`.
 #[test]
 fn only_the_recorded_config_row_is_a_global() {
-    let plan = InstructionsPlan::of(SEATS.as_bytes(), Some(PathBuf::from(OVERLAY)));
+    let plan = InstructionsPlan::of(SEATS.as_bytes(), Some(Path::new(OVERLAY)));
     assert_eq!(plan.files(), [PathBuf::from(OVERLAY)]);
     let view = instructions(
         SEATS,
@@ -481,7 +483,7 @@ fn only_the_recorded_config_row_is_a_global() {
     );
     assert_eq!(
         in_force(&view).0,
-        won(ConfigSource::Session, OVERLAY, "local")
+        Some(won(ConfigSource::Session, OVERLAY, "local"))
     );
 }
 
@@ -503,7 +505,7 @@ fn a_last_line_with_no_newline_is_not_read_but_a_block_closer_is() {
     );
     assert_eq!(
         in_force(&view).0,
-        won(ConfigSource::Global, RECORDED, "from global")
+        Some(won(ConfigSource::Global, RECORDED, "from global"))
     );
     let view = instructions(
         &meta,
@@ -518,7 +520,7 @@ fn a_last_line_with_no_newline_is_not_read_but_a_block_closer_is() {
     );
     assert_eq!(
         in_force(&view).0,
-        won(ConfigSource::Session, OVERLAY, "from session")
+        Some(won(ConfigSource::Session, OVERLAY, "from session"))
     );
 }
 

@@ -863,7 +863,7 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
         }
     };
     let local = crate::config::local_overlay(dir, &crate::lifecycle::meta_value(&bytes, "origin"));
-    let plan = InstructionsPlan::of(&bytes, local);
+    let plan = InstructionsPlan::of(&bytes, local.as_deref());
     let mut texts = Vec::new();
     for file in plan.files() {
         match prompt_text(file, crate::config::read_global_text(file)) {
@@ -891,10 +891,10 @@ pub(crate) struct InstructionsPlan {
 impl InstructionsPlan {
     /// Plan from `meta` and the `local` overlay it selected. Only the meta's
     /// `config` row is a global: with none, no file stands in for it.
-    pub(crate) fn of(meta: &[u8], local: Option<PathBuf>) -> Self {
+    pub(crate) fn of(meta: &[u8], local: Option<&Path>) -> Self {
         let recorded = crate::lifecycle::meta_value(meta, "config");
         let global = (!recorded.is_empty()).then(|| PathBuf::from(recorded));
-        let files = crate::config::ctx_config_files(global.as_deref(), local.as_deref());
+        let files = crate::config::ctx_config_files(global.as_deref(), local);
         let sources = global
             .iter()
             .map(|_| ConfigSource::Global)
